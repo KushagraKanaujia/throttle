@@ -1,0 +1,65 @@
+{
+  "captured_before_shutdown": true,
+  "fixture_kind": "synthetic_loopback_not_inference",
+  "stress_policy": {
+    "profile": "stress_large",
+    "minimum_prompt_characters": 4096,
+    "trigger_in_flight": 12,
+    "triggered": true
+  },
+  "profiles": {
+    "code_assistant": {
+      "requests_started": 85,
+      "peak_server_in_flight": 16,
+      "active_at_capture": 0,
+      "outcomes": {"http_200_valid_shape": 85},
+      "observed_prompt_character_range_including_warmup": [92, 699]
+    },
+    "document_summary": {
+      "requests_started": 85,
+      "peak_server_in_flight": 16,
+      "active_at_capture": 0,
+      "outcomes": {"http_200_valid_shape": 85},
+      "observed_prompt_character_range_including_warmup": [124, 2425]
+    },
+    "mixed_workload": {
+      "requests_started": 85,
+      "peak_server_in_flight": 16,
+      "active_at_capture": 0,
+      "outcomes": {"http_200_valid_shape": 85},
+      "observed_prompt_character_range_including_warmup": [49, 1161]
+    },
+    "retrieval_qa": {
+      "requests_started": 85,
+      "peak_server_in_flight": 16,
+      "active_at_capture": 0,
+      "outcomes": {"http_200_valid_shape": 85},
+      "observed_prompt_character_range_including_warmup": [143, 1024]
+    },
+    "short_chat": {
+      "requests_started": 85,
+      "peak_server_in_flight": 13,
+      "active_at_capture": 0,
+      "outcomes": {"http_200_valid_shape": 85},
+      "observed_prompt_character_range_including_warmup": [53, 63]
+    },
+    "stress_large": {
+      "requests_started": 83,
+      "peak_server_in_flight": 14,
+      "active_at_capture": 0,
+      "outcomes": {
+        "client_cancelled_connection": 13,
+        "http_200_valid_shape": 69,
+        "simulated_memory_pressure_503": 1
+      },
+      "observed_prompt_character_range_including_warmup": [114, 4303]
+    },
+    "support_ticket": {
+      "requests_started": 85,
+      "peak_server_in_flight": 16,
+      "active_at_capture": 0,
+      "outcomes": {"http_200_valid_shape": 85},
+      "observed_prompt_character_range_including_warmup": [116, 530]
+    }
+  }
+}

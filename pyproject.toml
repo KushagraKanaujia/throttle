@@ -1,0 +1,28 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "throttle-bench"
+version = "0.2.0"
+description = "Honest load and cost benchmarking for OpenAI-compatible chat endpoints"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = ["httpx>=0.27,<1"]
+
+[project.scripts]
+throttle = "throttle.cli:main"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+throttle = ["prompts.jsonl", "warmup_prompts.jsonl"]
+
+[project.optional-dependencies]
+# GuideLLM stays out of process. Its current supported Python range ends at
+# 3.13, so the base Throttle install remains usable on newer interpreters.
+guidellm = ["guidellm[recommended]==0.7.3; python_version < '3.14'"]

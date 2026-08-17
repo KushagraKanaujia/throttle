@@ -1,0 +1,2675 @@
+{
+  "artifact_type": "throttle_run",
+  "best_tested": {
+    "available": true,
+    "block_mean_output_tokens_per_second": 6979.920500060467,
+    "block_mean_output_tokens_per_second_ci": {
+      "confidence": 0.95,
+      "high": null,
+      "low": null,
+      "method": "student_t_blocks",
+      "n": 1
+    },
+    "boundary_reached": true,
+    "claim": "descriptive smoke observation only; never a production recommendation",
+    "completion_tokens_per_response_relative_spread": 0.0,
+    "completion_tokens_per_response_tolerance": 0.05,
+    "condition_id": "closed_loop:16",
+    "field": "best_tested_concurrency",
+    "optimum_found": false,
+    "pooled_output_tokens_per_second": 6979.920500060467,
+    "reasons": [
+      "smoke_sample_is_not_decision_grade",
+      "throughput_confidence_intervals_overlap"
+    ],
+    "state": "not_applicable_smoke",
+    "value": 16
+  },
+  "completed_at": "2026-08-17T08:04:08.255688+00:00",
+  "conditions": [
+    {
+      "achieved_offered_request_rate": null,
+      "blocks": [
+        {
+          "achieved_offered_request_rate": null,
+          "block_index": 1,
+          "diagnostic_metrics": {
+            "completion_tokens": 1024,
+            "e2e_latency_ms": {
+              "count": 16,
+              "mean": 74.89036699189455,
+              "p50": 74.28670796798542,
+              "p90": 78.92481246381067,
+              "p95": 79.35011447989382,
+              "p95_ci": {
+                "analysis_sample_n": 16,
+                "confidence": 0.95,
+                "high": 80.17095801187679,
+                "low": 77.96423827021499,
+                "method": "bounded_percentile_bootstrap_requests",
+                "n": 16,
+                "resamples": 300
+              },
+              "p99": 80.0067893054802
+            },
+            "error_rate": 0.0,
+            "inter_chunk_latency_ms": {
+              "analysis_sample_count": 32,
+              "analysis_sampling": "all gaps up to 4096, then deterministic reservoir sampling",
+              "count": 32,
+              "mean": 5.290401097227004,
+              "not_equivalent_to_itl": true,
+              "p50": 5.485479021444917,
+              "p90": 5.712212499929592,
+              "p95": 5.720166835817508,
+              "p95_ci": {
+                "analysis_sample_n": 32,
+                "confidence": 0.95,
+                "high": 5.768291011918336,
+                "low": 5.6414469752053265,
+                "method": "bounded_percentile_bootstrap_requests",
+                "n": 32,
+                "resamples": 300
+              },
+              "p99": 5.754367051995359,
+              "source": "client_observed_nonempty_sse_chunks"
+            },
+            "itl_ms": {
+              "count": 0,
+              "mean": null,
+              "p50": null,
+              "p95": null,
+              "source": "unavailable",
+              "unavailable_reason": "native SSE chunks do not prove token boundaries"
+            },
+            "output_tokens_per_second": 853.2791443889547,
+            "prompt_tokens": 3760,
+            "requests_per_second": 13.332486631077417,
+            "slo_goodput": null,
+            "tpot_ms": {
+              "count": 16,
+              "mean": 0.16794924118180965,
+              "p50": 0.1724970315413047,
+              "p90": 0.1791792303612012,
+              "p95": 0.18020254390735532,
+              "p95_ci": {
+                "analysis_sample_n": 16,
+                "confidence": 0.95,
+                "high": 0.18049669840062657,
+                "low": 0.1777087052023345,
+                "method": "bounded_percentile_bootstrap_requests",
+                "n": 16,
+                "resamples": 300
+              },
+              "p99": 0.18043786750197233
+            },
+            "ttft_ms": {
+              "count": 16,
+              "mean": 62.94726024498232,
+              "p50": 63.47116647521034,
+              "p90": 66.76864551263861,
+              "p95": 67.09966651396826,
+              "p95_ci": {
+                "analysis_sample_n": 16,
+                "confidence": 0.95,
+                "high": 67.18316703336313,
+                "low": 65.66759798370185,
+                "method": "bounded_percentile_bootstrap_requests",
+                "n": 16,
+                "resamples": 300
+              },
+              "p99": 67.16646692948416
+            },
+            "valid_response_count": 16
+          },
+          "invalid_reasons": [],
+          "launch_window_seconds": null,
+          "metrics": {
+            "completion_tokens": 1024,
+            "e2e_latency_ms": {
+              "count": 16,
+              "mean": 74.89036699189455,
+              "p50": 74.28670796798542,
+              "p90": 78.92481246381067,
+              "p95": 79.35011447989382,
+              "p95_ci": {
+                "analysis_sample_n": 16,
+                "confidence": 0.95,
+                "high": 80.17095801187679,
+                "low": 77.96423827021499,
+                "method": "bounded_percentile_bootstrap_requests",
+                "n": 16,
+                "resamples": 300
+              },
+              "p99": 80.0067893054802
+            },
+            "error_rate": 0.0,
+            "inter_chunk_latency_ms": {
+              "analysis_sample_count": 32,
+              "analysis_sampling": "all gaps up to 4096, then deterministic reservoir sampling",
+              "count": 32,
+              "mean": 5.290401097227004,
+              "not_equivalent_to_itl": true,
+              "p50": 5.485479021444917,
+              "p90": 5.712212499929592,
+              "p95": 5.720166835817508,
+              "p95_ci": {
+                "analysis_sample_n": 32,
+                "confidence": 0.95,
+                "high": 5.768291011918336,
+                "low": 5.6414469752053265,
+                "method": "bounded_percentile_bootstrap_requests",
+                "n": 32,
+                "resamples": 300
+              },
+              "p99": 5.754367051995359,
+              "source": "client_observed_nonempty_sse_chunks"
+            },
+            "itl_ms": {
+              "count": 0,
+              "mean": null,
+              "p50": null,
+              "p95": null,
+              "source": "unavailable",
+              "unavailable_reason": "native SSE chunks do not prove token boundaries"
+            },
+            "output_tokens_per_second": 853.2791443889547,
+            "prompt_tokens": 3760,
+            "requests_per_second": 13.332486631077417,
+            "slo_goodput": null,
+            "tpot_ms": {
+              "count": 16,
+              "mean": 0.16794924118180965,
+              "p50": 0.1724970315413047,
+              "p90": 0.1791792303612012,
+              "p95": 0.18020254390735532,
+              "p95_ci": {
+                "analysis_sample_n": 16,
+                "confidence": 0.95,
+                "high": 0.18049669840062657,
+                "low": 0.1777087052023345,
+                "method": "bounded_percentile_bootstrap_requests",
+                "n": 16,
+                "resamples": 300
+              },
+              "p99": 0.18043786750197233
+            },
+            "ttft_ms": {
+              "count": 16,
+              "mean": 62.94726024498232,
+              "p50": 63.47116647521034,
+              "p90": 66.76864551263861,
+              "p95": 67.09966651396826,
+              "p95_ci": {
+                "analysis_sample_n": 16,
+                "confidence": 0.95,
+                "high": 67.18316703336313,
+                "low": 65.66759798370185,
+                "method": "bounded_percentile_bootstrap_requests",
+                "n": 16,
+                "resamples": 300
+              },
+              "p99": 67.16646692948416
+            },
+            "valid_response_count": 16
+          },
+          "observed_peak_in_flight": 1,
+          "offered_rate_relative_error": null,
+          "offered_requests": 16,
+          "open_loop_target_achieved": true,
+          "request_counts": {
+            "attempted": 16,
+            "error_counts": {},
+            "finish_reason_counts": {
+              "stop": 16
+            },
+            "invalid": 0,
+            "status_counts": {
+              "200": 16
+            },
+            "valid": 16
+          },
+          "scheduler_lag_interval_ratio_p95": null,
+          "scheduler_lag_ms": {
+            "count": 0,
+            "mean": null,
+            "p50": null,
+            "p90": null,
+            "p95": null,
+            "p95_ci": {
+              "analysis_sample_n": 0,
+              "confidence": 0.95,
+              "high": null,
+              "low": null,
+              "method": "bounded_percentile_bootstrap_requests",
+              "n": 0,
+              "resamples": 300
+            },
+            "p99": null
+          },
+          "target_offered_request_rate": null,
+          "valid": true,
+          "wall_duration_seconds": 1.2000762080424465
+        }
+      ],
+      "condition": {
+        "id": "closed_loop:1",
+        "kind": "closed_loop",
+        "max_in_flight": 1,
+        "value": 1
+      },
+      "decision_grade": false,
+      "decision_ineligible_reasons": [
+        "smoke_mode_is_not_decision_grade"
+      ],
+      "diagnostic_metrics": {
+        "completion_tokens": 1024,
+        "e2e_latency_ms": {
+          "count": 16,
+          "mean": 74.89036699189455,
+          "p50": 74.28670796798542,
+          "p90": 78.92481246381067,
+          "p95": 79.35011447989382,
+          "p95_ci": {
+            "analysis_sample_n": 16,
+            "confidence": 0.95,
+            "high": 80.17095801187679,
+            "low": 77.96423827021499,
+            "method": "bounded_percentile_bootstrap_requests",
+            "n": 16,
+            "resamples": 300
+          },
+          "p95_repeated_block_ci": {
+            "confidence": 0.95,
+            "high": null,
+            "low": null,
+            "method": "student_t_blocks",
+            "n": 1
+          },
+          "p99": 80.0067893054802
+        },
+        "error_rate": 0.0,
+        "inter_chunk_latency_ms": {
+          "analysis_sample_count": 32,
+          "analysis_sampling": "all gaps up to 4096, then deterministic reservoir sampling",
+          "count": 32,
+          "mean": 5.290401097227004,
+          "not_equivalent_to_itl": true,
+          "p50": 5.485479021444917,
+          "p90": 5.712212499929592,
+          "p95": 5.720166835817508,
+          "p95_ci": {
+            "analysis_sample_n": 32,
+            "confidence": 0.95,
+            "high": 5.768291011918336,
+            "low": 5.6414469752053265,
+            "method": "bounded_percentile_bootstrap_requests",
+            "n": 32,
+            "resamples": 300
+          },
+          "p99": 5.754367051995359,
+          "source": "client_observed_nonempty_sse_chunks"
+        },
+        "itl_ms": {
+          "count": 0,
+          "mean": null,
+          "p50": null,
+          "p95": null,
+          "source": "unavailable",
+          "unavailable_reason": "native SSE chunks do not prove token boundaries"
+        },
+        "output_tokens_per_second": 853.2791443889547,
+        "prompt_tokens": 3760,
+        "requests_per_second": 13.332486631077417,
+        "slo_goodput": null,
+        "tpot_ms": {
+          "count": 16,
+          "mean": 0.16794924118180965,
+          "p50": 0.1724970315413047,
+          "p90": 0.1791792303612012,
+          "p95": 0.18020254390735532,
+          "p95_ci": {
+            "analysis_sample_n": 16,
+            "confidence": 0.95,
+            "high": 0.18049669840062657,
+            "low": 0.1777087052023345,
+            "method": "bounded_percentile_bootstrap_requests",
+            "n": 16,
+            "resamples": 300
+          },
+          "p99": 0.18043786750197233
+        },
+        "ttft_ms": {
+          "count": 16,
+          "mean": 62.94726024498232,
+          "p50": 63.47116647521034,
+          "p90": 66.76864551263861,
+          "p95": 67.09966651396826,
+          "p95_ci": {
+            "analysis_sample_n": 16,
+            "confidence": 0.95,
+            "high": 67.18316703336313,
+            "low": 65.66759798370185,
+            "method": "bounded_percentile_bootstrap_requests",
+            "n": 16,
+            "resamples": 300
+          },
+          "p95_repeated_block_ci": {
+            "confidence": 0.95,
+            "high": null,
+            "low": null,
+            "method": "student_t_blocks",
+            "n": 1
+          },
+          "p99": 67.16646692948416
+        },
+        "valid_response_count": 16
+      },
+      "measured_wall_seconds": 1.2000762080424465,
+      "metrics": {
+        "block_mean_output_tokens_per_second": 853.2791443889547,
+        "block_mean_output_tokens_per_second_ci": {
+          "confidence": 0.95,
+          "high": null,
+          "low": null,
+          "method": "student_t_blocks",
+          "n": 1
+        },
+        "block_mean_requests_per_second": 13.332486631077417,
+        "block_mean_requests_per_second_ci": {
+          "confidence": 0.95,
+          "high": null,
+          "low": null,
+          "method": "student_t_blocks",
+          "n": 1
+        },
+        "completion_tokens": 1024,
+        "cost_metric_basis": "whole-run or active-second cost cannot be allocated to this condition",
+        "cost_per_million_output_tokens": null,
+        "e2e_latency_ms": {
+          "count": 16,
+          "mean": 74.89036699189455,
+          "p50": 74.28670796798542,
+          "p90": 78.92481246381067,
+          "p95": 79.35011447989382,
+          "p95_ci": {
+            "analysis_sample_n": 16,
+            "confidence": 0.95,
+            "high": 80.17095801187679,
+            "low": 77.96423827021499,
+            "method": "bounded_percentile_bootstrap_requests",
+            "n": 16,
+            "resamples": 300
+          },
+          "p95_repeated_block_ci": {
+            "confidence": 0.95,
+            "high": null,
+            "low": null,
+            "method": "student_t_blocks",
+            "n": 1
+          },
+          "p99": 80.0067893054802
+        },
+        "error_rate": 0.0,
+        "independent_ci_unit": "repeated_block",
+        "inter_chunk_latency_ms": {
+          "analysis_sample_count": 32,
+          "analysis_sampling": "all gaps up to 4096, then deterministic reservoir sampling",
+          "count": 32,
+          "mean": 5.290401097227004,
+          "not_equivalent_to_itl": true,
+          "p50": 5.485479021444917,
+          "p90": 5.712212499929592,
+          "p95": 5.720166835817508,
+          "p95_ci": {
+            "analysis_sample_n": 32,
+            "confidence": 0.95,
+            "high": 5.768291011918336,
+            "low": 5.6414469752053265,
+            "method": "bounded_percentile_bootstrap_requests",
+            "n": 32,
+            "resamples": 300
+          },
+          "p99": 5.754367051995359,
+          "source": "client_observed_nonempty_sse_chunks"
+        },
+        "itl_ms": {
+          "count": 0,
+          "mean": null,
+          "p50": null,
+          "p95": null,
+          "source": "unavailable",
+          "unavailable_reason": "native SSE chunks do not prove token boundaries"
+        },
+        "output_tokens_per_second": 853.2791443889547,
+        "prompt_tokens": 3760,
+        "requests_per_second": 13.332486631077417,
+        "slo_goodput": null,
+        "tpot_ms": {
+          "count": 16,
+          "mean": 0.16794924118180965,
+          "p50": 0.1724970315413047,
+          "p90": 0.1791792303612012,
+          "p95": 0.18020254390735532,
+          "p95_ci": {
+            "analysis_sample_n": 16,
+            "confidence": 0.95,
+            "high": 0.18049669840062657,
+            "low": 0.1777087052023345,
+            "method": "bounded_percentile_bootstrap_requests",
+            "n": 16,
+            "resamples": 300
+          },
+          "p99": 0.18043786750197233
+        },
+        "ttft_ms": {
+          "count": 16,
+          "mean": 62.94726024498232,
+          "p50": 63.47116647521034,
+          "p90": 66.76864551263861,
+          "p95": 67.09966651396826,
+          "p95_ci": {
+            "analysis_sample_n": 16,
+            "confidence": 0.95,
+            "high": 67.18316703336313,
+            "low": 65.66759798370185,
+            "method": "bounded_percentile_bootstrap_requests",
+            "n": 16,
+            "resamples": 300
+          },
+          "p95_repeated_block_ci": {
+            "confidence": 0.95,
+            "high": null,
+            "low": null,
+            "method": "student_t_blocks",
+            "n": 1
+          },
+          "p99": 67.16646692948416
+        },
+        "valid_response_count": 16
+      },
+      "observed_peak_in_flight": 1,
+      "offered_rate_relative_error": null,
+      "open_loop_target_achieved": null,
+      "qualification_floor": {
+        "minimum_blocks": 3,
+        "minimum_valid_requests": 200,
+        "or_minimum_measured_seconds": 60.0
+      },
+      "request_counts": {
+        "attempted": 16,
+        "error_counts": {},
+        "finish_reason_counts": {
+          "stop": 16
+        },
+        "invalid": 0,
+        "status_counts": {
+          "200": 16
+        },
+        "valid": 16
+      },
+      "target_offered_request_rate": null,
+      "valid": true,
+      "warmup": {
+        "attempted": 1,
+        "error_counts": {},
+        "finish_reason_counts": {
+          "stop": 1
+        },
+        "invalid": 0,
+        "status_counts": {
+          "200": 1
+        },
+        "valid": 1
+      }
+    },
+    {
+      "achieved_offered_request_rate": null,
+      "blocks": [
+        {
+          "achieved_offered_request_rate": null,
+          "block_index": 1,
+          "diagnostic_metrics": {
+            "completion_tokens": 1024,
+            "e2e_latency_ms": {
+              "count": 16,
+              "mean": 75.12969537492609,
+              "p50": 75.11331248679198,
+              "p90": 79.70693748211488,
+              "p95": 80.58709373290185,
+              "p95_ci": {
+                "analysis_sample_n": 16,
+                "confidence": 0.95,
+                "high": 81.14687498891726,
+                "low": 78.36054226208944,
+                "method": "bounded_percentile_bootstrap_requests",
+                "n": 16,
+                "resamples": 300
+              },
+              "p99": 81.03491873771418
+            },
+            "error_rate": 0.0,
+            "inter_chunk_latency_ms": {
+              "analysis_sample_count": 32,
+              "analysis_sampling": "all gaps up to 4096, then deterministic reservoir sampling",
+              "count": 32,
+              "mean": 5.573123688009218,
+              "not_equivalent_to_itl": true,
+              "p50": 5.546854488784447,
+              "p90": 6.479887501336635,
+              "p95": 7.076908549061045,
+              "p95_ci": {
+                "analysis_sample_n": 32,
+                "confidence": 0.95,
+                "high": 7.717875007074326,
+                "low": 6.0682499897666276,
+                "method": "bounded_percentile_bootstrap_requests",
+                "n": 32,
+                "resamples": 300
+              },
+              "p99": 7.6813207304803655,
+              "source": "client_observed_nonempty_sse_chunks"
+            },
+            "itl_ms": {
+              "count": 0,
+              "mean": null,
+              "p50": null,
+              "p95": null,
+              "source": "unavailable",
+              "unavailable_reason": "native SSE chunks do not prove token boundaries"
+            },
+            "output_tokens_per_second": 1698.9093755896042,
+            "prompt_tokens": 3760,
+            "requests_per_second": 26.545458993587566,
+            "slo_goodput": null,
+            "tpot_ms": {
+              "count": 16,
+              "mean": 0.1769245615241022,
+              "p50": 0.17566599981075834,
+              "p90": 0.19638029357699294,
+              "p95": 0.2019938808174745,
+              "p95_ci": {
+                "analysis_sample_n": 16,
+                "confidence": 0.95,
+                "high": 0.21052514276807271,
+                "low": 0.18210814261461594,
+                "method": "bounded_percentile_bootstrap_requests",
+                "n": 16,
+                "resamples": 300
+              },
+              "p99": 0.20881889037795306
+            },
+            "ttft_ms": {
+              "count": 16,
+              "mean": 62.01862762827659,
+              "p50": 62.868645996786654,
+              "p90": 65.322083508363,
+              "p95": 66.01878099900205,
+              "p95_ci": {
+                "analysis_sample_n": 16,
+                "confidence": 0.95,
+                "high": 67.68362503498793,
+                "low": 64.99174348027736,
+                "method": "bounded_percentile_bootstrap_requests",
+                "n": 16,
+                "resamples": 300
+              },
+              "p99": 67.35065622779075
+            },
+            "valid_response_count": 16
+          },
+          "invalid_reasons": [],
+          "launch_window_seconds": null,
+          "metrics": {
+            "completion_tokens": 1024,
+            "e2e_latency_ms": {
+              "count": 16,
+              "mean": 75.12969537492609,
+              "p50": 75.11331248679198,
+              "p90": 79.70693748211488,
+              "p95": 80.58709373290185,
+              "p95_ci": {
+                "analysis_sample_n": 16,
+                "confidence": 0.95,
+                "high": 81.14687498891726,
+                "low": 78.36054226208944,
+                "method": "bounded_percentile_bootstrap_requests",
+                "n": 16,
+                "resamples": 300
+              },
+              "p99": 81.03491873771418
+            },
+            "error_rate": 0.0,
+            "inter_chunk_latency_ms": {
+              "analysis_sample_count": 32,
+              "analysis_sampling": "all gaps up to 4096, then deterministic reservoir sampling",
+              "count": 32,
+              "mean": 5.573123688009218,
+              "not_equivalent_to_itl": true,
+              "p50": 5.546854488784447,
+              "p90": 6.479887501336635,
+              "p95": 7.076908549061045,
+              "p95_ci": {
+                "analysis_sample_n": 32,
+                "confidence": 0.95,
+                "high": 7.717875007074326,
+                "low": 6.0682499897666276,
+                "method": "bounded_percentile_bootstrap_requests",
+                "n": 32,
+                "resamples": 300
+              },
+              "p99": 7.6813207304803655,
+              "source": "client_observed_nonempty_sse_chunks"
+            },
+            "itl_ms": {
+              "count": 0,
+              "mean": null,
+              "p50": null,
+              "p95": null,
+              "source": "unavailable",
+              "unavailable_reason": "native SSE chunks do not prove token boundaries"
+            },
+            "output_tokens_per_second": 1698.9093755896042,
+            "prompt_tokens": 3760,
+            "requests_per_second": 26.545458993587566,
+            "slo_goodput": null,
+            "tpot_ms": {
+              "count": 16,
+              "mean": 0.1769245615241022,
+              "p50": 0.17566599981075834,
+              "p90": 0.19638029357699294,
+              "p95": 0.2019938808174745,
+              "p95_ci": {
+                "analysis_sample_n": 16,
+                "confidence": 0.95,
+                "high": 0.21052514276807271,
+                "low": 0.18210814261461594,
+                "method": "bounded_percentile_bootstrap_requests",
+                "n": 16,
+                "resamples": 300
+              },
+              "p99": 0.20881889037795306
+            },
+            "ttft_ms": {
+              "count": 16,
+              "mean": 62.01862762827659,
+              "p50": 62.868645996786654,
+              "p90": 65.322083508363,
+              "p95": 66.01878099900205,
+              "p95_ci": {
+                "analysis_sample_n": 16,
+                "confidence": 0.95,
+                "high": 67.68362503498793,
+                "low": 64.99174348027736,
+                "method": "bounded_percentile_bootstrap_requests",
+                "n": 16,
+                "resamples": 300
+              },
+              "p99": 67.35065622779075
+            },
+            "valid_response_count": 16
+          },
+          "observed_peak_in_flight": 2,
+          "offered_rate_relative_error": null,
+          "offered_requests": 16,
+          "open_loop_target_achieved": true,
+          "request_counts": {
+            "attempted": 16,
+            "error_counts": {},
+            "finish_reason_counts": {
+              "stop": 16
+            },
+            "invalid": 0,
+            "status_counts": {
+              "200": 16
+            },
+            "valid": 16
+          },
+          "scheduler_lag_interval_ratio_p95": null,
+          "scheduler_lag_ms": {
+            "count": 0,
+            "mean": null,
+            "p50": null,
+            "p90": null,
+            "p95": null,
+            "p95_ci": {
+              "analysis_sample_n": 0,
+              "confidence": 0.95,
+              "high": null,
+              "low": null,
+              "method": "bounded_percentile_bootstrap_requests",
+              "n": 0,
+              "resamples": 300
+            },
+            "p99": null
+          },
+          "target_offered_request_rate": null,
+          "valid": true,
+          "wall_duration_seconds": 0.6027396250283346
+        }
+      ],
+      "condition": {
+        "id": "closed_loop:2",
+        "kind": "closed_loop",
+        "max_in_flight": 2,
+        "value": 2
+      },
+      "decision_grade": false,
+      "decision_ineligible_reasons": [
+        "smoke_mode_is_not_decision_grade"
+      ],
+      "diagnostic_metrics": {
+        "completion_tokens": 1024,
+        "e2e_latency_ms": {
+          "count": 16,
+          "mean": 75.12969537492609,
+          "p50": 75.11331248679198,
+          "p90": 79.70693748211488,
+          "p95": 80.58709373290185,
+          "p95_ci": {
+            "analysis_sample_n": 16,
+            "confidence": 0.95,
+            "high": 81.14687498891726,
+            "low": 78.36054226208944,
+            "method": "bounded_percentile_bootstrap_requests",
+            "n": 16,
+            "resamples": 300
+          },
+          "p95_repeated_block_ci": {
+            "confidence": 0.95,
+            "high": null,
+            "low": null,
+            "method": "student_t_blocks",
+            "n": 1
+          },
+          "p99": 81.03491873771418
+        },
+        "error_rate": 0.0,
+        "inter_chunk_latency_ms": {
+          "analysis_sample_count": 32,
+          "analysis_sampling": "all gaps up to 4096, then deterministic reservoir sampling",
+          "count": 32,
+          "mean": 5.573123688009218,
+          "not_equivalent_to_itl": true,
+          "p50": 5.546854488784447,
+          "p90": 6.479887501336635,
+          "p95": 7.076908549061045,
+          "p95_ci": {
+            "analysis_sample_n": 32,
+            "confidence": 0.95,
+            "high": 7.717875007074326,
+            "low": 6.0682499897666276,
+            "method": "bounded_percentile_bootstrap_requests",
+            "n": 32,
+            "resamples": 300
+          },
+          "p99": 7.6813207304803655,
+          "source": "client_observed_nonempty_sse_chunks"
+        },
+        "itl_ms": {
+          "count": 0,
+          "mean": null,
+          "p50": null,
+          "p95": null,
+          "source": "unavailable",
+          "unavailable_reason": "native SSE chunks do not prove token boundaries"
+        },
+        "output_tokens_per_second": 1698.9093755896042,
+        "prompt_tokens": 3760,
+        "requests_per_second": 26.545458993587566,
+        "slo_goodput": null,
+        "tpot_ms": {
+          "count": 16,
+          "mean": 0.1769245615241022,
+          "p50": 0.17566599981075834,
+          "p90": 0.19638029357699294,
+          "p95": 0.2019938808174745,
+          "p95_ci": {
+            "analysis_sample_n": 16,
+            "confidence": 0.95,
+            "high": 0.21052514276807271,
+            "low": 0.18210814261461594,
+            "method": "bounded_percentile_bootstrap_requests",
+            "n": 16,
+            "resamples": 300
+          },
+          "p99": 0.20881889037795306
+        },
+        "ttft_ms": {
+          "count": 16,
+          "mean": 62.01862762827659,
+          "p50": 62.868645996786654,
+          "p90": 65.322083508363,
+          "p95": 66.01878099900205,
+          "p95_ci": {
+            "analysis_sample_n": 16,
+            "confidence": 0.95,
+            "high": 67.68362503498793,
+            "low": 64.99174348027736,
+            "method": "bounded_percentile_bootstrap_requests",
+            "n": 16,
+            "resamples": 300
+          },
+          "p95_repeated_block_ci": {
+            "confidence": 0.95,
+            "high": null,
+            "low": null,
+            "method": "student_t_blocks",
+            "n": 1
+          },
+          "p99": 67.35065622779075
+        },
+        "valid_response_count": 16
+      },
+      "measured_wall_seconds": 0.6027396250283346,
+      "metrics": {
+        "block_mean_output_tokens_per_second": 1698.9093755896042,
+        "block_mean_output_tokens_per_second_ci": {
+          "confidence": 0.95,
+          "high": null,
+          "low": null,
+          "method": "student_t_blocks",
+          "n": 1
+        },
+        "block_mean_requests_per_second": 26.545458993587566,
+        "block_mean_requests_per_second_ci": {
+          "confidence": 0.95,
+          "high": null,
+          "low": null,
+          "method": "student_t_blocks",
+          "n": 1
+        },
+        "completion_tokens": 1024,
+        "cost_metric_basis": "whole-run or active-second cost cannot be allocated to this condition",
+        "cost_per_million_output_tokens": null,
+        "e2e_latency_ms": {
+          "count": 16,
+          "mean": 75.12969537492609,
+          "p50": 75.11331248679198,
+          "p90": 79.70693748211488,
+          "p95": 80.58709373290185,
+          "p95_ci": {
+            "analysis_sample_n": 16,
+            "confidence": 0.95,
+            "high": 81.14687498891726,
+            "low": 78.36054226208944,
+            "method": "bounded_percentile_bootstrap_requests",
+            "n": 16,
+            "resamples": 300
+          },
+          "p95_repeated_block_ci": {
+            "confidence": 0.95,
+            "high": null,
+            "low": null,
+            "method": "student_t_blocks",
+            "n": 1
+          },
+          "p99": 81.03491873771418
+        },
+        "error_rate": 0.0,
+        "independent_ci_unit": "repeated_block",
+        "inter_chunk_latency_ms": {
+          "analysis_sample_count": 32,
+          "analysis_sampling": "all gaps up to 4096, then deterministic reservoir sampling",
+          "count": 32,
+          "mean": 5.573123688009218,
+          "not_equivalent_to_itl": true,
+          "p50": 5.546854488784447,
+          "p90": 6.479887501336635,
+          "p95": 7.076908549061045,
+          "p95_ci": {
+            "analysis_sample_n": 32,
+            "confidence": 0.95,
+            "high": 7.717875007074326,
+            "low": 6.0682499897666276,
+            "method": "bounded_percentile_bootstrap_requests",
+            "n": 32,
+            "resamples": 300
+          },
+          "p99": 7.6813207304803655,
+          "source": "client_observed_nonempty_sse_chunks"
+        },
+        "itl_ms": {
+          "count": 0,
+          "mean": null,
+          "p50": null,
+          "p95": null,
+          "source": "unavailable",
+          "unavailable_reason": "native SSE chunks do not prove token boundaries"
+        },
+        "output_tokens_per_second": 1698.9093755896042,
+        "prompt_tokens": 3760,
+        "requests_per_second": 26.545458993587566,
+        "slo_goodput": null,
+        "tpot_ms": {
+          "count": 16,
+          "mean": 0.1769245615241022,
+          "p50": 0.17566599981075834,
+          "p90": 0.19638029357699294,
+          "p95": 0.2019938808174745,
+          "p95_ci": {
+            "analysis_sample_n": 16,
+            "confidence": 0.95,
+            "high": 0.21052514276807271,
+            "low": 0.18210814261461594,
+            "method": "bounded_percentile_bootstrap_requests",
+            "n": 16,
+            "resamples": 300
+          },
+          "p99": 0.20881889037795306
+        },
+        "ttft_ms": {
+          "count": 16,
+          "mean": 62.01862762827659,
+          "p50": 62.868645996786654,
+          "p90": 65.322083508363,
+          "p95": 66.01878099900205,
+          "p95_ci": {
+            "analysis_sample_n": 16,
+            "confidence": 0.95,
+            "high": 67.68362503498793,
+            "low": 64.99174348027736,
+            "method": "bounded_percentile_bootstrap_requests",
+            "n": 16,
+            "resamples": 300
+          },
+          "p95_repeated_block_ci": {
+            "confidence": 0.95,
+            "high": null,
+            "low": null,
+            "method": "student_t_blocks",
+            "n": 1
+          },
+          "p99": 67.35065622779075
+        },
+        "valid_response_count": 16
+      },
+      "observed_peak_in_flight": 2,
+      "offered_rate_relative_error": null,
+      "open_loop_target_achieved": null,
+      "qualification_floor": {
+        "minimum_blocks": 3,
+        "minimum_valid_requests": 200,
+        "or_minimum_measured_seconds": 60.0
+      },
+      "request_counts": {
+        "attempted": 16,
+        "error_counts": {},
+        "finish_reason_counts": {
+          "stop": 16
+        },
+        "invalid": 0,
+        "status_counts": {
+          "200": 16
+        },
+        "valid": 16
+      },
+      "target_offered_request_rate": null,
+      "valid": true,
+      "warmup": {
+        "attempted": 1,
+        "error_counts": {},
+        "finish_reason_counts": {
+          "stop": 1
+        },
+        "invalid": 0,
+        "status_counts": {
+          "200": 1
+        },
+        "valid": 1
+      }
+    },
+    {
+      "achieved_offered_request_rate": null,
+      "blocks": [
+        {
+          "achieved_offered_request_rate": null,
+          "block_index": 1,
+          "diagnostic_metrics": {
+            "completion_tokens": 1024,
+            "e2e_latency_ms": {
+              "count": 16,
+              "mean": 77.13226312262123,
+              "p50": 77.43535449844785,
+              "p90": 82.55552151240408,
+              "p95": 83.33851076895371,
+              "p95_ci": {
+                "analysis_sample_n": 16,
+                "confidence": 0.95,
+                "high": 83.38291599648073,
+                "low": 80.04295901628211,
+                "method": "bounded_percentile_bootstrap_requests",
+                "n": 16,
+                "resamples": 300
+              },
+              "p99": 83.37403495097533
+            },
+            "error_rate": 0.0,
+            "inter_chunk_latency_ms": {
+              "analysis_sample_count": 32,
+              "analysis_sampling": "all gaps up to 4096, then deterministic reservoir sampling",
+              "count": 32,
+              "mean": 5.709940091037424,
+              "not_equivalent_to_itl": true,
+              "p50": 5.60197900631465,
+              "p90": 7.557233376428485,
+              "p95": 7.651489120326005,
+              "p95_ci": {
+                "analysis_sample_n": 32,
+                "confidence": 0.95,
+                "high": 7.8569999895989895,
+                "low": 6.742148501361953,
+                "method": "bounded_percentile_bootstrap_requests",
+                "n": 32,
+                "resamples": 300
+              },
+              "p99": 7.806753948098049,
+              "source": "client_observed_nonempty_sse_chunks"
+            },
+            "itl_ms": {
+              "count": 0,
+              "mean": null,
+              "p50": null,
+              "p95": null,
+              "source": "unavailable",
+              "unavailable_reason": "native SSE chunks do not prove token boundaries"
+            },
+            "output_tokens_per_second": 3293.444181749598,
+            "prompt_tokens": 3760,
+            "requests_per_second": 51.46006533983747,
+            "slo_goodput": null,
+            "tpot_ms": {
+              "count": 16,
+              "mean": 0.18126793939801347,
+              "p50": 0.1794090637722836,
+              "p90": 0.20994807940922558,
+              "p95": 0.21131762713637378,
+              "p95_ci": {
+                "analysis_sample_n": 16,
+                "confidence": 0.95,
+                "high": 0.2137407455371604,
+                "low": 0.20308621458839515,
+                "method": "bounded_percentile_bootstrap_requests",
+                "n": 16,
+                "resamples": 300
+              },
+              "p99": 0.2132561218570031
+            },
+            "ttft_ms": {
+              "count": 16,
+              "mean": 63.888255248457426,
+              "p50": 63.52718750713393,
+              "p90": 68.52314650313929,
+              "p95": 69.76015675172675,
+              "p95_ci": {
+                "analysis_sample_n": 16,
+                "confidence": 0.95,
+                "high": 71.16737496107817,
+                "low": 66.73039427587355,
+                "method": "bounded_percentile_bootstrap_requests",
+                "n": 16,
+                "resamples": 300
+              },
+              "p99": 70.88593131920788
+            },
+            "valid_response_count": 16
+          },
+          "invalid_reasons": [],
+          "launch_window_seconds": null,
+          "metrics": {
+            "completion_tokens": 1024,
+            "e2e_latency_ms": {
+              "count": 16,
+              "mean": 77.13226312262123,
+              "p50": 77.43535449844785,
+              "p90": 82.55552151240408,
+              "p95": 83.33851076895371,
+              "p95_ci": {
+                "analysis_sample_n": 16,
+                "confidence": 0.95,
+                "high": 83.38291599648073,
+                "low": 80.04295901628211,
+                "method": "bounded_percentile_bootstrap_requests",
+                "n": 16,
+                "resamples": 300
+              },
+              "p99": 83.37403495097533
+            },
+            "error_rate": 0.0,
+            "inter_chunk_latency_ms": {
+              "analysis_sample_count": 32,
+              "analysis_sampling": "all gaps up to 4096, then deterministic reservoir sampling",
+              "count": 32,
+              "mean": 5.709940091037424,
+              "not_equivalent_to_itl": true,
+              "p50": 5.60197900631465,
+              "p90": 7.557233376428485,
+              "p95": 7.651489120326005,
+              "p95_ci": {
+                "analysis_sample_n": 32,
+                "confidence": 0.95,
+                "high": 7.8569999895989895,
+                "low": 6.742148501361953,
+                "method": "bounded_percentile_bootstrap_requests",
+                "n": 32,
+                "resamples": 300
+              },
+              "p99": 7.806753948098049,
+              "source": "client_observed_nonempty_sse_chunks"
+            },
+            "itl_ms": {
+              "count": 0,
+              "mean": null,
+              "p50": null,
+              "p95": null,
+              "source": "unavailable",
+              "unavailable_reason": "native SSE chunks do not prove token boundaries"
+            },
+            "output_tokens_per_second": 3293.444181749598,
+            "prompt_tokens": 3760,
+            "requests_per_second": 51.46006533983747,
+            "slo_goodput": null,
+            "tpot_ms": {
+              "count": 16,
+              "mean": 0.18126793939801347,
+              "p50": 0.1794090637722836,
+              "p90": 0.20994807940922558,
+              "p95": 0.21131762713637378,
+              "p95_ci": {
+                "analysis_sample_n": 16,
+                "confidence": 0.95,
+                "high": 0.2137407455371604,
+                "low": 0.20308621458839515,
+                "method": "bounded_percentile_bootstrap_requests",
+                "n": 16,
+                "resamples": 300
+              },
+              "p99": 0.2132561218570031
+            },
+            "ttft_ms": {
+              "count": 16,
+              "mean": 63.888255248457426,
+              "p50": 63.52718750713393,
+              "p90": 68.52314650313929,
+              "p95": 69.76015675172675,
+              "p95_ci": {
+                "analysis_sample_n": 16,
+                "confidence": 0.95,
+                "high": 71.16737496107817,
+                "low": 66.73039427587355,
+                "method": "bounded_percentile_bootstrap_requests",
+                "n": 16,
+                "resamples": 300
+              },
+              "p99": 70.88593131920788
+            },
+            "valid_response_count": 16
+          },
+          "observed_peak_in_flight": 4,
+          "offered_rate_relative_error": null,
+          "offered_requests": 16,
+          "open_loop_target_achieved": true,
+          "request_counts": {
+            "attempted": 16,
+            "error_counts": {},
+            "finish_reason_counts": {
+              "stop": 16
+            },
+            "invalid": 0,
+            "status_counts": {
+              "200": 16
+            },
+            "valid": 16
+          },
+          "scheduler_lag_interval_ratio_p95": null,
+          "scheduler_lag_ms": {
+            "count": 0,
+            "mean": null,
+            "p50": null,
+            "p90": null,
+            "p95": null,
+            "p95_ci": {
+              "analysis_sample_n": 0,
+              "confidence": 0.95,
+              "high": null,
+              "low": null,
+              "method": "bounded_percentile_bootstrap_requests",
+              "n": 0,
+              "resamples": 300
+            },
+            "p99": null
+          },
+          "target_offered_request_rate": null,
+          "valid": true,
+          "wall_duration_seconds": 0.3109207089873962
+        }
+      ],
+      "condition": {
+        "id": "closed_loop:4",
+        "kind": "closed_loop",
+        "max_in_flight": 4,
+        "value": 4
+      },
+      "decision_grade": false,
+      "decision_ineligible_reasons": [
+        "smoke_mode_is_not_decision_grade"
+      ],
+      "diagnostic_metrics": {
+        "completion_tokens": 1024,
+        "e2e_latency_ms": {
+          "count": 16,
+          "mean": 77.13226312262123,
+          "p50": 77.43535449844785,
+          "p90": 82.55552151240408,
+          "p95": 83.33851076895371,
+          "p95_ci": {
+            "analysis_sample_n": 16,
+            "confidence": 0.95,
+            "high": 83.38291599648073,
+            "low": 80.04295901628211,
+            "method": "bounded_percentile_bootstrap_requests",
+            "n": 16,
+            "resamples": 300
+          },
+          "p95_repeated_block_ci": {
+            "confidence": 0.95,
+            "high": null,
+            "low": null,
+            "method": "student_t_blocks",
+            "n": 1
+          },
+          "p99": 83.37403495097533
+        },
+        "error_rate": 0.0,
+        "inter_chunk_latency_ms": {
+          "analysis_sample_count": 32,
+          "analysis_sampling": "all gaps up to 4096, then deterministic reservoir sampling",
+          "count": 32,
+          "mean": 5.709940091037424,
+          "not_equivalent_to_itl": true,
+          "p50": 5.60197900631465,
+          "p90": 7.557233376428485,
+          "p95": 7.651489120326005,
+          "p95_ci": {
+            "analysis_sample_n": 32,
+            "confidence": 0.95,
+            "high": 7.8569999895989895,
+            "low": 6.742148501361953,
+            "method": "bounded_percentile_bootstrap_requests",
+            "n": 32,
+            "resamples": 300
+          },
+          "p99": 7.806753948098049,
+          "source": "client_observed_nonempty_sse_chunks"
+        },
+        "itl_ms": {
+          "count": 0,
+          "mean": null,
+          "p50": null,
+          "p95": null,
+          "source": "unavailable",
+          "unavailable_reason": "native SSE chunks do not prove token boundaries"
+        },
+        "output_tokens_per_second": 3293.444181749598,
+        "prompt_tokens": 3760,
+        "requests_per_second": 51.46006533983747,
+        "slo_goodput": null,
+        "tpot_ms": {
+          "count": 16,
+          "mean": 0.18126793939801347,
+          "p50": 0.1794090637722836,
+          "p90": 0.20994807940922558,
+          "p95": 0.21131762713637378,
+          "p95_ci": {
+            "analysis_sample_n": 16,
+            "confidence": 0.95,
+            "high": 0.2137407455371604,
+            "low": 0.20308621458839515,
+            "method": "bounded_percentile_bootstrap_requests",
+            "n": 16,
+            "resamples": 300
+          },
+          "p99": 0.2132561218570031
+        },
+        "ttft_ms": {
+          "count": 16,
+          "mean": 63.888255248457426,
+          "p50": 63.52718750713393,
+          "p90": 68.52314650313929,
+          "p95": 69.76015675172675,
+          "p95_ci": {
+            "analysis_sample_n": 16,
+            "confidence": 0.95,
+            "high": 71.16737496107817,
+            "low": 66.73039427587355,
+            "method": "bounded_percentile_bootstrap_requests",
+            "n": 16,
+            "resamples": 300
+          },
+          "p95_repeated_block_ci": {
+            "confidence": 0.95,
+            "high": null,
+            "low": null,
+            "method": "student_t_blocks",
+            "n": 1
+          },
+          "p99": 70.88593131920788
+        },
+        "valid_response_count": 16
+      },
+      "measured_wall_seconds": 0.3109207089873962,
+      "metrics": {
+        "block_mean_output_tokens_per_second": 3293.444181749598,
+        "block_mean_output_tokens_per_second_ci": {
+          "confidence": 0.95,
+          "high": null,
+          "low": null,
+          "method": "student_t_blocks",
+          "n": 1
+        },
+        "block_mean_requests_per_second": 51.46006533983747,
+        "block_mean_requests_per_second_ci": {
+          "confidence": 0.95,
+          "high": null,
+          "low": null,
+          "method": "student_t_blocks",
+          "n": 1
+        },
+        "completion_tokens": 1024,
+        "cost_metric_basis": "whole-run or active-second cost cannot be allocated to this condition",
+        "cost_per_million_output_tokens": null,
+        "e2e_latency_ms": {
+          "count": 16,
+          "mean": 77.13226312262123,
+          "p50": 77.43535449844785,
+          "p90": 82.55552151240408,
+          "p95": 83.33851076895371,
+          "p95_ci": {
+            "analysis_sample_n": 16,
+            "confidence": 0.95,
+            "high": 83.38291599648073,
+            "low": 80.04295901628211,
+            "method": "bounded_percentile_bootstrap_requests",
+            "n": 16,
+            "resamples": 300
+          },
+          "p95_repeated_block_ci": {
+            "confidence": 0.95,
+            "high": null,
+            "low": null,
+            "method": "student_t_blocks",
+            "n": 1
+          },
+          "p99": 83.37403495097533
+        },
+        "error_rate": 0.0,
+        "independent_ci_unit": "repeated_block",
+        "inter_chunk_latency_ms": {
+          "analysis_sample_count": 32,
+          "analysis_sampling": "all gaps up to 4096, then deterministic reservoir sampling",
+          "count": 32,
+          "mean": 5.709940091037424,
+          "not_equivalent_to_itl": true,
+          "p50": 5.60197900631465,
+          "p90": 7.557233376428485,
+          "p95": 7.651489120326005,
+          "p95_ci": {
+            "analysis_sample_n": 32,
+            "confidence": 0.95,
+            "high": 7.8569999895989895,
+            "low": 6.742148501361953,
+            "method": "bounded_percentile_bootstrap_requests",
+            "n": 32,
+            "resamples": 300
+          },
+          "p99": 7.806753948098049,
+          "source": "client_observed_nonempty_sse_chunks"
+        },
+        "itl_ms": {
+          "count": 0,
+          "mean": null,
+          "p50": null,
+          "p95": null,
+          "source": "unavailable",
+          "unavailable_reason": "native SSE chunks do not prove token boundaries"
+        },
+        "output_tokens_per_second": 3293.444181749598,
+        "prompt_tokens": 3760,
+        "requests_per_second": 51.46006533983747,
+        "slo_goodput": null,
+        "tpot_ms": {
+          "count": 16,
+          "mean": 0.18126793939801347,
+          "p50": 0.1794090637722836,
+          "p90": 0.20994807940922558,
+          "p95": 0.21131762713637378,
+          "p95_ci": {
+            "analysis_sample_n": 16,
+            "confidence": 0.95,
+            "high": 0.2137407455371604,
+            "low": 0.20308621458839515,
+            "method": "bounded_percentile_bootstrap_requests",
+            "n": 16,
+            "resamples": 300
+          },
+          "p99": 0.2132561218570031
+        },
+        "ttft_ms": {
+          "count": 16,
+          "mean": 63.888255248457426,
+          "p50": 63.52718750713393,
+          "p90": 68.52314650313929,
+          "p95": 69.76015675172675,
+          "p95_ci": {
+            "analysis_sample_n": 16,
+            "confidence": 0.95,
+            "high": 71.16737496107817,
+            "low": 66.73039427587355,
+            "method": "bounded_percentile_bootstrap_requests",
+            "n": 16,
+            "resamples": 300
+          },
+          "p95_repeated_block_ci": {
+            "confidence": 0.95,
+            "high": null,
+            "low": null,
+            "method": "student_t_blocks",
+            "n": 1
+          },
+          "p99": 70.88593131920788
+        },
+        "valid_response_count": 16
+      },
+      "observed_peak_in_flight": 4,
+      "offered_rate_relative_error": null,
+      "open_loop_target_achieved": null,
+      "qualification_floor": {
+        "minimum_blocks": 3,
+        "minimum_valid_requests": 200,
+        "or_minimum_measured_seconds": 60.0
+      },
+      "request_counts": {
+        "attempted": 16,
+        "error_counts": {},
+        "finish_reason_counts": {
+          "stop": 16
+        },
+        "invalid": 0,
+        "status_counts": {
+          "200": 16
+        },
+        "valid": 16
+      },
+      "target_offered_request_rate": null,
+      "valid": true,
+      "warmup": {
+        "attempted": 1,
+        "error_counts": {},
+        "finish_reason_counts": {
+          "stop": 1
+        },
+        "invalid": 0,
+        "status_counts": {
+          "200": 1
+        },
+        "valid": 1
+      }
+    },
+    {
+      "achieved_offered_request_rate": null,
+      "blocks": [
+        {
+          "achieved_offered_request_rate": null,
+          "block_index": 1,
+          "diagnostic_metrics": {
+            "completion_tokens": 1024,
+            "e2e_latency_ms": {
+              "count": 16,
+              "mean": 88.56728649698198,
+              "p50": 77.0945624972228,
+              "p90": 128.91868749284185,
+              "p95": 173.61859377706423,
+              "p95_ci": {
+                "analysis_sample_n": 16,
+                "confidence": 0.95,
+                "high": 174.09362504258752,
+                "low": 82.45316526335955,
+                "method": "bounded_percentile_bootstrap_requests",
+                "n": 16,
+                "resamples": 300
+              },
+              "p99": 173.99861878948286
+            },
+            "error_rate": 0.0,
+            "inter_chunk_latency_ms": {
+              "analysis_sample_count": 32,
+              "analysis_sampling": "all gaps up to 4096, then deterministic reservoir sampling",
+              "count": 32,
+              "mean": 5.336895750588155,
+              "not_equivalent_to_itl": true,
+              "p50": 5.473708006320521,
+              "p90": 6.248662498546764,
+              "p95": 6.4101186115294695,
+              "p95_ci": {
+                "analysis_sample_n": 32,
+                "confidence": 0.95,
+                "high": 6.761875003576279,
+                "low": 5.994591617054539,
+                "method": "bounded_percentile_bootstrap_requests",
+                "n": 32,
+                "resamples": 300
+              },
+              "p99": 6.675371984601952,
+              "source": "client_observed_nonempty_sse_chunks"
+            },
+            "itl_ms": {
+              "count": 0,
+              "mean": null,
+              "p50": null,
+              "p95": null,
+              "source": "unavailable",
+              "unavailable_reason": "native SSE chunks do not prove token boundaries"
+            },
+            "output_tokens_per_second": 4486.59389112484,
+            "prompt_tokens": 3760,
+            "requests_per_second": 70.10302954882563,
+            "slo_goodput": null,
+            "tpot_ms": {
+              "count": 16,
+              "mean": 0.1694252619234335,
+              "p50": 0.17600032521249165,
+              "p90": 0.18743517492631717,
+              "p95": 0.18993732547165737,
+              "p95_ci": {
+                "analysis_sample_n": 16,
+                "confidence": 0.95,
+                "high": 0.19319973043387845,
+                "low": 0.18506349223325885,
+                "method": "bounded_percentile_bootstrap_requests",
+                "n": 16,
+                "resamples": 300
+              },
+              "p99": 0.19254724944143423
+            },
+            "ttft_ms": {
+              "count": 16,
+              "mean": 76.49015112110646,
+              "p50": 64.93189549655654,
+              "p90": 115.17112498404458,
+              "p95": 160.66982300253585,
+              "p95_ci": {
+                "analysis_sample_n": 16,
+                "confidence": 0.95,
+                "high": 161.3754170248285,
+                "low": 68.36983325774781,
+                "method": "bounded_percentile_bootstrap_requests",
+                "n": 16,
+                "resamples": 300
+              },
+              "p99": 161.23429822036996
+            },
+            "valid_response_count": 16
+          },
+          "invalid_reasons": [],
+          "launch_window_seconds": null,
+          "metrics": {
+            "completion_tokens": 1024,
+            "e2e_latency_ms": {
+              "count": 16,
+              "mean": 88.56728649698198,
+              "p50": 77.0945624972228,
+              "p90": 128.91868749284185,
+              "p95": 173.61859377706423,
+              "p95_ci": {
+                "analysis_sample_n": 16,
+                "confidence": 0.95,
+                "high": 174.09362504258752,
+                "low": 82.45316526335955,
+                "method": "bounded_percentile_bootstrap_requests",
+                "n": 16,
+                "resamples": 300
+              },
+              "p99": 173.99861878948286
+            },
+            "error_rate": 0.0,
+            "inter_chunk_latency_ms": {
+              "analysis_sample_count": 32,
+              "analysis_sampling": "all gaps up to 4096, then deterministic reservoir sampling",
+              "count": 32,
+              "mean": 5.336895750588155,
+              "not_equivalent_to_itl": true,
+              "p50": 5.473708006320521,
+              "p90": 6.248662498546764,
+              "p95": 6.4101186115294695,
+              "p95_ci": {
+                "analysis_sample_n": 32,
+                "confidence": 0.95,
+                "high": 6.761875003576279,
+                "low": 5.994591617054539,
+                "method": "bounded_percentile_bootstrap_requests",
+                "n": 32,
+                "resamples": 300
+              },
+              "p99": 6.675371984601952,
+              "source": "client_observed_nonempty_sse_chunks"
+            },
+            "itl_ms": {
+              "count": 0,
+              "mean": null,
+              "p50": null,
+              "p95": null,
+              "source": "unavailable",
+              "unavailable_reason": "native SSE chunks do not prove token boundaries"
+            },
+            "output_tokens_per_second": 4486.59389112484,
+            "prompt_tokens": 3760,
+            "requests_per_second": 70.10302954882563,
+            "slo_goodput": null,
+            "tpot_ms": {
+              "count": 16,
+              "mean": 0.1694252619234335,
+              "p50": 0.17600032521249165,
+              "p90": 0.18743517492631717,
+              "p95": 0.18993732547165737,
+              "p95_ci": {
+                "analysis_sample_n": 16,
+                "confidence": 0.95,
+                "high": 0.19319973043387845,
+                "low": 0.18506349223325885,
+                "method": "bounded_percentile_bootstrap_requests",
+                "n": 16,
+                "resamples": 300
+              },
+              "p99": 0.19254724944143423
+            },
+            "ttft_ms": {
+              "count": 16,
+              "mean": 76.49015112110646,
+              "p50": 64.93189549655654,
+              "p90": 115.17112498404458,
+              "p95": 160.66982300253585,
+              "p95_ci": {
+                "analysis_sample_n": 16,
+                "confidence": 0.95,
+                "high": 161.3754170248285,
+                "low": 68.36983325774781,
+                "method": "bounded_percentile_bootstrap_requests",
+                "n": 16,
+                "resamples": 300
+              },
+              "p99": 161.23429822036996
+            },
+            "valid_response_count": 16
+          },
+          "observed_peak_in_flight": 8,
+          "offered_rate_relative_error": null,
+          "offered_requests": 16,
+          "open_loop_target_achieved": true,
+          "request_counts": {
+            "attempted": 16,
+            "error_counts": {},
+            "finish_reason_counts": {
+              "stop": 16
+            },
+            "invalid": 0,
+            "status_counts": {
+              "200": 16
+            },
+            "valid": 16
+          },
+          "scheduler_lag_interval_ratio_p95": null,
+          "scheduler_lag_ms": {
+            "count": 0,
+            "mean": null,
+            "p50": null,
+            "p90": null,
+            "p95": null,
+            "p95_ci": {
+              "analysis_sample_n": 0,
+              "confidence": 0.95,
+              "high": null,
+              "low": null,
+              "method": "bounded_percentile_bootstrap_requests",
+              "n": 0,
+              "resamples": 300
+            },
+            "p99": null
+          },
+          "target_offered_request_rate": null,
+          "valid": true,
+          "wall_duration_seconds": 0.22823549999156967
+        }
+      ],
+      "condition": {
+        "id": "closed_loop:8",
+        "kind": "closed_loop",
+        "max_in_flight": 8,
+        "value": 8
+      },
+      "decision_grade": false,
+      "decision_ineligible_reasons": [
+        "smoke_mode_is_not_decision_grade"
+      ],
+      "diagnostic_metrics": {
+        "completion_tokens": 1024,
+        "e2e_latency_ms": {
+          "count": 16,
+          "mean": 88.56728649698198,
+          "p50": 77.0945624972228,
+          "p90": 128.91868749284185,
+          "p95": 173.61859377706423,
+          "p95_ci": {
+            "analysis_sample_n": 16,
+            "confidence": 0.95,
+            "high": 174.09362504258752,
+            "low": 82.45316526335955,
+            "method": "bounded_percentile_bootstrap_requests",
+            "n": 16,
+            "resamples": 300
+          },
+          "p95_repeated_block_ci": {
+            "confidence": 0.95,
+            "high": null,
+            "low": null,
+            "method": "student_t_blocks",
+            "n": 1
+          },
+          "p99": 173.99861878948286
+        },
+        "error_rate": 0.0,
+        "inter_chunk_latency_ms": {
+          "analysis_sample_count": 32,
+          "analysis_sampling": "all gaps up to 4096, then deterministic reservoir sampling",
+          "count": 32,
+          "mean": 5.336895750588155,
+          "not_equivalent_to_itl": true,
+          "p50": 5.473708006320521,
+          "p90": 6.248662498546764,
+          "p95": 6.4101186115294695,
+          "p95_ci": {
+            "analysis_sample_n": 32,
+            "confidence": 0.95,
+            "high": 6.761875003576279,
+            "low": 5.994591617054539,
+            "method": "bounded_percentile_bootstrap_requests",
+            "n": 32,
+            "resamples": 300
+          },
+          "p99": 6.675371984601952,
+          "source": "client_observed_nonempty_sse_chunks"
+        },
+        "itl_ms": {
+          "count": 0,
+          "mean": null,
+          "p50": null,
+          "p95": null,
+          "source": "unavailable",
+          "unavailable_reason": "native SSE chunks do not prove token boundaries"
+        },
+        "output_tokens_per_second": 4486.59389112484,
+        "prompt_tokens": 3760,
+        "requests_per_second": 70.10302954882563,
+        "slo_goodput": null,
+        "tpot_ms": {
+          "count": 16,
+          "mean": 0.1694252619234335,
+          "p50": 0.17600032521249165,
+          "p90": 0.18743517492631717,
+          "p95": 0.18993732547165737,
+          "p95_ci": {
+            "analysis_sample_n": 16,
+            "confidence": 0.95,
+            "high": 0.19319973043387845,
+            "low": 0.18506349223325885,
+            "method": "bounded_percentile_bootstrap_requests",
+            "n": 16,
+            "resamples": 300
+          },
+          "p99": 0.19254724944143423
+        },
+        "ttft_ms": {
+          "count": 16,
+          "mean": 76.49015112110646,
+          "p50": 64.93189549655654,
+          "p90": 115.17112498404458,
+          "p95": 160.66982300253585,
+          "p95_ci": {
+            "analysis_sample_n": 16,
+            "confidence": 0.95,
+            "high": 161.3754170248285,
+            "low": 68.36983325774781,
+            "method": "bounded_percentile_bootstrap_requests",
+            "n": 16,
+            "resamples": 300
+          },
+          "p95_repeated_block_ci": {
+            "confidence": 0.95,
+            "high": null,
+            "low": null,
+            "method": "student_t_blocks",
+            "n": 1
+          },
+          "p99": 161.23429822036996
+        },
+        "valid_response_count": 16
+      },
+      "measured_wall_seconds": 0.22823549999156967,
+      "metrics": {
+        "block_mean_output_tokens_per_second": 4486.59389112484,
+        "block_mean_output_tokens_per_second_ci": {
+          "confidence": 0.95,
+          "high": null,
+          "low": null,
+          "method": "student_t_blocks",
+          "n": 1
+        },
+        "block_mean_requests_per_second": 70.10302954882563,
+        "block_mean_requests_per_second_ci": {
+          "confidence": 0.95,
+          "high": null,
+          "low": null,
+          "method": "student_t_blocks",
+          "n": 1
+        },
+        "completion_tokens": 1024,
+        "cost_metric_basis": "whole-run or active-second cost cannot be allocated to this condition",
+        "cost_per_million_output_tokens": null,
+        "e2e_latency_ms": {
+          "count": 16,
+          "mean": 88.56728649698198,
+          "p50": 77.0945624972228,
+          "p90": 128.91868749284185,
+          "p95": 173.61859377706423,
+          "p95_ci": {
+            "analysis_sample_n": 16,
+            "confidence": 0.95,
+            "high": 174.09362504258752,
+            "low": 82.45316526335955,
+            "method": "bounded_percentile_bootstrap_requests",
+            "n": 16,
+            "resamples": 300
+          },
+          "p95_repeated_block_ci": {
+            "confidence": 0.95,
+            "high": null,
+            "low": null,
+            "method": "student_t_blocks",
+            "n": 1
+          },
+          "p99": 173.99861878948286
+        },
+        "error_rate": 0.0,
+        "independent_ci_unit": "repeated_block",
+        "inter_chunk_latency_ms": {
+          "analysis_sample_count": 32,
+          "analysis_sampling": "all gaps up to 4096, then deterministic reservoir sampling",
+          "count": 32,
+          "mean": 5.336895750588155,
+          "not_equivalent_to_itl": true,
+          "p50": 5.473708006320521,
+          "p90": 6.248662498546764,
+          "p95": 6.4101186115294695,
+          "p95_ci": {
+            "analysis_sample_n": 32,
+            "confidence": 0.95,
+            "high": 6.761875003576279,
+            "low": 5.994591617054539,
+            "method": "bounded_percentile_bootstrap_requests",
+            "n": 32,
+            "resamples": 300
+          },
+          "p99": 6.675371984601952,
+          "source": "client_observed_nonempty_sse_chunks"
+        },
+        "itl_ms": {
+          "count": 0,
+          "mean": null,
+          "p50": null,
+          "p95": null,
+          "source": "unavailable",
+          "unavailable_reason": "native SSE chunks do not prove token boundaries"
+        },
+        "output_tokens_per_second": 4486.59389112484,
+        "prompt_tokens": 3760,
+        "requests_per_second": 70.10302954882563,
+        "slo_goodput": null,
+        "tpot_ms": {
+          "count": 16,
+          "mean": 0.1694252619234335,
+          "p50": 0.17600032521249165,
+          "p90": 0.18743517492631717,
+          "p95": 0.18993732547165737,
+          "p95_ci": {
+            "analysis_sample_n": 16,
+            "confidence": 0.95,
+            "high": 0.19319973043387845,
+            "low": 0.18506349223325885,
+            "method": "bounded_percentile_bootstrap_requests",
+            "n": 16,
+            "resamples": 300
+          },
+          "p99": 0.19254724944143423
+        },
+        "ttft_ms": {
+          "count": 16,
+          "mean": 76.49015112110646,
+          "p50": 64.93189549655654,
+          "p90": 115.17112498404458,
+          "p95": 160.66982300253585,
+          "p95_ci": {
+            "analysis_sample_n": 16,
+            "confidence": 0.95,
+            "high": 161.3754170248285,
+            "low": 68.36983325774781,
+            "method": "bounded_percentile_bootstrap_requests",
+            "n": 16,
+            "resamples": 300
+          },
+          "p95_repeated_block_ci": {
+            "confidence": 0.95,
+            "high": null,
+            "low": null,
+            "method": "student_t_blocks",
+            "n": 1
+          },
+          "p99": 161.23429822036996
+        },
+        "valid_response_count": 16
+      },
+      "observed_peak_in_flight": 8,
+      "offered_rate_relative_error": null,
+      "open_loop_target_achieved": null,
+      "qualification_floor": {
+        "minimum_blocks": 3,
+        "minimum_valid_requests": 200,
+        "or_minimum_measured_seconds": 60.0
+      },
+      "request_counts": {
+        "attempted": 16,
+        "error_counts": {},
+        "finish_reason_counts": {
+          "stop": 16
+        },
+        "invalid": 0,
+        "status_counts": {
+          "200": 16
+        },
+        "valid": 16
+      },
+      "target_offered_request_rate": null,
+      "valid": true,
+      "warmup": {
+        "attempted": 1,
+        "error_counts": {},
+        "finish_reason_counts": {
+          "stop": 1
+        },
+        "invalid": 0,
+        "status_counts": {
+          "200": 1
+        },
+        "valid": 1
+      }
+    },
+    {
+      "achieved_offered_request_rate": null,
+      "blocks": [
+        {
+          "achieved_offered_request_rate": null,
+          "block_index": 1,
+          "diagnostic_metrics": {
+            "completion_tokens": 1024,
+            "e2e_latency_ms": {
+              "count": 16,
+              "mean": 96.86565880474518,
+              "p50": 87.8678954904899,
+              "p90": 136.06018750579096,
+              "p95": 139.8893645091448,
+              "p95_ci": {
+                "analysis_sample_n": 16,
+                "confidence": 0.95,
+                "high": 141.66645798832178,
+                "low": 94.14283296791837,
+                "method": "bounded_percentile_bootstrap_requests",
+                "n": 16,
+                "resamples": 300
+              },
+              "p99": 141.31103929248638
+            },
+            "error_rate": 0.0,
+            "inter_chunk_latency_ms": {
+              "analysis_sample_count": 32,
+              "analysis_sampling": "all gaps up to 4096, then deterministic reservoir sampling",
+              "count": 32,
+              "mean": 6.207161561178509,
+              "not_equivalent_to_itl": true,
+              "p50": 5.656229477608576,
+              "p90": 8.734941703733059,
+              "p95": 9.41786062612664,
+              "p95_ci": {
+                "analysis_sample_n": 32,
+                "confidence": 0.95,
+                "high": 9.701584000140429,
+                "low": 7.306479359976947,
+                "method": "bounded_percentile_bootstrap_requests",
+                "n": 32,
+                "resamples": 300
+              },
+              "p99": 9.6717204694869,
+              "source": "client_observed_nonempty_sse_chunks"
+            },
+            "itl_ms": {
+              "count": 0,
+              "mean": null,
+              "p50": null,
+              "p95": null,
+              "source": "unavailable",
+              "unavailable_reason": "native SSE chunks do not prove token boundaries"
+            },
+            "output_tokens_per_second": 6979.920500060467,
+            "prompt_tokens": 3760,
+            "requests_per_second": 109.0612578134448,
+            "slo_goodput": null,
+            "tpot_ms": {
+              "count": 16,
+              "mean": 0.19705274797392092,
+              "p50": 0.18877711097177652,
+              "p90": 0.2677149521852178,
+              "p95": 0.27603092432458187,
+              "p95_ci": {
+                "analysis_sample_n": 16,
+                "confidence": 0.95,
+                "high": 0.2995205087779415,
+                "low": 0.20945966631794968,
+                "method": "bounded_percentile_bootstrap_requests",
+                "n": 16,
+                "resamples": 300
+              },
+              "p99": 0.29482259188726956
+            },
+            "ttft_ms": {
+              "count": 16,
+              "mean": 83.24498687579762,
+              "p50": 75.07806297508068,
+              "p90": 117.05516651272774,
+              "p95": 122.02811476890929,
+              "p95_ci": {
+                "analysis_sample_n": 16,
+                "confidence": 0.95,
+                "high": 123.84033296257257,
+                "low": 85.26165049624979,
+                "method": "bounded_percentile_bootstrap_requests",
+                "n": 16,
+                "resamples": 300
+              },
+              "p99": 123.47788932383992
+            },
+            "valid_response_count": 16
+          },
+          "invalid_reasons": [],
+          "launch_window_seconds": null,
+          "metrics": {
+            "completion_tokens": 1024,
+            "e2e_latency_ms": {
+              "count": 16,
+              "mean": 96.86565880474518,
+              "p50": 87.8678954904899,
+              "p90": 136.06018750579096,
+              "p95": 139.8893645091448,
+              "p95_ci": {
+                "analysis_sample_n": 16,
+                "confidence": 0.95,
+                "high": 141.66645798832178,
+                "low": 94.14283296791837,
+                "method": "bounded_percentile_bootstrap_requests",
+                "n": 16,
+                "resamples": 300
+              },
+              "p99": 141.31103929248638
+            },
+            "error_rate": 0.0,
+            "inter_chunk_latency_ms": {
+              "analysis_sample_count": 32,
+              "analysis_sampling": "all gaps up to 4096, then deterministic reservoir sampling",
+              "count": 32,
+              "mean": 6.207161561178509,
+              "not_equivalent_to_itl": true,
+              "p50": 5.656229477608576,
+              "p90": 8.734941703733059,
+              "p95": 9.41786062612664,
+              "p95_ci": {
+                "analysis_sample_n": 32,
+                "confidence": 0.95,
+                "high": 9.701584000140429,
+                "low": 7.306479359976947,
+                "method": "bounded_percentile_bootstrap_requests",
+                "n": 32,
+                "resamples": 300
+              },
+              "p99": 9.6717204694869,
+              "source": "client_observed_nonempty_sse_chunks"
+            },
+            "itl_ms": {
+              "count": 0,
+              "mean": null,
+              "p50": null,
+              "p95": null,
+              "source": "unavailable",
+              "unavailable_reason": "native SSE chunks do not prove token boundaries"
+            },
+            "output_tokens_per_second": 6979.920500060467,
+            "prompt_tokens": 3760,
+            "requests_per_second": 109.0612578134448,
+            "slo_goodput": null,
+            "tpot_ms": {
+              "count": 16,
+              "mean": 0.19705274797392092,
+              "p50": 0.18877711097177652,
+              "p90": 0.2677149521852178,
+              "p95": 0.27603092432458187,
+              "p95_ci": {
+                "analysis_sample_n": 16,
+                "confidence": 0.95,
+                "high": 0.2995205087779415,
+                "low": 0.20945966631794968,
+                "method": "bounded_percentile_bootstrap_requests",
+                "n": 16,
+                "resamples": 300
+              },
+              "p99": 0.29482259188726956
+            },
+            "ttft_ms": {
+              "count": 16,
+              "mean": 83.24498687579762,
+              "p50": 75.07806297508068,
+              "p90": 117.05516651272774,
+              "p95": 122.02811476890929,
+              "p95_ci": {
+                "analysis_sample_n": 16,
+                "confidence": 0.95,
+                "high": 123.84033296257257,
+                "low": 85.26165049624979,
+                "method": "bounded_percentile_bootstrap_requests",
+                "n": 16,
+                "resamples": 300
+              },
+              "p99": 123.47788932383992
+            },
+            "valid_response_count": 16
+          },
+          "observed_peak_in_flight": 16,
+          "offered_rate_relative_error": null,
+          "offered_requests": 16,
+          "open_loop_target_achieved": true,
+          "request_counts": {
+            "attempted": 16,
+            "error_counts": {},
+            "finish_reason_counts": {
+              "stop": 16
+            },
+            "invalid": 0,
+            "status_counts": {
+              "200": 16
+            },
+            "valid": 16
+          },
+          "scheduler_lag_interval_ratio_p95": null,
+          "scheduler_lag_ms": {
+            "count": 0,
+            "mean": null,
+            "p50": null,
+            "p90": null,
+            "p95": null,
+            "p95_ci": {
+              "analysis_sample_n": 0,
+              "confidence": 0.95,
+              "high": null,
+              "low": null,
+              "method": "bounded_percentile_bootstrap_requests",
+              "n": 0,
+              "resamples": 300
+            },
+            "p99": null
+          },
+          "target_offered_request_rate": null,
+          "valid": true,
+          "wall_duration_seconds": 0.14670654200017452
+        }
+      ],
+      "condition": {
+        "id": "closed_loop:16",
+        "kind": "closed_loop",
+        "max_in_flight": 16,
+        "value": 16
+      },
+      "decision_grade": false,
+      "decision_ineligible_reasons": [
+        "smoke_mode_is_not_decision_grade"
+      ],
+      "diagnostic_metrics": {
+        "completion_tokens": 1024,
+        "e2e_latency_ms": {
+          "count": 16,
+          "mean": 96.86565880474518,
+          "p50": 87.8678954904899,
+          "p90": 136.06018750579096,
+          "p95": 139.8893645091448,
+          "p95_ci": {
+            "analysis_sample_n": 16,
+            "confidence": 0.95,
+            "high": 141.66645798832178,
+            "low": 94.14283296791837,
+            "method": "bounded_percentile_bootstrap_requests",
+            "n": 16,
+            "resamples": 300
+          },
+          "p95_repeated_block_ci": {
+            "confidence": 0.95,
+            "high": null,
+            "low": null,
+            "method": "student_t_blocks",
+            "n": 1
+          },
+          "p99": 141.31103929248638
+        },
+        "error_rate": 0.0,
+        "inter_chunk_latency_ms": {
+          "analysis_sample_count": 32,
+          "analysis_sampling": "all gaps up to 4096, then deterministic reservoir sampling",
+          "count": 32,
+          "mean": 6.207161561178509,
+          "not_equivalent_to_itl": true,
+          "p50": 5.656229477608576,
+          "p90": 8.734941703733059,
+          "p95": 9.41786062612664,
+          "p95_ci": {
+            "analysis_sample_n": 32,
+            "confidence": 0.95,
+            "high": 9.701584000140429,
+            "low": 7.306479359976947,
+            "method": "bounded_percentile_bootstrap_requests",
+            "n": 32,
+            "resamples": 300
+          },
+          "p99": 9.6717204694869,
+          "source": "client_observed_nonempty_sse_chunks"
+        },
+        "itl_ms": {
+          "count": 0,
+          "mean": null,
+          "p50": null,
+          "p95": null,
+          "source": "unavailable",
+          "unavailable_reason": "native SSE chunks do not prove token boundaries"
+        },
+        "output_tokens_per_second": 6979.920500060467,
+        "prompt_tokens": 3760,
+        "requests_per_second": 109.0612578134448,
+        "slo_goodput": null,
+        "tpot_ms": {
+          "count": 16,
+          "mean": 0.19705274797392092,
+          "p50": 0.18877711097177652,
+          "p90": 0.2677149521852178,
+          "p95": 0.27603092432458187,
+          "p95_ci": {
+            "analysis_sample_n": 16,
+            "confidence": 0.95,
+            "high": 0.2995205087779415,
+            "low": 0.20945966631794968,
+            "method": "bounded_percentile_bootstrap_requests",
+            "n": 16,
+            "resamples": 300
+          },
+          "p99": 0.29482259188726956
+        },
+        "ttft_ms": {
+          "count": 16,
+          "mean": 83.24498687579762,
+          "p50": 75.07806297508068,
+          "p90": 117.05516651272774,
+          "p95": 122.02811476890929,
+          "p95_ci": {
+            "analysis_sample_n": 16,
+            "confidence": 0.95,
+            "high": 123.84033296257257,
+            "low": 85.26165049624979,
+            "method": "bounded_percentile_bootstrap_requests",
+            "n": 16,
+            "resamples": 300
+          },
+          "p95_repeated_block_ci": {
+            "confidence": 0.95,
+            "high": null,
+            "low": null,
+            "method": "student_t_blocks",
+            "n": 1
+          },
+          "p99": 123.47788932383992
+        },
+        "valid_response_count": 16
+      },
+      "measured_wall_seconds": 0.14670654200017452,
+      "metrics": {
+        "block_mean_output_tokens_per_second": 6979.920500060467,
+        "block_mean_output_tokens_per_second_ci": {
+          "confidence": 0.95,
+          "high": null,
+          "low": null,
+          "method": "student_t_blocks",
+          "n": 1
+        },
+        "block_mean_requests_per_second": 109.0612578134448,
+        "block_mean_requests_per_second_ci": {
+          "confidence": 0.95,
+          "high": null,
+          "low": null,
+          "method": "student_t_blocks",
+          "n": 1
+        },
+        "completion_tokens": 1024,
+        "cost_metric_basis": "whole-run or active-second cost cannot be allocated to this condition",
+        "cost_per_million_output_tokens": null,
+        "e2e_latency_ms": {
+          "count": 16,
+          "mean": 96.86565880474518,
+          "p50": 87.8678954904899,
+          "p90": 136.06018750579096,
+          "p95": 139.8893645091448,
+          "p95_ci": {
+            "analysis_sample_n": 16,
+            "confidence": 0.95,
+            "high": 141.66645798832178,
+            "low": 94.14283296791837,
+            "method": "bounded_percentile_bootstrap_requests",
+            "n": 16,
+            "resamples": 300
+          },
+          "p95_repeated_block_ci": {
+            "confidence": 0.95,
+            "high": null,
+            "low": null,
+            "method": "student_t_blocks",
+            "n": 1
+          },
+          "p99": 141.31103929248638
+        },
+        "error_rate": 0.0,
+        "independent_ci_unit": "repeated_block",
+        "inter_chunk_latency_ms": {
+          "analysis_sample_count": 32,
+          "analysis_sampling": "all gaps up to 4096, then deterministic reservoir sampling",
+          "count": 32,
+          "mean": 6.207161561178509,
+          "not_equivalent_to_itl": true,
+          "p50": 5.656229477608576,
+          "p90": 8.734941703733059,
+          "p95": 9.41786062612664,
+          "p95_ci": {
+            "analysis_sample_n": 32,
+            "confidence": 0.95,
+            "high": 9.701584000140429,
+            "low": 7.306479359976947,
+            "method": "bounded_percentile_bootstrap_requests",
+            "n": 32,
+            "resamples": 300
+          },
+          "p99": 9.6717204694869,
+          "source": "client_observed_nonempty_sse_chunks"
+        },
+        "itl_ms": {
+          "count": 0,
+          "mean": null,
+          "p50": null,
+          "p95": null,
+          "source": "unavailable",
+          "unavailable_reason": "native SSE chunks do not prove token boundaries"
+        },
+        "output_tokens_per_second": 6979.920500060467,
+        "prompt_tokens": 3760,
+        "requests_per_second": 109.0612578134448,
+        "slo_goodput": null,
+        "tpot_ms": {
+          "count": 16,
+          "mean": 0.19705274797392092,
+          "p50": 0.18877711097177652,
+          "p90": 0.2677149521852178,
+          "p95": 0.27603092432458187,
+          "p95_ci": {
+            "analysis_sample_n": 16,
+            "confidence": 0.95,
+            "high": 0.2995205087779415,
+            "low": 0.20945966631794968,
+            "method": "bounded_percentile_bootstrap_requests",
+            "n": 16,
+            "resamples": 300
+          },
+          "p99": 0.29482259188726956
+        },
+        "ttft_ms": {
+          "count": 16,
+          "mean": 83.24498687579762,
+          "p50": 75.07806297508068,
+          "p90": 117.05516651272774,
+          "p95": 122.02811476890929,
+          "p95_ci": {
+            "analysis_sample_n": 16,
+            "confidence": 0.95,
+            "high": 123.84033296257257,
+            "low": 85.26165049624979,
+            "method": "bounded_percentile_bootstrap_requests",
+            "n": 16,
+            "resamples": 300
+          },
+          "p95_repeated_block_ci": {
+            "confidence": 0.95,
+            "high": null,
+            "low": null,
+            "method": "student_t_blocks",
+            "n": 1
+          },
+          "p99": 123.47788932383992
+        },
+        "valid_response_count": 16
+      },
+      "observed_peak_in_flight": 16,
+      "offered_rate_relative_error": null,
+      "open_loop_target_achieved": null,
+      "qualification_floor": {
+        "minimum_blocks": 3,
+        "minimum_valid_requests": 200,
+        "or_minimum_measured_seconds": 60.0
+      },
+      "request_counts": {
+        "attempted": 16,
+        "error_counts": {},
+        "finish_reason_counts": {
+          "stop": 16
+        },
+        "invalid": 0,
+        "status_counts": {
+          "200": 16
+        },
+        "valid": 16
+      },
+      "target_offered_request_rate": null,
+      "valid": true,
+      "warmup": {
+        "attempted": 1,
+        "error_counts": {},
+        "finish_reason_counts": {
+          "stop": 1
+        },
+        "invalid": 0,
+        "status_counts": {
+          "200": 1
+        },
+        "valid": 1
+      }
+    }
+  ],
+  "cost_summary": {
+    "basis": "billing_unknown",
+    "completion_tokens": 5120,
+    "cost_per_million_output_tokens": null,
+    "kind": "unknown",
+    "total_cost": null
+  },
+  "decision_eligible": false,
+  "decision_ineligible_reasons": [
+    "best_tested_result_is_not_statistically_supported",
+    "complete_runtime_provenance_required",
+    "immutable_image_digest_required",
+    "immutable_model_revision_required",
+    "live_inference_evidence_required",
+    "one_or_more_conditions_are_not_decision_grade",
+    "runtime_verified_engine_flags_required",
+    "smoke_mode_is_not_decision_grade"
+  ],
+  "disclaimer": "Measurements describe only this exact workload and declared manifest. They are not a universal optimization, production recommendation, or savings claim.",
+  "generated_at": "2026-08-17T08:04:05.187949+00:00",
+  "manifest": {
+    "cost": {
+      "accounting_basis": "unknown; no cost metric calculated",
+      "currency": "USD",
+      "kind": "unknown",
+      "pre_run_upper_bound": null
+    },
+    "engine": {
+      "backend": "native",
+      "backend_version": "native-protocol-1",
+      "effective_flags": {},
+      "effective_flags_provenance": "operator_attested",
+      "http_client_version": "0.28.1",
+      "server_version": "unknown"
+    },
+    "manifest_version": "1.0",
+    "metric_definitions": {
+      "decision_throughput": "arithmetic mean of repeated-block output-token throughput, paired with its Student-t block interval; pooled tokens/wall remains separately reported",
+      "e2e_latency": "client request start through validated terminal stream completion",
+      "inter_chunk_latency": "client-observed gap between nonempty SSE output chunks; explicitly not ITL",
+      "itl": "unavailable in native mode because SSE chunks do not prove token boundaries",
+      "slo_decision_ci": "Student-t 95% interval over repeated-block p95 values; request-bootstrap percentile intervals are diagnostic only",
+      "slo_goodput": "validated requests meeting every configured per-request SLO divided by measured block wall time",
+      "throughput": "validated completion tokens divided by measured block wall time",
+      "tpot": "first-to-last output-bearing SSE delta divided by completion-token gaps; unavailable unless at least two output-bearing SSE events are observed",
+      "ttft": "client request start to first non-whitespace output-bearing SSE delta; role-only chunks are ignored"
+    },
+    "model": {
+      "id": "fixture-model",
+      "immutable_revision": "unknown"
+    },
+    "optimization_credit_exclusions": [],
+    "provenance": {
+      "evidence_source": "synthetic_validation",
+      "sequence_position": "unspecified",
+      "variant": "unspecified"
+    },
+    "request": {
+      "max_tokens": 64,
+      "stop": null,
+      "stream": true,
+      "temperature": 0,
+      "timeout_seconds": 3.0,
+      "type": "chat_completions"
+    },
+    "runtime": {
+      "cuda_version": "unknown",
+      "driver_version": "unknown",
+      "gpu": "unknown",
+      "gpu_fingerprint_sha256": "b23a6a8439c0dde5515893e7c90c1e3233b8616e634470f20dc4928bcf3609bc",
+      "gpu_fingerprint_supplied": false,
+      "image_digest": "unknown"
+    },
+    "safety": {
+      "ambient_proxy_environment_used": false,
+      "limits": {
+        "max_concurrency": 16,
+        "max_elapsed_seconds": 30.0,
+        "max_errors": 1,
+        "max_estimated_spend": 1.0,
+        "max_requests": 85,
+        "max_response_bytes": 65536,
+        "max_tokens_per_request": 64,
+        "max_total_requested_tokens": 5440
+      },
+      "overrides": {
+        "guidellm_validation_gaps_acknowledged": false,
+        "insecure_http": false,
+        "unknown_cost_acknowledged": true
+      },
+      "redirects_followed": false
+    },
+    "tool": {
+      "name": "throttle-bench",
+      "version": "0.2.0"
+    },
+    "traffic": {
+      "block_duration_seconds": null,
+      "blocks": 1,
+      "conditions": [
+        {
+          "id": "closed_loop:1",
+          "kind": "closed_loop",
+          "max_in_flight": 1,
+          "value": 1
+        },
+        {
+          "id": "closed_loop:2",
+          "kind": "closed_loop",
+          "max_in_flight": 2,
+          "value": 2
+        },
+        {
+          "id": "closed_loop:4",
+          "kind": "closed_loop",
+          "max_in_flight": 4,
+          "value": 4
+        },
+        {
+          "id": "closed_loop:8",
+          "kind": "closed_loop",
+          "max_in_flight": 8,
+          "value": 8
+        },
+        {
+          "id": "closed_loop:16",
+          "kind": "closed_loop",
+          "max_in_flight": 16,
+          "value": 16
+        }
+      ],
+      "open_loop_rate_relative_tolerance": 0.05,
+      "open_loop_scheduler_lag_interval_tolerance": 1.0,
+      "p95_slo_ms": null,
+      "requests_per_block": 16,
+      "ttft_slo_ms": null,
+      "warmup_requests_per_condition": 1
+    },
+    "workload": {
+      "cache_policy": "disabled",
+      "measured_prompt_count": 4,
+      "measured_sha256": "7a9e6b8e6ee297202eb143e3066ef77880d03ca941bd39b652f277f1e549e24c",
+      "seed": 424242,
+      "warmup_is_separate": true,
+      "warmup_prompt_count": 1,
+      "warmup_prompts_disjoint": true,
+      "warmup_sha256": "6d71b34cafa2f9c0c691240f50031c9e252957e94204188d8f231156ac8bfe32"
+    }
+  },
+  "mode": "smoke",
+  "run_totals": {
+    "elapsed_seconds": 3.067166583961807,
+    "errors": 0,
+    "peak_in_flight": 16,
+    "requests_cancelled": 0,
+    "requests_completed": 85,
+    "requests_in_flight": 0,
+    "requests_started": 85,
+    "reserved_output_tokens": 5440
+  },
+  "schema_version": "2.0",
+  "started_at": "2026-08-17T08:04:05.188117+00:00",
+  "status": "complete",
+  "stop_reason": null
+}

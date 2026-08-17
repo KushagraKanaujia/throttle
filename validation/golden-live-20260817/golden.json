@@ -1,0 +1,55 @@
+{
+  "artifact_type": "throttle_golden_live_comparison",
+  "conditions": [
+    {
+      "completion_token_relative_difference": 0.0,
+      "completion_token_relative_spread_across_positions": 0.0,
+      "completion_token_tolerance": 0.05,
+      "condition_id": "closed_loop:8",
+      "independent_unit": "two order-balanced B-C-B / C-B-C phase contrasts; each position contains >=3 measured blocks",
+      "maximum_block_completion_token_relative_spread_across_positions": 0.0,
+      "outcome": "candidate_higher_throughput",
+      "reason": null,
+      "state": "supported",
+      "throughput_delta_percent_ci": {
+        "confidence": 0.95,
+        "estimate": 217.84686281585408,
+        "high": 246.22448155696594,
+        "low": 189.46924407474222,
+        "method": "order_balanced_phase_contrasts",
+        "n": 2
+      }
+    }
+  ],
+  "decision_eligible": true,
+  "decision_state": "supported",
+  "disclaimer": "This order-balanced live result applies only to the pinned manifest and tested workload; it is not a savings projection or universal causal claim.",
+  "eligibility_reasons": [],
+  "generated_at": "2026-08-17T05:00:07.742967+00:00",
+  "golden_protocol_eligible": true,
+  "optimization_credit": {
+    "changed_flag": "max_num_seqs",
+    "chunked_prefill_credited": false
+  },
+  "overall_outcome": "candidate_higher_throughput",
+  "run_fingerprints": [
+    "87ecef3ace0dbe598207cb55feadc33189a13122737c2b0c9bd19a11a07c54ac",
+    "dbb3df2db2bb939ddeeb5dd117d86e8693a2acde7fbe45276c09325b47906099",
+    "858d87848f4f6a65f7f0ca16c6af4c69c19d1b05c2fa33f7c213b21fd18dd5d1",
+    "522a254931c6409cb7353f888d9c2ea06507d495e13723de4bc207899454d214",
+    "5e431a8471db5a1b78273a3be9d724a508a751efe46e0cb56c0bf14507ea2a3a",
+    "7f998e1fe3dac40e844bc01bf2c9e92a27f7179f8485f18664c380875c1d7931"
+  ],
+  "schema_version": "2.0",
+  "sequence": [
+    "baseline",
+    "candidate",
+    "baseline",
+    "candidate",
+    "baseline",
+    "candidate"
+  ],
+  "status": "complete",
+  "tool_version": "0.2.0",
+  "verification_scope": "Throttle validates internal report consistency, ordering, pins, and declared runtime-verified provenance. It cannot independently prove operator-supplied hardware or runtime attestations; retain external audit evidence."
+}

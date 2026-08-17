@@ -1,0 +1,48 @@
+# Local environments and Python build/cache state
+.venv/
+.guidellm-venv/
+venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+
+# Local secrets and credential material
+.env
+.env.*
+!.env.example
+!.env.template
+*.pem
+*.key
+*.p12
+*.pfx
+id_rsa
+id_rsa.*
+id_ed25519
+id_ed25519.*
+credentials.json
+secrets.json
+
+# OS/editor/log noise
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+.idea/
+.vscode/
+*.log
+
+# Ad-hoc local reports. Curated validation evidence lives under validation/.
+/throttle-report.json
+/smoke.json
+/benchmark.json
+/comparison.json
+
+# Keep only the reviewed v0.2.0 wheel for fast tester installation.
+dist/*
+!dist/throttle_bench-0.2.0-py3-none-any.whl

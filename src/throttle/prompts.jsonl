@@ -1,0 +1,8 @@
+{"prompt":"Explain idempotency in HTTP APIs in three concise sentences and give one practical example."}
+{"prompt":"Write a Python function that returns the first repeated integer in a list, then state its time complexity."}
+{"prompt":"Compare optimistic and pessimistic database locking in a short paragraph."}
+{"prompt":"Summarize three useful signals for diagnosing a slow web service without assuming a particular cloud provider."}
+{"messages":[{"role":"system","content":"Answer clearly and concisely."},{"role":"user","content":"Describe how a token bucket rate limiter works and mention one edge case."}]}
+{"prompt":"Give a five-step checklist for reviewing a database migration before production deployment."}
+{"prompt":"Explain the difference between throughput and latency using an everyday analogy, then define both technically."}
+{"prompt":"List four causes of memory growth in a long-running Python service and one diagnostic for each."}
