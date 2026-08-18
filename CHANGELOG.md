@@ -2,7 +2,19 @@
 
 All notable changes to Throttle will be documented in this file.
 
-## [0.3.0] - 2026-08-18
+## Release status and versioning decisions
+
+- **v0.2.1 is the latest published release.** It remained a patch release
+  because it generalized and hardened runtime provenance while preserving the
+  existing CLI and legacy CUDA-report behavior. It was tagged after PR #1 and
+  published with a verified, checksummed wheel.
+- **v0.3.0 is the current unreleased development version on `main`.** It is a
+  minor-version step because it adds the top-level operator-mediated Golden
+  workflow and materially expands CI, packaging, and report-boundary
+  guarantees. The source tree and reviewed wheel identify as 0.3.0, but it is
+  not a published release until a v0.3.0 tag and GitHub release exist.
+
+## [0.3.0] - Unreleased
 
 ### Added
 - One-command, operator-mediated `throttle golden` orchestration for the
@@ -35,7 +47,12 @@ All notable changes to Throttle will be documented in this file.
   non-JSON containers, cycles, and over-limit trees before comparison or Golden
   aggregation
 
-## [0.2.1] - 2026-08-17
+### Documentation
+- Added lightweight manual feedback-recording guidance and structured GitHub
+  bug/feature issue forms. Throttle still collects no automatic usage telemetry
+  and has no phone-home behavior.
+
+## [0.2.1] - 2026-08-18
 
 ### Added
 - Platform-aware accelerator provenance for CUDA, Metal, ROCm, and CPU runs
@@ -78,7 +95,7 @@ All notable changes to Throttle will be documented in this file.
 - Operator pilot walkthrough
 - User testing guide
 
-## [0.1.0] - 2026-08-01
+## [0.1.0] - 2026-08-01 (development milestone; not tagged)
 
 ### Added
 - Initial proof-of-concept release

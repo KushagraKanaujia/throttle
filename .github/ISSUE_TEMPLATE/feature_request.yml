@@ -1,0 +1,82 @@
+name: Feature request
+description: Suggest a focused improvement grounded in a real Throttle workflow
+title: "[Feature]: "
+labels:
+  - enhancement
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Throttle prioritizes observed operator problems over speculative feature lists. Describe the workflow and friction you actually encountered when possible.
+
+        This issue is public. Remove API keys, credentials, private endpoint hostnames or IPs, raw prompts and responses, personal information, and unreviewed `.env`, log, config, or report contents before submitting.
+  - type: checkboxes
+    id: existing_issue
+    attributes:
+      label: Existing issue
+      description: Please check whether this request already exists.
+      options:
+        - label: I searched the existing issues.
+          required: true
+  - type: textarea
+    id: operator_problem
+    attributes:
+      label: Operator problem or use case
+      description: What real task were you trying to complete, and what decision or outcome was blocked?
+    validations:
+      required: true
+  - type: textarea
+    id: command
+    attributes:
+      label: Current command or workflow
+      description: If applicable, paste what you ran with credentials and endpoint details redacted. Keep environment-variable names, but never include their values.
+      render: shell
+  - type: textarea
+    id: actual_behavior
+    attributes:
+      label: Current behavior
+      description: What does Throttle do today, or where does the workflow stop?
+    validations:
+      required: true
+  - type: textarea
+    id: expected_behavior
+    attributes:
+      label: Desired behavior
+      description: Describe the smallest change that would solve the problem. Avoid prescribing an implementation unless it matters.
+    validations:
+      required: true
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Evidence or workaround
+      description: Did you retry, change a deployment decision, use another tool, or abandon the workflow? Concrete negative results are useful too.
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: Fill in what is relevant. Do not include serials, account IDs, private paths, endpoint identifiers, or credentials.
+      value: |
+        - Throttle version:
+        - OS and version:
+        - Python version:
+        - Accelerator/GPU and count:
+        - Inference server/runtime and version:
+        - Model or model-size class:
+  - type: dropdown
+    id: config_sharing
+    attributes:
+      label: Redacted configuration for validation
+      description: Would you share a minimal redacted configuration to help reproduce or validate this request? Never share keys, endpoint identifiers, or proprietary prompts.
+      options:
+        - Yes, in this public issue
+        - Yes, after a maintainer asks
+        - No
+    validations:
+      required: true
+  - type: checkboxes
+    id: sensitive_data
+    attributes:
+      label: Sensitive-data check
+      options:
+        - label: I reviewed this issue and its attachments and removed secrets and private endpoint or workload data.
+          required: true

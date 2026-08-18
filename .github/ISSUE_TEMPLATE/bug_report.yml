@@ -1,0 +1,104 @@
+name: Bug report
+description: Report a reproducible problem with Throttle
+title: "[Bug]: "
+labels:
+  - bug
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for helping us find where Throttle breaks.
+
+        This issue is public. Remove API keys, credentials, private endpoint hostnames or IPs, raw prompts and responses, personal information, and unreviewed `.env`, log, config, or report contents before submitting.
+  - type: checkboxes
+    id: existing_issue
+    attributes:
+      label: Existing issue
+      description: Please check whether this has already been reported.
+      options:
+        - label: I searched the existing issues.
+          required: true
+  - type: input
+    id: throttle_version
+    attributes:
+      label: Throttle version
+      description: Paste the output of `throttle --version`.
+      placeholder: "throttle 0.3.0"
+    validations:
+      required: true
+  - type: textarea
+    id: command
+    attributes:
+      label: Command run
+      description: Paste the exact command with secrets, credentials, and endpoint details redacted. Keep environment-variable names, but never include their values.
+      placeholder: |
+        throttle smoke \
+          --model MODEL_ID \
+          --url https://REDACTED/v1 \
+          --api-key-env VLLM_API_KEY \
+          ...
+      render: shell
+    validations:
+      required: true
+  - type: textarea
+    id: actual_behavior
+    attributes:
+      label: Actual behavior
+      description: What happened? Include the exit code and first failing or confusing step when known. Do not paste unsanitized logs or reports.
+    validations:
+      required: true
+  - type: textarea
+    id: expected_behavior
+    attributes:
+      label: Expected behavior
+      description: What did you expect Throttle to do or report?
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Reproduction steps
+      description: Give the smallest repeatable sequence, including whether this occurs in plan, smoke, benchmark, compare, or golden mode.
+      placeholder: |
+        1. Install ...
+        2. Run ...
+        3. Observe ...
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: Coarse hardware details are enough. Do not include device serials, account IDs, private paths, endpoint identifiers, or credentials.
+      value: |
+        - OS and version:
+        - Python version:
+        - Accelerator/GPU and count:
+        - Inference server/runtime and version:
+        - Model or model-size class:
+        - Install method (wheel/source):
+    validations:
+      required: true
+  - type: dropdown
+    id: config_sharing
+    attributes:
+      label: Redacted configuration for reproduction
+      description: Would you share a minimal redacted configuration if a maintainer needs it? Never share keys, endpoint identifiers, or proprietary prompts.
+      options:
+        - Yes, in this public issue
+        - Yes, after a maintainer asks
+        - No
+    validations:
+      required: true
+  - type: textarea
+    id: sanitized_artifacts
+    attributes:
+      label: Sanitized artifacts or additional context
+      description: Optionally attach a report or log only after reviewing and redacting it. A minimal excerpt is preferred.
+  - type: checkboxes
+    id: sensitive_data
+    attributes:
+      label: Sensitive-data check
+      options:
+        - label: I reviewed this issue and its attachments and removed secrets and private endpoint or workload data.
+          required: true

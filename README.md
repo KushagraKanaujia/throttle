@@ -532,6 +532,21 @@ enter a manifest; accelerator fingerprints are stored only as SHA-256.
 - `3`: valid but statistically/qualification-inconclusive benchmark or compare.
 - `130`: user cancellation with sanitized partial report.
 
+## Contributing and field feedback
+
+Throttle has no automatic telemetry or phone-home behavior. If you run
+`throttle golden`, help us find where this breaks—even when the run stops or is
+inconclusive. [Open a structured bug or feature
+issue](https://github.com/KushagraKanaujia/throttle/issues/new/choose), or
+mention `@KushagraKanaujia` in an existing public thread, with the first broken
+or confusing step, a redacted command, `throttle --version`, and coarse
+OS/Python/accelerator/inference-server details.
+
+Never post keys, authorization headers, private endpoint URLs or hostnames, raw
+prompts or responses, unreviewed logs/reports, private local paths, or
+employer/customer identifiers. The manual, opt-in feedback process and signal
+stages are documented in [User feedback](docs/USER_FEEDBACK.md).
+
 ## Test
 
 The suite is offline-only and blocks non-loopback DNS/socket use:

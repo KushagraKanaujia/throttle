@@ -45,6 +45,10 @@ Thumbs.db
 *.json.bak
 demo-*.json
 
+# Defense in depth if a private feedback ledger is copied into this checkout.
+/.feedback-private/
+/feedback.jsonl
+
 # Keep only reviewed release wheels for fast tester installation.
 dist/*
 !dist/throttle_bench-0.2.0-py3-none-any.whl
