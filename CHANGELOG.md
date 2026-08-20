@@ -34,6 +34,10 @@ All notable changes to Throttle will be documented in this file.
 - A pinned, deterministic vLLM exposition compatibility fixture and connected
   loopback orchestration test. This is software evidence only, not a live GPU,
   performance, scheduler-saturation, or savings result.
+- Sealed native request profiles: typed sampling controls (`--temperature`,
+  `--top-p`, `--request-seed`) and safe scalar `--request-field` extensions for
+  model-specific controls such as Qwen thinking, sealed by a canonical SHA-256
+  that saved-run comparison and Golden must match exactly
 
 ### Changed
 - Golden now accepts any two canonical positive, distinct `max_num_seqs`
@@ -58,6 +62,10 @@ All notable changes to Throttle will be documented in this file.
 - Report parsing rejects duplicate keys, non-finite or oversized numbers,
   non-JSON containers, cycles, and over-limit trees before comparison or Golden
   aggregation
+- Request extensions cannot replace the model, messages, token cap, streaming
+  controls, standard sampling fields, tools, credentials, or response shape;
+  structured values, secrets, URLs, and headers are rejected before traffic,
+  and a tampered profile fails saved-report preflight
 
 ## [0.2.1] - 2026-08-18
 

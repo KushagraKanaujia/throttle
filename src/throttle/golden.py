@@ -395,6 +395,11 @@ _FINGERPRINT_ROOT_PATHS: tuple[tuple[str, ...], ...] = (
     ("manifest", "request", "stop"),
     ("manifest", "request", "stream"),
     ("manifest", "request", "timeout_seconds"),
+    # A sealed request profile is covered by its own canonical hash, so the
+    # fingerprint carries the version and the seal rather than every field.
+    # Legacy fixed-request reports project both as null.
+    ("manifest", "request", "profile_version"),
+    ("manifest", "request", "profile_sha256"),
     ("manifest", "traffic", "blocks"),
     ("manifest", "traffic", "requests_per_block"),
     ("manifest", "traffic", "block_duration_seconds"),

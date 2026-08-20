@@ -280,6 +280,93 @@ class PlanAndModeAcceptanceTests(unittest.IsolatedAsyncioTestCase):
 
 
 class TransportAndValidationAcceptanceTests(unittest.IsolatedAsyncioTestCase):
+    async def test_native_request_uses_and_seals_the_declared_request_profile(
+        self,
+    ) -> None:
+        captured: list[dict[str, object]] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            captured.append(json.loads(request.content))
+            return _completion()
+
+        fields = (
+            ("reasoning_effort", "low"),
+            ("enable_thinking", False),
+            ("top_k", 1),
+        )
+        config = replace(
+            _config(),
+            temperature=0.0,
+            top_p=1.0,
+            request_seed=7,
+            request_fields=fields,
+        )
+        report = await run_native(
+            config,
+            MEASURED_PROMPTS,
+            WARMUP_PROMPTS,
+            transport=httpx.MockTransport(handler),
+        )
+
+        self.assertEqual(len(captured), 1)
+        payload = captured[0]
+        self.assertEqual(payload["temperature"], 0.0)
+        self.assertEqual(payload["top_p"], 1.0)
+        self.assertEqual(payload["seed"], 7)
+        self.assertEqual(payload["enable_thinking"], False)
+        self.assertEqual(payload["top_k"], 1)
+        self.assertEqual(payload["reasoning_effort"], "low")
+        profile = report["manifest"]["request"]
+        self.assertEqual(profile["profile_version"], "1.0")
+        self.assertEqual(
+            profile["extensions"],
+            {"enable_thinking": False, "reasoning_effort": "low", "top_k": 1},
+        )
+        self.assertRegex(profile["profile_sha256"], r"^[0-9a-f]{64}$")
+        self.assertNotIn("messages", profile)
+
+        reordered = replace(
+            config,
+            temperature=0,
+            top_p=1,
+            request_fields=tuple(reversed(fields)),
+        )
+        second = await run_native(
+            reordered,
+            MEASURED_PROMPTS,
+            WARMUP_PROMPTS,
+            transport=httpx.MockTransport(lambda _: _completion()),
+        )
+        self.assertEqual(
+            second["manifest"]["request"]["profile_sha256"],
+            profile["profile_sha256"],
+        )
+
+    def test_request_extensions_fail_closed_before_traffic(self) -> None:
+        unsafe = (
+            (("messages", None),),
+            (("tools", True),),
+            (("api_key", "private"),),
+            (("nested", {"value": 1}),),
+            (("mode", "https://private.example"),),
+            (("top_k", 1), ("top_k", 2)),
+        )
+        for fields in unsafe:
+            with self.subTest(fields=fields), self.assertRaises(ValueError):
+                validate_config(replace(_config(), request_fields=fields))  # type: ignore[arg-type]
+
+    def test_guidellm_rejects_a_custom_request_profile(self) -> None:
+        config = replace(
+            _config(),
+            backend="guidellm",
+            request_fields=(("enable_thinking", False),),
+            guidellm_gaps_acknowledged=True,
+        )
+        with self.assertRaisesRegex(
+            ValueError, "GuideLLM does not support custom request profiles"
+        ):
+            validate_config(config)
+
     def test_direct_config_rejects_non_boolean_safety_switches_before_traffic(
         self,
     ) -> None:

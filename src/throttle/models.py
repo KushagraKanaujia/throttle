@@ -332,6 +332,12 @@ class RunConfig:
     accelerator_runtime_version: str = "unknown"
     host_os_version: str = "unknown"
     software_environment_digest: str = "unknown"
+    # Appended for the same reason: a sealed request profile must not move the
+    # positional slots that existing callers already depend on.
+    temperature: float = 0
+    top_p: float | None = None
+    request_seed: int | None = None
+    request_fields: tuple[tuple[str, str | int | float | bool | None], ...] = ()
 
     def planned_request_count(self) -> int | None:
         if self.requests_per_block is None:

@@ -55,9 +55,9 @@ Before traffic, record and independently retain evidence for:
   versions;
 - for direct-host Metal, ROCm, or CPU, the host OS version;
 - runtime-verified effective engine flags;
-- model, `temperature=0`, fixed `max_tokens`, no stop tokens, streaming mode,
-  request timeout, workload hash/order/seed, load shape, declared SLOs (or an
-  explicit throughput-only objective), and safety caps;
+- model, the exact sealed request profile, fixed `max_tokens`, no stop tokens,
+  streaming mode, request timeout, workload hash/order/seed, load shape,
+  declared SLOs (or an explicit throughput-only objective), and safety caps;
 - an explicit cache policy; and
 - the same physical accelerator for all six positions.
 

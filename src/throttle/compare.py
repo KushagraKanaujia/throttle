@@ -28,6 +28,11 @@ from .provenance import (
     runtime_provenance_reasons,
     validated_public_metadata_size,
 )
+from .request_profile import (
+    REQUEST_PROFILE_CONTROLLED_PATHS,
+    REQUEST_PROFILE_VERSION,
+    request_manifest_reason,
+)
 from .statistics import (
     paired_relative_delta_interval_95,
     relative_delta_percent,
@@ -572,14 +577,6 @@ def _preflight_reason(report: Mapping[str, Any]) -> str | None:
         "runtime_verified",
     }:
         return "invalid_engine_flag_manifest"
-    required_request_keys = {
-        "type",
-        "temperature",
-        "max_tokens",
-        "stop",
-        "stream",
-        "timeout_seconds",
-    }
     required_traffic_keys = {
         "conditions",
         "blocks",
@@ -591,10 +588,11 @@ def _preflight_reason(report: Mapping[str, Any]) -> str | None:
         "open_loop_rate_relative_tolerance",
         "open_loop_scheduler_lag_interval_tolerance",
     }
-    if not required_request_keys.issubset(
-        request
-    ) or not required_traffic_keys.issubset(traffic):
+    if not required_traffic_keys.issubset(traffic):
         return "incomplete_manifest_contract"
+    request_reason = request_manifest_reason(request)
+    if request_reason is not None:
+        return request_reason
     if (
         traffic.get("open_loop_rate_relative_tolerance")
         != OPEN_LOOP_RATE_RELATIVE_TOLERANCE
@@ -602,15 +600,7 @@ def _preflight_reason(report: Mapping[str, Any]) -> str | None:
         != OPEN_LOOP_SCHEDULER_LAG_INTERVAL_TOLERANCE
     ):
         return "unsupported_open_loop_tolerance_contract"
-    if (
-        request.get("type") != "chat_completions"
-        or request.get("temperature") != 0
-        or request.get("stop") is not None
-        or not isinstance(request.get("stream"), bool)
-        or not _positive_int(request.get("max_tokens"))
-        or not _finite_number(request.get("timeout_seconds"), positive=True)
-        or int(request["max_tokens"]) > int(safety["max_tokens_per_request"])
-    ):
+    if int(request["max_tokens"]) > int(safety["max_tokens_per_request"]):
         return "unsupported_request_contract"
     for slo_name in ("p95_slo_ms", "ttft_slo_ms"):
         slo = traffic.get(slo_name)
@@ -1191,7 +1181,19 @@ def _compatibility_reasons(
         == CURRENT_MANIFEST_VERSION
         else LEGACY_RUNTIME_CONTROLLED_PATHS
     )
-    for parts in (*_CONTROLLED_MANIFEST_PATHS, *runtime_paths):
+    baseline_profile_version = _path(
+        baseline, "manifest", "request", "profile_version"
+    )
+    candidate_profile_version = _path(
+        candidate, "manifest", "request", "profile_version"
+    )
+    profile_paths = (
+        REQUEST_PROFILE_CONTROLLED_PATHS
+        if baseline_profile_version == REQUEST_PROFILE_VERSION
+        or candidate_profile_version == REQUEST_PROFILE_VERSION
+        else ()
+    )
+    for parts in (*_CONTROLLED_MANIFEST_PATHS, *runtime_paths, *profile_paths):
         if not _has_path(baseline, "manifest", *parts) or not _has_path(
             candidate, "manifest", *parts
         ):

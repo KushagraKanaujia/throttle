@@ -49,6 +49,7 @@ from throttle.models import (
     RunConfig,
     SafetyLimits,
 )
+from throttle.request_profile import build_request_manifest
 from throttle.statistics import (
     _t_critical_975,
     paired_relative_delta_interval_95,
@@ -704,6 +705,18 @@ def _set_metal_runtime(report: dict[str, object]) -> None:
         runtime_version="MLX 0.32.0",
         host_os_version="macOS 15.0 build 24A335",
     )
+def _set_request_profile(
+    report: dict[str, object],
+    fields: tuple[tuple[str, str | int | float | bool | None], ...],
+) -> None:
+    config = replace(
+        _run_config(),
+        max_tokens=128,
+        request_timeout_seconds=120.0,
+        stream=True,
+        request_fields=fields,
+    )
+    report["manifest"]["request"] = build_request_manifest(config)  # type: ignore[index]
 
 
 def _golden_sequence(
@@ -1616,6 +1629,47 @@ class LoadAndComparisonTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn(
             "manifest_mismatch_manifest_version",
             comparison["compatibility"]["reasons"],
+        )
+
+    async def test_saved_comparison_requires_identical_sealed_request_profiles(
+        self,
+    ) -> None:
+        baseline = _saved_report((10.0, 10.0, 10.0), flag_value="1")
+        candidate = _saved_report((12.0, 12.0, 12.0), flag_value="8")
+        fields = (("enable_thinking", False), ("top_k", 1))
+        _set_request_profile(baseline, fields)
+        _set_request_profile(candidate, tuple(reversed(fields)))
+
+        comparison = compare_reports(baseline, candidate)
+        self.assertTrue(comparison["compatibility"]["compatible"])
+        self.assertTrue(comparison["decision_eligible"])
+
+        legacy_candidate = _saved_report(
+            (12.0, 12.0, 12.0), flag_value="8"
+        )
+        sealed_vs_legacy = compare_reports(baseline, legacy_candidate)
+        self.assertFalse(sealed_vs_legacy["compatibility"]["compatible"])
+        self.assertIn(
+            "manifest_missing_request_profile_version",
+            sealed_vs_legacy["compatibility"]["reasons"],
+        )
+
+        _set_request_profile(candidate, (("enable_thinking", True), ("top_k", 1)))
+        mismatch = compare_reports(baseline, candidate)
+        self.assertFalse(mismatch["compatibility"]["compatible"])
+        self.assertIn(
+            "manifest_mismatch_request_extensions",
+            mismatch["compatibility"]["reasons"],
+        )
+
+        candidate["manifest"]["request"]["extensions"][  # type: ignore[index]
+            "enable_thinking"
+        ] = False
+        tampered = compare_reports(baseline, candidate)
+        self.assertEqual(tampered["status"], "incompatible")
+        self.assertIn(
+            "candidate_invalid_request_profile_hash",
+            tampered["compatibility"]["reasons"],
         )
 
     async def test_open_loop_uses_rate_shape_and_respects_in_flight_ceiling(

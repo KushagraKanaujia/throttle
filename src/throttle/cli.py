@@ -56,6 +56,7 @@ from .golden import (
 )
 from .models import CostModel, EndpointConfig, LoadCondition, RunConfig, SafetyLimits
 from .provenance import ACCELERATOR_BACKENDS
+from .request_profile import validate_request_fields
 
 DEFAULT_OUTPUT = Path("throttle-report.json")
 DEFAULT_COMPARE_OUTPUT = Path("throttle-comparison.json")
@@ -101,6 +102,17 @@ def _positive_float(value: str) -> float:
     if parsed <= 0:
         raise argparse.ArgumentTypeError("must be positive and finite")
     return parsed
+
+
+def _probability(value: str) -> float:
+    parsed = _positive_float(value)
+    if parsed > 1:
+        raise argparse.ArgumentTypeError("must be at most one")
+    return parsed
+
+
+def _reject_json_constant(_: str) -> None:
+    raise ValueError("non-finite JSON number")
 
 
 def _add_endpoint_options(parser: argparse.ArgumentParser) -> None:
@@ -183,6 +195,16 @@ def _add_workload_options(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--p95-slo-ms", type=_positive_float)
     parser.add_argument("--ttft-slo-ms", type=_positive_float)
     parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--temperature", type=_non_negative_float, default=0)
+    parser.add_argument("--top-p", type=_probability)
+    parser.add_argument("--request-seed", type=int)
+    parser.add_argument(
+        "--request-field",
+        action="append",
+        default=[],
+        metavar="NAME=JSON_SCALAR",
+        help="safe non-standard request field; repeat as needed",
+    )
 
 
 def _add_safety_options(parser: argparse.ArgumentParser) -> None:
@@ -508,6 +530,32 @@ def _engine_flags(
     return tuple(parsed)
 
 
+def _request_fields(
+    parser: argparse.ArgumentParser, values: Sequence[str]
+) -> tuple[tuple[str, str | int | float | bool | None], ...]:
+    parsed: list[tuple[str, str | int | float | bool | None]] = []
+    for item in values:
+        if "=" not in item:
+            _parser_error(parser, "--request-field must use NAME=JSON_SCALAR")
+        name, encoded = item.split("=", 1)
+        if not name or not encoded:
+            _parser_error(parser, "--request-field needs a non-empty name and value")
+        try:
+            value = json.loads(
+                encoded,
+                parse_constant=_reject_json_constant,
+            )
+        except (json.JSONDecodeError, ValueError):
+            _parser_error(parser, "--request-field value must be valid JSON")
+        parsed.append((name, value))  # type: ignore[arg-type]
+    output = tuple(parsed)
+    try:
+        validate_request_fields(output)
+    except ValueError as exc:
+        _parser_error(parser, str(exc))
+    return tuple(sorted(output, key=lambda pair: pair[0]))
+
+
 def _resolve_key(parser: argparse.ArgumentParser, env_name: str) -> str:
     if not ENV_NAME_PATTERN.fullmatch(env_name):
         _parser_error(parser, "--api-key-env must be a valid environment variable name")
@@ -613,6 +661,10 @@ def _build_config(
         p95_slo_ms=args.p95_slo_ms,
         ttft_slo_ms=args.ttft_slo_ms,
         seed=args.seed,
+        temperature=args.temperature,
+        top_p=args.top_p,
+        request_seed=args.request_seed,
+        request_fields=_request_fields(parser, args.request_field),
         stream=args.stream,
         cache_policy=args.cache_policy,
         model_revision=args.model_revision,
@@ -836,6 +888,17 @@ def _print_plan(
         if not runtime_reasons
         else "Runtime evidence: " + ", ".join(runtime_reasons)
     )
+    request_profile = plan.get("request_profile")
+    if request_profile is not None:
+        print(
+            "Request profile: "
+            + json.dumps(
+                request_profile,
+                sort_keys=True,
+                separators=(",", ":"),
+                allow_nan=False,
+            )
+        )
     if not plan["traffic_preflight"]["backend_supported_on_this_platform"]:
         print(
             "Traffic preflight: blocked because GuideLLM subprocess-tree safety "
