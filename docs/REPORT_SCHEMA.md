@@ -102,6 +102,13 @@ and immutable software-environment digest. Saved manifest `1.0` CUDA reports
 remain readable and comparable with other `1.0` reports; different manifest
 versions are never treated as the same controlled runtime.
 
+Native request manifests carry `profile_version: "1.0"`, typed temperature,
+optional `top_p` and request seed, a sorted map of validated non-secret scalar
+extensions, and `profile_sha256`. The digest covers every persisted request
+control other than itself. Comparison accepts historical fixed request
+manifests, but a sealed profile cannot compare with an unsealed or different
+profile.
+
 ## Decision gate
 
 `decision_eligible` is derived, not a caller assertion. A normal comparison
@@ -153,13 +160,17 @@ Persisted artifacts do not contain:
 
 The manifest keeps canonical SHA-256 workload fingerprints, a hashed
 accelerator fingerprint, validated non-secret runtime labels, engine-flag
-names/values, and aggregate numeric samples. CUDA decision-grade reports
+names/values, and aggregate numeric samples. Native manifests also retain the
+explicitly supplied non-secret request extension names and scalar values,
+sealed by a canonical profile hash, so the effective request can be reproduced
+and compared. CUDA decision-grade reports
 require the existing immutable image, CUDA, and driver evidence. Metal, ROCm,
 and CPU reports instead require a host OS version and immutable
 software-environment digest; all platforms require an accelerator runtime
 version. Workload hashes reveal equality and may confirm a guessed low-entropy
 workload; they are not encryption. `throttle plan` is terminal-only and
-intentionally displays the destination before any traffic.
+intentionally displays the destination and the safe request profile before any
+traffic.
 
 Artifact references use a bounded non-secret label with an optional immutable
 `@sha256:<64 lowercase hex>` suffix. Generated and loaded reports reject URLs,

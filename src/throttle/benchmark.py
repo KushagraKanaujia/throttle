@@ -42,6 +42,13 @@ from .provenance import (
     is_safe_public_metadata,
     runtime_provenance_reasons,
 )
+from .request_profile import (
+    MAX_SAFE_INTEGER,
+    build_request_manifest,
+    canonical_json_number,
+    request_fields_dict,
+    validate_request_fields,
+)
 from .statistics import (
     intervals_overlap,
     summarize_distribution_ms,
@@ -414,6 +421,35 @@ def validate_config(config: RunConfig, *, for_traffic: bool = True) -> None:
             raise ValueError(f"{name} must be positive and finite")
     if not isinstance(config.seed, int) or isinstance(config.seed, bool):
         raise ValueError("seed must be an integer")
+    if (
+        not isinstance(config.temperature, (int, float))
+        or isinstance(config.temperature, bool)
+        or not math.isfinite(float(config.temperature))
+        or config.temperature < 0
+        or config.temperature > MAX_SAFE_INTEGER
+    ):
+        raise ValueError("temperature must be a non-negative JSON-safe number")
+    if config.top_p is not None and (
+        not isinstance(config.top_p, (int, float))
+        or isinstance(config.top_p, bool)
+        or not math.isfinite(float(config.top_p))
+        or not 0 < config.top_p <= 1
+    ):
+        raise ValueError("top_p must be greater than zero and at most one")
+    if config.request_seed is not None and (
+        not isinstance(config.request_seed, int)
+        or isinstance(config.request_seed, bool)
+        or abs(config.request_seed) > MAX_SAFE_INTEGER
+    ):
+        raise ValueError("request_seed must be a JSON-safe integer")
+    validate_request_fields(config.request_fields)
+    if config.backend == "guidellm" and (
+        config.temperature != 0
+        or config.top_p is not None
+        or config.request_seed is not None
+        or config.request_fields
+    ):
+        raise ValueError("GuideLLM does not support custom request profiles")
     if config.cache_policy not in {
         "unknown",
         "disabled",
@@ -498,6 +534,9 @@ def build_plan(
     if config.server_version == "unknown":
         runtime_reasons.append("complete_runtime_provenance_required")
     runtime_reasons = list(dict.fromkeys(runtime_reasons))
+    request_profile = (
+        build_request_manifest(config) if config.backend == "native" else None
+    )
     return {
         "mode": config.mode,
         "backend": config.backend,
@@ -524,6 +563,7 @@ def build_plan(
         "destination": destination,
         "runtime": runtime_manifest,
         "runtime_provenance_reasons": runtime_reasons,
+        "request_profile": request_profile,
         "workload": {
             "measured_prompt_count": len(prompts),
             "warmup_prompt_count": len(warmup_prompts),
@@ -717,10 +757,15 @@ async def _native_request(
     payload: dict[str, Any] = {
         "model": config.model,
         "messages": list(messages),
-        "temperature": 0,
+        "temperature": canonical_json_number(config.temperature),
         "max_tokens": config.max_tokens,
         "stream": config.stream,
     }
+    if config.top_p is not None:
+        payload["top_p"] = canonical_json_number(config.top_p)
+    if config.request_seed is not None:
+        payload["seed"] = config.request_seed
+    payload.update(request_fields_dict(config.request_fields))
     if config.stream:
         payload["stream_options"] = {"include_usage": True}
     try:
@@ -1954,14 +1999,7 @@ def _manifest(
             ),
             "cache_policy": config.cache_policy,
         },
-        "request": {
-            "type": "chat_completions",
-            "temperature": 0,
-            "max_tokens": config.max_tokens,
-            "stop": None,
-            "stream": config.stream,
-            "timeout_seconds": config.request_timeout_seconds,
-        },
+        "request": build_request_manifest(config),
         "traffic": {
             "conditions": [condition.public_dict() for condition in config.conditions],
             "blocks": config.blocks,

@@ -584,6 +584,64 @@ class ParserAndPlanTests(unittest.TestCase):
         self.assertEqual(exit_code, EXIT_OK)
         self.assertNotIn("Runtime evidence: complete", output.splitlines())
         self.assertIn("complete_runtime_provenance_required", output)
+    def test_plan_prints_the_frozen_qwen_request_profile_without_traffic(self) -> None:
+        argv = [
+            "plan",
+            "--model",
+            "model-a",
+            "--url",
+            PRIVATE_ENDPOINT,
+            "--top-p",
+            "1",
+            "--request-seed",
+            "7",
+            "--request-field",
+            "enable_thinking=false",
+            "--request-field",
+            "top_k=1",
+            "--request-field",
+            'reasoning_effort="low"',
+        ]
+        stdout = io.StringIO()
+        with (
+            patch.dict(os.environ, {}, clear=True),
+            patch(
+                "throttle.cli.run_native",
+                side_effect=AssertionError("plan attempted native traffic"),
+            ) as native,
+            contextlib.redirect_stdout(stdout),
+        ):
+            exit_code = main(argv)
+
+        self.assertEqual(exit_code, EXIT_OK)
+        output = stdout.getvalue()
+        self.assertIn('"enable_thinking":false', output)
+        self.assertIn('"reasoning_effort":"low"', output)
+        self.assertIn('"request_seed":7', output)
+        self.assertIn('"top_k":1', output)
+        self.assertRegex(output, r'"profile_sha256":"[0-9a-f]{64}"')
+        native.assert_not_called()
+
+    def test_protected_or_structured_request_fields_are_cli_errors(self) -> None:
+        parser = build_parser()
+        for field in ("messages=null", 'nested={"value":1}', "top_p=1"):
+            with self.subTest(field=field):
+                args = parser.parse_args(
+                    [
+                        "plan",
+                        "--model",
+                        "model-a",
+                        "--url",
+                        PRIVATE_ENDPOINT,
+                        "--request-field",
+                        field,
+                    ]
+                )
+                with (
+                    contextlib.redirect_stderr(io.StringIO()),
+                    self.assertRaises(SystemExit),
+                ):
+                    _build_config(parser, args, resolve_key=False)
 
     def test_plan_needs_no_key_sends_no_traffic_and_shows_27_calls(self) -> None:
         argv = [

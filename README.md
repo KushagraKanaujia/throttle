@@ -258,6 +258,36 @@ closure. Throttle validates the declaration and comparisons; it does not build
 or independently inspect that environment. Use a non-secret label followed by
 `@sha256:<64 lowercase hex>` (or a bare SHA-256 digest); URLs, credentials,
 absolute paths, traversal segments, and control characters are rejected.
+### Frozen native request profiles
+
+Native runs can pin common sampling controls and small non-standard scalar
+fields without allowing arbitrary request replacement. This is useful when an
+OpenAI-compatible server exposes model-specific controls such as Qwen thinking
+or effort settings:
+
+```sh
+--temperature 0 \
+--top-p 1 \
+--request-seed 7 \
+--request-field enable_thinking=false \
+--request-field top_k=1 \
+--request-field min_p=0 \
+--request-field 'reasoning_effort="low"'
+```
+
+`--request-field` accepts only lower-case names and safe JSON scalar values.
+It cannot replace the model, messages, token cap, streaming controls, standard
+sampling fields, tools, headers, credentials, or response shape. Structured
+objects and arrays are rejected before traffic. Every native manifest contains
+the sorted effective fields and a canonical SHA-256 profile identity; saved-run
+comparison requires an exact match. `throttle plan` prints the complete
+non-secret profile before any traffic.
+
+Extension names and values are persisted, so never put secrets or private data
+in them. A successful response proves that the field was sent and accepted at
+the HTTP boundary, not that the server applied its semantics internally; retain
+engine-side evidence for claims such as thinking being disabled. GuideLLM stays
+fixed-shape and rejects custom request profiles.
 
 Use `--block-seconds 20` instead of `--requests-per-block` for duration-bounded
 blocks. The achieved duration—not merely the configured value—controls the
@@ -633,8 +663,9 @@ or proof that the suggested value improves a deployment.
 
 Reports contain hashes and aggregate numeric evidence, not endpoint URLs,
 hostnames, keys, authorization headers, prompts, responses, raw exception text,
-or GuideLLM raw output. Engine flag names/values are validated before they can
-enter a manifest; accelerator fingerprints are stored only as SHA-256.
+or GuideLLM raw output. Engine flag names/values and explicitly declared
+non-secret request extension names/values are validated before they can enter a
+manifest; accelerator fingerprints are stored only as SHA-256.
 
 - `0`: complete smoke, or a supported benchmark/comparison result.
 - `1`: stopped/invalid/operational failure; a sanitized artifact is written

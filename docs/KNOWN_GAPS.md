@@ -98,6 +98,11 @@ successful optimization claim.
     reviewed allowlist. Like any in-process Python API, it is a validation
     boundary for data, not a sandbox against code that can modify module
     internals.
+15. **Request acceptance is not semantic verification.** Native request
+    profiles prove the exact safe fields sent by the client and require those
+    fields to match across comparisons. A successful HTTP response does not
+    independently prove that an engine honored a model-specific extension such
+    as `enable_thinking`; retain engine logs or separate behavioral evidence.
 
 Deferred by design: automatic engine reconfiguration, provisioning,
 autoscaling, GPU selection, spot management, cache systems, production proxying,
