@@ -28,7 +28,11 @@ where = ["src"]
 [tool.setuptools.package-data]
 throttle = ["prompts.jsonl", "warmup_prompts.jsonl"]
 
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+
 [project.optional-dependencies]
 # GuideLLM stays out of process. Its current supported Python range ends at
 # 3.13, so the base Throttle install remains usable on newer interpreters.
 guidellm = ["guidellm[recommended]==0.7.3; python_version < '3.14'"]
+
