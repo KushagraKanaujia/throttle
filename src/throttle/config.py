@@ -90,17 +90,32 @@ def _coerce_config_value(parser: Any, action: Any, key: str, value: Any) -> Any:
     a CLI flag would be validated, keeps that failure at the boundary and
     the error message actionable.
     """
-    arg_display = "--" + key.replace("_", "-")
-    is_list_action = getattr(action, "nargs", None) in ("+", "*")
+    option_strings = getattr(action, "option_strings", None) or []
+    arg_display = option_strings[0] if option_strings else f"positional argument '{key}'"
+
+    nargs = getattr(action, "nargs", None)
+    # "+"/"*" accept any number of values (>= 1 or >= 0). A positive integer
+    # nargs (e.g. nargs=2 for `report`'s two-file positional) requires
+    # exactly that many. nargs=0 (store_true/store_false/store_const) is
+    # not a list action, those pass their value through unchanged below.
+    is_variable_list = nargs in ("+", "*")
+    exact_length = nargs if isinstance(nargs, int) and nargs > 0 else None
+    is_list_action = is_variable_list or exact_length is not None
 
     if is_list_action:
         if not isinstance(value, (list, tuple)):
+            expected = "multiple values" if is_variable_list else f"exactly {exact_length} values"
             parser.error(
                 f"'{key}' in ~/.throttle/config.yaml must be a list for {arg_display} "
-                f"(it accepts multiple values); got {value!r}. Use a list instead, "
+                f"(it accepts {expected}); got {value!r}. Use a list instead, "
                 f"e.g. '{key}: [{value!r}]'."
             )
         items = list(value)
+        if exact_length is not None and len(items) != exact_length:
+            parser.error(
+                f"'{key}' in ~/.throttle/config.yaml must have exactly {exact_length} "
+                f"values for {arg_display}; got {len(items)}: {items!r}."
+            )
     else:
         if isinstance(value, (list, tuple)):
             parser.error(
