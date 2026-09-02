@@ -144,6 +144,8 @@ enable-cache: true
 
 See [.throttle.yaml.example](.throttle.yaml.example) for all available options. If PyYAML is not installed, Throttle runs normally without config file support.
 
+**Validation:** each config value is checked against the same rules its CLI flag would enforce (type, allowed choices, and whether it expects a single value or a list) before being applied. A mismatch, e.g. `max-tokens: -5` where the flag requires a positive number, or `concurrency: 4` where `--concurrency` expects a list, fails immediately with an error naming the offending config key, rather than crashing later or silently reaching the program with a bad value. Arguments that require an exact number of values (for example `report`'s two positional report files) need a list of exactly that length; `concurrency`-style arguments that accept any number of values need a list of one or more.
+
 ### Quick Start (Local Testing)
 
 The fastest way to try Throttle is against a local Ollama server:
