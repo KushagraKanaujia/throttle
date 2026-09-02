@@ -1,5 +1,7 @@
 # Known Issues and Findings
 
+**Last Verified:** 2026-09-01 - All issues remain UNFIXED in current main branch.
+
 ## Wheel Parity Job - Cold Cache Failure (UNFIXED)
 
 **Status**: Known failure on cold cache, masked by warm cache in CI

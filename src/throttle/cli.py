@@ -563,11 +563,13 @@ def build_parser() -> argparse.ArgumentParser:
 
     validate_sim = subparsers.add_parser(
         "validate-sim",
-        help="validate simulator accuracy against real GPU measurements",
+        help="[EXPERIMENTAL - KNOWN SERIAL EXECUTION BUG] validate simulator accuracy",
         description=(
-            "Compare simulator predictions to actual measurements from a live endpoint. "
-            "This helps validate simulator assumptions and identify which parameters need "
-            "adjustment for your specific hardware setup."
+            "⚠️  EXPERIMENTAL: This command has a known serial execution bug that ignores "
+            "arrival_rate and runs requests sequentially instead of concurrently. "
+            "All load-level comparisons are currently invalid. "
+            "See FINDINGS.md for measured error rates (up to 3000%%). "
+            "Use at your own risk for single-load smoke checks only."
         ),
     )
     validate_sim.add_argument(
@@ -2415,8 +2417,13 @@ def _handle_demo(args: argparse.Namespace) -> int:
     total_cost_ci = abs(total_cost_delta * ci_margin)
 
     # Print side-by-side comparison
-    print("Cost Comparison Results")
-    print("=" * 60)
+    print("=" * 80)
+    print("⚠️  SIMULATED COST COMPARISON - UNCALIBRATED PARAMETERS")
+    print("=" * 80)
+    print("These dollar amounts are simulator estimates only. Simulator parameters are")
+    print("ASSUMED, not measured. Real GPU behavior may differ significantly.")
+    print("For decision-grade cost measurements, use 'throttle golden' with live traffic.")
+    print("=" * 80)
     print()
     print(f"Workload:")
     print(f"  Total requests: {len(baseline_completed)}")
@@ -2429,11 +2436,11 @@ def _handle_demo(args: argparse.Namespace) -> int:
     print(f"{'GPU hours':<40} {baseline_cost.gpu_hours:>12.6f} {tuned_cost.gpu_hours:>12.6f} {gpu_hours_delta:>12.6f}")
     print(f"{'Input cost ($/M tokens)':<40} {baseline_cost.dollars_per_million_input_tokens:>12.2f} {tuned_cost.dollars_per_million_input_tokens:>12.2f} {input_cost_delta:>12.2f}")
     print(f"{'Output cost ($/M tokens)':<40} {baseline_cost.dollars_per_million_output_tokens:>12.2f} {tuned_cost.dollars_per_million_output_tokens:>12.2f} {output_cost_delta:>12.2f}")
-    print(f"{'Total cost ($)':<40} {baseline_cost.total_dollars:>12.4f} {tuned_cost.total_dollars:>12.4f} {total_cost_delta:>12.4f}")
+    print(f"{'Total cost ($) [SIMULATED]':<40} {baseline_cost.total_dollars:>12.4f} {tuned_cost.total_dollars:>12.4f} {total_cost_delta:>12.4f}")
     print()
 
     # Confidence intervals and significance check
-    print("95% Confidence Intervals on Delta (±20% parameter uncertainty):")
+    print("95% Confidence Intervals on Delta (±20% parameter uncertainty) [SIMULATED]:")
     print(f"  Wall clock delta: {wall_clock_delta:.2f} ± {wall_clock_ci:.2f} seconds")
     print(f"  Input cost delta: ${input_cost_delta:.2f} ± ${input_cost_ci:.2f} per million")
     print(f"  Output cost delta: ${output_cost_delta:.2f} ± ${output_cost_ci:.2f} per million")

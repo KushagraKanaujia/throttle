@@ -38,11 +38,11 @@ Throttle has eight explicit workflows:
 
 Results describe only the declared workload and manifest.
 
-## Proven Results
+## Proven Result
 
 Throttle has one decision-eligible result: a six-position counterbalanced Golden protocol run on Qwen2.5-0.5B-Instruct with vLLM 0.16.0 on an A100 80GB GPU. Changing `max_num_seqs` from 1 to 8 produced a measured **+189.5% to +246.2%** throughput increase (95% CI) at closed-loop concurrency 8. This result passed all protocol gates and is `decision_eligible: true`.
 
-The caching proxy has been verified compatible with **Ollama** in CI integration tests. Compatibility with **vLLM, SGLang, and LMDeploy** is expected (they implement the OpenAI-compatible `/v1/chat/completions` API) but requires GPU verification. See `validation/gpu_backend_verification.sh` for a runnable verification script on Linux with CUDA.
+The caching proxy has been verified compatible with **Ollama** in CI integration tests (localhost only, no GPU). Compatibility with **vLLM, SGLang, and LMDeploy** is **unverified** — they implement the OpenAI-compatible `/v1/chat/completions` API but have not been tested with GPU backends. See `validation/gpu_backend_verification.sh` for a runnable verification script on Linux with CUDA.
 
 **See [RESULTS.md](RESULTS.md) for the full validated evidence**, including exact numbers, hardware details, protocol audit, and limitations. All claims trace to specific JSON artifacts in `validation/`.
 
