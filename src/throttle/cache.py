@@ -53,6 +53,11 @@ class SimilarityCache:
         ttl_seconds: float = 3600.0,
         max_size: int = 1000,
         similarity_threshold: float = 0.85,
+        # NOTE: Do NOT raise this to 0.95 globally. Measured 2026-08-24:
+        # at 0.95, short-query paraphrase recall drops from 66.7% to 28.6%
+        # (e.g. "what is RAG" vs "explain RAG" scores 0.9189 — missed at 0.95).
+        # False positives are handled by _has_negation_or_version_conflict()
+        # which explicitly blocks antonyms, negations, and version conflicts.
         *,
         enable_embeddings: bool = False,
         embedding_threshold: float = 0.95,
