@@ -1,0 +1,490 @@
+{
+  "_note": "Holdout set \u2014 not used to build the guard in cache.py. Purpose: test whether the negation/antonym/version guard generalizes beyond its training pairs. antonym_unseen: antonyms not in guard's antonym_pairs list. antonym_seen: antonyms explicitly in the list (should always be blocked). negation_unseen: negation-like words not in guard's negation set. difficulty field applies to paraphrase pairs only.",
+  "model_id": "sentence-transformers/all-MiniLM-L6-v2",
+  "date_measured": "2026-08-25",
+  "guard_version": "cache.py _has_negation_or_version_conflict, 2026-08-25",
+  "pairs": [
+    {
+      "prompt1": "user: What causes high memory usage in Python?",
+      "prompt2": "user: Why is my Python process consuming too much memory?",
+      "category": "paraphrase",
+      "difficulty": "challenging",
+      "cosine_similarity": 0.8753,
+      "guard_fires": false
+    },
+    {
+      "prompt1": "user: How do I make my API handle more concurrent requests?",
+      "prompt2": "user: What's the best way to scale API concurrency?",
+      "category": "paraphrase",
+      "difficulty": "challenging",
+      "cosine_similarity": 0.726,
+      "guard_fires": false
+    },
+    {
+      "prompt1": "user: Explain the difference between threads and processes",
+      "prompt2": "user: Can you compare threading vs multiprocessing?",
+      "category": "paraphrase",
+      "difficulty": "challenging",
+      "cosine_similarity": 0.6846,
+      "guard_fires": false
+    },
+    {
+      "prompt1": "user: What happens when a database transaction fails?",
+      "prompt2": "user: How does rollback work in database transactions?",
+      "category": "paraphrase",
+      "difficulty": "challenging",
+      "cosine_similarity": 0.6937,
+      "guard_fires": false
+    },
+    {
+      "prompt1": "user: Kubernetes pod keeps restarting",
+      "prompt2": "user: Why does my Kubernetes pod crash and restart?",
+      "category": "paraphrase",
+      "difficulty": "challenging",
+      "cosine_similarity": 0.9117,
+      "guard_fires": false
+    },
+    {
+      "prompt1": "user: Monitor Kubernetes cluster",
+      "prompt2": "user: How do I monitor a Kubernetes cluster?",
+      "category": "paraphrase",
+      "difficulty": "trivial",
+      "cosine_similarity": 0.969,
+      "guard_fires": false
+    },
+    {
+      "prompt1": "user: Set up Grafana dashboards",
+      "prompt2": "user: How to set up Grafana dashboards?",
+      "category": "paraphrase",
+      "difficulty": "trivial",
+      "cosine_similarity": 0.9729,
+      "guard_fires": false
+    },
+    {
+      "prompt1": "user: Write unit tests in Go",
+      "prompt2": "user: How do I write unit tests in Go?",
+      "category": "paraphrase",
+      "difficulty": "trivial",
+      "cosine_similarity": 0.9606,
+      "guard_fires": false
+    },
+    {
+      "prompt1": "user: Configure Kafka consumers",
+      "prompt2": "user: How to configure Kafka consumers?",
+      "category": "paraphrase",
+      "difficulty": "trivial",
+      "cosine_similarity": 0.991,
+      "guard_fires": false
+    },
+    {
+      "prompt1": "user: Deploy with Helm charts",
+      "prompt2": "user: How do I deploy using Helm charts?",
+      "category": "paraphrase",
+      "difficulty": "trivial",
+      "cosine_similarity": 0.9686,
+      "guard_fires": false
+    },
+    {
+      "prompt1": "user: Secure an S3 bucket",
+      "prompt2": "user: How do I secure an S3 bucket?",
+      "category": "paraphrase",
+      "difficulty": "trivial",
+      "cosine_similarity": 0.9442,
+      "guard_fires": false
+    },
+    {
+      "prompt1": "user: Handle database migrations",
+      "prompt2": "user: How should I handle database migrations?",
+      "category": "paraphrase",
+      "difficulty": "trivial",
+      "cosine_similarity": 0.9582,
+      "guard_fires": false
+    },
+    {
+      "prompt1": "user: Implement retry logic",
+      "prompt2": "user: How do I implement retry logic?",
+      "category": "paraphrase",
+      "difficulty": "trivial",
+      "cosine_similarity": 0.9821,
+      "guard_fires": false
+    },
+    {
+      "prompt1": "user: Trace distributed requests",
+      "prompt2": "user: How can I trace requests across distributed services?",
+      "category": "paraphrase",
+      "difficulty": "trivial",
+      "cosine_similarity": 0.8433,
+      "guard_fires": false
+    },
+    {
+      "prompt1": "user: Parse JSON in Rust",
+      "prompt2": "user: How do I parse JSON in Rust?",
+      "category": "paraphrase",
+      "difficulty": "trivial",
+      "cosine_similarity": 0.9843,
+      "guard_fires": false
+    },
+    {
+      "prompt1": "user: Tune garbage collection in JVM",
+      "prompt2": "user: How can I tune JVM garbage collection?",
+      "category": "paraphrase",
+      "difficulty": "trivial",
+      "cosine_similarity": 0.9641,
+      "guard_fires": false
+    },
+    {
+      "prompt1": "user: Set up message queues",
+      "prompt2": "user: How do I set up a message queue?",
+      "category": "paraphrase",
+      "difficulty": "trivial",
+      "cosine_similarity": 0.9645,
+      "guard_fires": false
+    },
+    {
+      "prompt1": "user: Containerize a Flask app",
+      "prompt2": "user: How to containerize a Flask application?",
+      "category": "paraphrase",
+      "difficulty": "trivial",
+      "cosine_similarity": 0.959,
+      "guard_fires": false
+    },
+    {
+      "prompt1": "user: Rotate API keys automatically",
+      "prompt2": "user: How do I automate API key rotation?",
+      "category": "paraphrase",
+      "difficulty": "trivial",
+      "cosine_similarity": 0.8955,
+      "guard_fires": false
+    },
+    {
+      "prompt1": "user: Handle timeouts in gRPC",
+      "prompt2": "user: How should I handle timeouts in gRPC calls?",
+      "category": "paraphrase",
+      "difficulty": "trivial",
+      "cosine_similarity": 0.9254,
+      "guard_fires": false
+    },
+    {
+      "prompt1": "user: Index a PostgreSQL column",
+      "prompt2": "user: How do I add an index to a PostgreSQL column?",
+      "category": "paraphrase",
+      "difficulty": "trivial",
+      "cosine_similarity": 0.8726,
+      "guard_fires": false
+    },
+    {
+      "prompt1": "user: Profile memory usage in Go",
+      "prompt2": "user: How can I profile memory in a Go application?",
+      "category": "paraphrase",
+      "difficulty": "trivial",
+      "cosine_similarity": 0.8569,
+      "guard_fires": false
+    },
+    {
+      "prompt1": "user: Set up SSH tunneling",
+      "prompt2": "user: How do I configure SSH tunneling?",
+      "category": "paraphrase",
+      "difficulty": "trivial",
+      "cosine_similarity": 0.9186,
+      "guard_fires": false
+    },
+    {
+      "prompt1": "user: Cache database query results",
+      "prompt2": "user: How do I cache results from database queries?",
+      "category": "paraphrase",
+      "difficulty": "trivial",
+      "cosine_similarity": 0.8928,
+      "guard_fires": false
+    },
+    {
+      "prompt1": "user: Build a REST API with FastAPI",
+      "prompt2": "user: How to build a REST API using FastAPI?",
+      "category": "paraphrase",
+      "difficulty": "trivial",
+      "cosine_similarity": 0.9865,
+      "guard_fires": false
+    },
+    {
+      "prompt1": "user: Configure log rotation",
+      "prompt2": "user: How do I set up log rotation?",
+      "category": "paraphrase",
+      "difficulty": "trivial",
+      "cosine_similarity": 0.9511,
+      "guard_fires": false
+    },
+    {
+      "prompt1": "user: Run background jobs with Celery",
+      "prompt2": "user: How do I run background tasks using Celery?",
+      "category": "paraphrase",
+      "difficulty": "trivial",
+      "cosine_similarity": 0.8917,
+      "guard_fires": false
+    },
+    {
+      "prompt1": "user: Validate input in TypeScript",
+      "prompt2": "user: How can I validate user input in TypeScript?",
+      "category": "paraphrase",
+      "difficulty": "trivial",
+      "cosine_similarity": 0.9533,
+      "guard_fires": false
+    },
+    {
+      "prompt1": "user: Export metrics from Prometheus",
+      "prompt2": "user: How do I export metrics using Prometheus?",
+      "category": "paraphrase",
+      "difficulty": "trivial",
+      "cosine_similarity": 0.983,
+      "guard_fires": false
+    },
+    {
+      "prompt1": "user: Handle large file uploads",
+      "prompt2": "user: How should I handle large file uploads in my API?",
+      "category": "paraphrase",
+      "difficulty": "trivial",
+      "cosine_similarity": 0.8469,
+      "guard_fires": false
+    },
+    {
+      "prompt1": "user: How do I open a database connection?",
+      "prompt2": "user: How do I close a database connection?",
+      "category": "antonym_unseen",
+      "note": "open/close \u2014 not in antonym_pairs list",
+      "cosine_similarity": 0.715,
+      "guard_fires": false
+    },
+    {
+      "prompt1": "user: How to add a user to a group?",
+      "prompt2": "user: How to remove a user from a group?",
+      "category": "antonym_unseen",
+      "note": "add/remove \u2014 not in list",
+      "cosine_similarity": 0.633,
+      "guard_fires": false
+    },
+    {
+      "prompt1": "user: How do I encrypt data at rest?",
+      "prompt2": "user: How do I decrypt data at rest?",
+      "category": "antonym_unseen",
+      "note": "encrypt/decrypt \u2014 not in list",
+      "cosine_similarity": 0.8612,
+      "guard_fires": false
+    },
+    {
+      "prompt1": "user: How to push changes to a remote branch?",
+      "prompt2": "user: How to pull changes from a remote branch?",
+      "category": "antonym_unseen",
+      "note": "push/pull \u2014 not in list",
+      "cosine_similarity": 0.9195,
+      "guard_fires": false
+    },
+    {
+      "prompt1": "user: How do I make an endpoint public?",
+      "prompt2": "user: How do I make an endpoint private?",
+      "category": "antonym_unseen",
+      "note": "public/private \u2014 not in list",
+      "cosine_similarity": 0.8705,
+      "guard_fires": false
+    },
+    {
+      "prompt1": "user: When should I upgrade a dependency?",
+      "prompt2": "user: When should I downgrade a dependency?",
+      "category": "antonym_unseen",
+      "note": "upgrade/downgrade \u2014 not in list",
+      "cosine_similarity": 0.8105,
+      "guard_fires": false
+    },
+    {
+      "prompt1": "user: How to write data to a file?",
+      "prompt2": "user: How to read data from a file?",
+      "category": "antonym_unseen",
+      "note": "write/read \u2014 not in list",
+      "cosine_similarity": 0.7696,
+      "guard_fires": false
+    },
+    {
+      "prompt1": "user: How do I activate a Python virtual environment?",
+      "prompt2": "user: How do I deactivate a Python virtual environment?",
+      "category": "antonym_unseen",
+      "note": "activate/deactivate \u2014 not in list",
+      "cosine_similarity": 0.7969,
+      "guard_fires": false
+    },
+    {
+      "prompt1": "user: Should I use synchronous or asynchronous processing?",
+      "prompt2": "user: What are the tradeoffs between sync and async processing?",
+      "category": "paraphrase",
+      "difficulty": "challenging",
+      "note": "same question, different phrasing \u2014 should NOT be blocked",
+      "cosine_similarity": 0.7868,
+      "guard_fires": false
+    },
+    {
+      "prompt1": "user: How to lock a file for exclusive access?",
+      "prompt2": "user: How to unlock a file after exclusive access?",
+      "category": "antonym_unseen",
+      "note": "lock/unlock \u2014 not in list (was in training pairs dataset but not in guard)",
+      "cosine_similarity": 0.8527,
+      "guard_fires": false
+    },
+    {
+      "prompt1": "user: How to enable two-factor authentication?",
+      "prompt2": "user: How to disable two-factor authentication?",
+      "category": "antonym_seen",
+      "note": "enable/disable \u2014 IN guard list, should be blocked",
+      "cosine_similarity": 0.8866,
+      "guard_fires": true
+    },
+    {
+      "prompt1": "user: Is it safe to store passwords in plain text?",
+      "prompt2": "user: Is it dangerous to store passwords in plain text?",
+      "category": "antonym_seen",
+      "note": "safe/dangerous \u2014 IN guard list, should be blocked",
+      "cosine_similarity": 0.9778,
+      "guard_fires": true
+    },
+    {
+      "prompt1": "user: How do I increase connection pool size?",
+      "prompt2": "user: How do I decrease connection pool size?",
+      "category": "antonym_seen",
+      "note": "increase/decrease \u2014 IN guard list, should be blocked",
+      "cosine_similarity": 0.9412,
+      "guard_fires": true
+    },
+    {
+      "prompt1": "user: How to start a Docker container?",
+      "prompt2": "user: How to stop a Docker container?",
+      "category": "antonym_seen",
+      "note": "start/stop \u2014 IN guard list, should be blocked",
+      "cosine_similarity": 0.6979,
+      "guard_fires": true
+    },
+    {
+      "prompt1": "user: How to install the AWS CLI?",
+      "prompt2": "user: How to uninstall the AWS CLI?",
+      "category": "antonym_seen",
+      "note": "install/uninstall \u2014 IN guard list, should be blocked",
+      "cosine_similarity": 0.7895,
+      "guard_fires": true
+    },
+    {
+      "prompt1": "user: How to allow a port through the firewall?",
+      "prompt2": "user: How to block a port through the firewall?",
+      "category": "antonym_seen",
+      "note": "allow/block \u2014 IN guard list, should be blocked",
+      "cosine_similarity": 0.8602,
+      "guard_fires": true
+    },
+    {
+      "prompt1": "user: What are the benefits of using microservices?",
+      "prompt2": "user: What are the drawbacks of using microservices?",
+      "category": "antonym_seen",
+      "note": "benefits/drawbacks \u2014 IN guard list, should be blocked",
+      "cosine_similarity": 0.8974,
+      "guard_fires": true
+    },
+    {
+      "prompt1": "user: Set max replicas to 10",
+      "prompt2": "user: Set min replicas to 10",
+      "category": "antonym_seen",
+      "note": "max/min \u2014 IN guard list, should be blocked",
+      "cosine_similarity": 0.8926,
+      "guard_fires": true
+    },
+    {
+      "prompt1": "user: When should I use connection pooling?",
+      "prompt2": "user: When should I avoid connection pooling?",
+      "category": "negation_unseen",
+      "note": "'avoid' not in negation set \u2014 guard may miss this",
+      "cosine_similarity": 0.9505,
+      "guard_fires": false
+    },
+    {
+      "prompt1": "user: How to cache API responses?",
+      "prompt2": "user: How to bypass API response caching?",
+      "category": "negation_unseen",
+      "note": "'bypass' not in negation set",
+      "cosine_similarity": 0.874,
+      "guard_fires": false
+    },
+    {
+      "prompt1": "user: Should I use an ORM?",
+      "prompt2": "user: Should I avoid using an ORM?",
+      "category": "negation_unseen",
+      "note": "'avoid' not in negation set",
+      "cosine_similarity": 0.9718,
+      "guard_fires": false
+    },
+    {
+      "prompt1": "user: How to use Redis for session storage?",
+      "prompt2": "user: How to replace Redis for session storage?",
+      "category": "negation_unseen",
+      "note": "'replace' implies negation but not in set",
+      "cosine_similarity": 0.9389,
+      "guard_fires": false
+    },
+    {
+      "prompt1": "user: Why should I use Kubernetes?",
+      "prompt2": "user: Why should I skip Kubernetes?",
+      "category": "negation_unseen",
+      "note": "'skip' not in negation set",
+      "cosine_similarity": 0.856,
+      "guard_fires": false
+    },
+    {
+      "prompt1": "user: How do I upgrade from Python 3.10 to 3.12?",
+      "prompt2": "user: How do I downgrade from Python 3.12 to 3.10?",
+      "category": "version",
+      "note": "version tokens differ AND upgrade/downgrade \u2014 both guards fire",
+      "cosine_similarity": 0.8655,
+      "guard_fires": false
+    },
+    {
+      "prompt1": "user: Migrate from Redis 6 to Redis 7",
+      "prompt2": "user: Migrate from Redis 7 to Redis 6",
+      "category": "version",
+      "note": "version tokens differ (6/7 reversed)",
+      "cosine_similarity": 0.9936,
+      "guard_fires": false
+    },
+    {
+      "prompt1": "user: Set timeout to 30 seconds",
+      "prompt2": "user: Set timeout to 300 seconds",
+      "category": "version",
+      "note": "30 vs 300 \u2014 different numbers",
+      "cosine_similarity": 0.8774,
+      "guard_fires": true
+    },
+    {
+      "prompt1": "user: Use gRPC instead of REST",
+      "prompt2": "user: Use REST instead of gRPC",
+      "category": "scope",
+      "note": "reversed preference \u2014 same tokens, different meaning",
+      "cosine_similarity": 0.9916,
+      "guard_fires": false
+    },
+    {
+      "prompt1": "user: What is a race condition?",
+      "prompt2": "user: How do I fix a race condition?",
+      "category": "scope",
+      "note": "what vs how \u2014 definition vs fix",
+      "cosine_similarity": 0.7048,
+      "guard_fires": false
+    },
+    {
+      "prompt1": "user: Why do microservices fail?",
+      "prompt2": "user: How do microservices fail?",
+      "category": "scope",
+      "note": "why vs how \u2014 same topic, different question",
+      "cosine_similarity": 0.9567,
+      "guard_fires": false
+    },
+    {
+      "prompt1": "user: Use 2 worker threads",
+      "prompt2": "user: Use 16 worker threads",
+      "category": "version",
+      "note": "different numeric config",
+      "cosine_similarity": 0.7983,
+      "guard_fires": true
+    }
+  ],
+  "threshold_table": null
+}

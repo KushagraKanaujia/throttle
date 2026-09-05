@@ -2,6 +2,10 @@
 
 **Benchmark your LLM inference server without guessing**
 
+> **Scope:** Throttle currently measures vLLM inference cost specifically.
+> It does not cover TTS, STT, localization pipelines, or other serving stacks.
+> That's deliberate — getting vLLM measurement right before expanding scope.
+
 ## What breaks without this
 
 You're tuning `max_num_seqs` or batch size on your vLLM/Ollama server. You change it, curl a few requests, eyeball the latency, and deploy. But you don't know if throughput actually improved, if the change regressed under load, or if the test was fair. Throttle gives you decision-grade evidence: counterbalanced runs, statistical intervals, and strict validation gates so you know whether a configuration change actually won.

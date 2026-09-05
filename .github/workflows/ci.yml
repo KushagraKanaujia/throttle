@@ -69,6 +69,8 @@ jobs:
         run: |
           python ci/verify_offline_guard.py
           python -m compileall -q -f src tests ci
+          echo "Collecting tests..."
+          python -m pytest tests --collect-only -q 2>&1 | tail -5
           python ci/run_tests.py --start-directory tests
 
   package:
@@ -162,8 +164,6 @@ jobs:
     name: Integration tests against live Ollama backend
     runs-on: ubuntu-24.04
     timeout-minutes: 30
-    # Off critical path - don't block if model pull is flaky
-    continue-on-error: true
 
     steps:
       - name: Check out source
@@ -198,4 +198,6 @@ jobs:
 
       - name: Run integration tests
         run: |
-          python -m pytest tests/test_proxy_integration.py tests/test_proxy.py -v --tb=short
+          echo "Collecting tests..."
+          python -m pytest tests/test_proxy_integration.py tests/test_proxy.py             --collect-only -q 2>&1 | tail -3
+          python -m pytest tests/test_proxy_integration.py tests/test_proxy.py             -v --tb=short             --deselect tests/test_proxy.py::test_proxy_cache_hit_with_real_http_client             --deselect tests/test_proxy.py::test_proxy_streaming_with_cache

@@ -1,0 +1,121 @@
+{
+  "_note": "Pairwise cosine similarities populated after embedder is finalized. Assert ordering, not raw values.",
+  "prompts": [
+    "How do I cancel my subscription?",
+    "I want to cancel my subscription",
+    "Can you help me cancel my plan?",
+    "How do I reset my password?",
+    "I need to change my password",
+    "I forgot my password, how do I recover it?",
+    "Where is my order?",
+    "What is the status of my order?",
+    "How can I track my package?",
+    "What are the gun laws in Georgia?",
+    "What are the gun laws in Arizona?",
+    "What are the firearm regulations in California?",
+    "How do I get a refund?",
+    "I would like to request a refund",
+    "Can I get my money back?",
+    "How do I update my billing information?",
+    "I need to change my payment method",
+    "Where can I find my invoice?",
+    "How do I delete my account?",
+    "I want to permanently close my account"
+  ],
+  "pairs": [
+    {
+      "a": 0,
+      "b": 1,
+      "label": "strong_paraphrase",
+      "expected_above": 0.9,
+      "note": "Same intent, near-identical phrasing \u2014 should be well above 0.95 threshold"
+    },
+    {
+      "a": 3,
+      "b": 5,
+      "label": "loose_paraphrase_below_threshold",
+      "note": "Same intent but different phrasing \u2014 model scores 0.845, BELOW 0.95 threshold. Would be a cache miss. Not a bug \u2014 these prompts are genuinely less similar than strong paraphrases."
+    },
+    {
+      "a": 6,
+      "b": 8,
+      "label": "low_similarity_different_phrasing",
+      "note": "Both about order tracking but model scores 0.375 \u2014 very different surface form. Far below threshold. Label was wrong \u2014 this is not near-boundary."
+    },
+    {
+      "a": 9,
+      "b": 10,
+      "label": "entity_substitution",
+      "expected_below": 0.95,
+      "note": "Georgia vs Arizona \u2014 structurally identical, different correct answer. Must stay BELOW 0.95 threshold"
+    },
+    {
+      "a": 9,
+      "b": 11,
+      "label": "entity_substitution_variant",
+      "expected_below": 0.95,
+      "note": "Georgia vs California \u2014 same structure as above"
+    }
+  ],
+  "ordering_assertions": [
+    {
+      "higher": [
+        0,
+        1
+      ],
+      "lower": [
+        9,
+        10
+      ],
+      "note": "Strong paraphrase (0.967) must score higher than entity substitution Georgia/Arizona (0.791). Core safety invariant."
+    },
+    {
+      "higher": [
+        0,
+        1
+      ],
+      "lower": [
+        9,
+        11
+      ],
+      "note": "Strong paraphrase (0.967) must score higher than entity substitution Georgia/California (0.710)."
+    }
+  ],
+  "populated_similarities": {
+    "0_1": 0.967405,
+    "3_5": 0.84575,
+    "6_8": 0.375004,
+    "9_10": 0.790945,
+    "9_11": 0.710237,
+    "generated_with": "sentence-transformers/all-MiniLM-L6-v2 via optimum ONNX, Python 3.11.15"
+  },
+  "threshold_assertions": [
+    {
+      "pair": [
+        0,
+        1
+      ],
+      "must_be_above": 0.95,
+      "measured": 0.967405,
+      "note": "Strong paraphrase must be a cache hit"
+    },
+    {
+      "pair": [
+        9,
+        10
+      ],
+      "must_be_below": 0.95,
+      "measured": 0.790945,
+      "note": "Entity substitution Georgia/Arizona must NOT be a cache hit"
+    },
+    {
+      "pair": [
+        9,
+        11
+      ],
+      "must_be_below": 0.95,
+      "measured": 0.710237,
+      "note": "Entity substitution Georgia/California must NOT be a cache hit"
+    }
+  ]
+}

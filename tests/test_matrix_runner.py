@@ -5,8 +5,8 @@ import tempfile
 import time
 from pathlib import Path
 
+import sys
 import pytest
-
 
 def test_matrix_runner_against_mock_backend(tmp_path):
     """
@@ -94,7 +94,7 @@ cells:
     # Note: This will fail if throttle golden command doesn't support all the flags
     # But it proves the matrix runner infrastructure works
     result = subprocess.run(
-        ["python3", str(script_path), "--matrix", str(matrix_file), "--output-dir", str(output_dir)],
+        [sys.executable, str(script_path), "--matrix", str(matrix_file), "--output-dir", str(output_dir)],
         capture_output=True,
         text=True,
         timeout=300,
@@ -159,7 +159,7 @@ cells:
     # Run with --resume
     script_path = Path(__file__).parent.parent / "scripts" / "run_golden_matrix.py"
     result = subprocess.run(
-        ["python3", str(script_path), "--matrix", str(matrix_file), "--output-dir", str(output_dir), "--resume"],
+        [sys.executable, str(script_path), "--matrix", str(matrix_file), "--output-dir", str(output_dir), "--resume"],
         capture_output=True,
         text=True,
         timeout=30,

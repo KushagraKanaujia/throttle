@@ -3,6 +3,7 @@
 import asyncio
 import json
 import os
+import socket
 import time
 from multiprocessing import Process
 
@@ -19,10 +20,9 @@ BACKEND_MODEL = os.getenv("BACKEND_MODEL", "llama3.2:1b")
 def is_backend_available(backend_url: str) -> bool:
     """Check if backend is reachable.
 
-    Tries both Ollama-specific endpoint and generic health endpoint.
+    Tries Ollama-specific endpoint, generic health, and standard models endpoint.
     """
     try:
-        # Try Ollama-specific endpoint
         response = httpx.get(f"{backend_url.rstrip('/')}/api/tags", timeout=5.0)
         if response.status_code == 200:
             return True
@@ -30,7 +30,6 @@ def is_backend_available(backend_url: str) -> bool:
         pass
 
     try:
-        # Try generic health endpoint
         response = httpx.get(f"{backend_url.rstrip('/')}/health", timeout=5.0)
         if response.status_code == 200:
             return True
@@ -38,7 +37,6 @@ def is_backend_available(backend_url: str) -> bool:
         pass
 
     try:
-        # Try OpenAI-compatible models endpoint
         response = httpx.get(f"{backend_url.rstrip('/')}/v1/models", timeout=5.0)
         if response.status_code == 200:
             return True
@@ -62,7 +60,7 @@ def run_proxy_server(port: int):
 
 
 @pytest.mark.skipif(
-    not is_backend_available(BACKEND_URL),
+    getattr(socket, "_throttle_offline_guard_active", False) or not is_backend_available(BACKEND_URL),
     reason=f"Integration test requires real backend at {BACKEND_URL}"
 )
 @pytest.mark.asyncio
@@ -216,7 +214,7 @@ async def test_proxy_cache_hit_with_real_http_client():
 
 
 @pytest.mark.skipif(
-    not is_backend_available(BACKEND_URL),
+    getattr(socket, "_throttle_offline_guard_active", False) or not is_backend_available(BACKEND_URL),
     reason=f"Integration test requires real backend at {BACKEND_URL}"
 )
 @pytest.mark.asyncio

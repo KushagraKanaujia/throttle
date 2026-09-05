@@ -22,6 +22,7 @@ import json
 import time
 import urllib.request
 import urllib.error
+from collections import deque
 from dataclasses import dataclass, field, asdict
 from typing import Iterator, Optional
 
@@ -29,6 +30,109 @@ from typing import Iterator, Optional
 # ---------------------------------------------------------------------------
 # Prometheus scraper — no dependencies
 # ---------------------------------------------------------------------------
+
+class _Window:
+    """Accumulates CostSnapshots for Tier 2 trend computation.
+
+    Minimum 5 minutes (20 snapshots at 15s) before reporting idle
+    fraction or batch inefficiency. Minimum 2 minutes for warnings.
+    """
+
+    MIN_SNAPSHOTS_WARN = 8    # ~2 minutes at 15s interval
+    MIN_SNAPSHOTS_FULL = 20   # ~5 minutes at 15s interval
+
+    def __init__(self, maxlen: int = 240):  # 1 hour at 15s
+        self._snaps: deque = deque(maxlen=maxlen)
+
+    def push(self, snap: "CostSnapshot") -> None:
+        self._snaps.append(snap)
+
+    @property
+    def n(self) -> int:
+        return len(self._snaps)
+
+    @property
+    def ready_full(self) -> bool:
+        return self.n >= self.MIN_SNAPSHOTS_FULL
+
+    @property
+    def elapsed_minutes(self) -> float:
+        return self.n * 15 / 60
+
+    def idle_fraction(self) -> Optional[float]:
+        if not self.ready_full:
+            return None
+        snaps = [s for s in self._snaps if s.num_requests_running is not None]
+        if not snaps:
+            return None
+        idle = sum(1 for s in snaps if s.num_requests_running == 0)
+        return round(idle / len(snaps), 3)
+
+    def avg_batch_fill(self) -> Optional[float]:
+        if not self.ready_full:
+            return None
+        fills = [s.batch_fill for s in self._snaps if s.batch_fill is not None]
+        if not fills:
+            return None
+        return round(sum(fills) / len(fills), 3)
+
+    def idle_cost_per_hour(self, gpu_hourly_rate: float) -> Optional[float]:
+        frac = self.idle_fraction()
+        if frac is None:
+            return None
+        return round(gpu_hourly_rate * frac, 4)
+
+    def suggest(self, gpu_hourly_rate: float, max_num_seqs: Optional[int]) -> Optional[dict]:
+        """Return the single highest-leverage suggestion, or None.
+
+        Only fires after MIN_SNAPSHOTS_FULL. Never guesses.
+        """
+        if not self.ready_full:
+            return None
+
+        idle = self.idle_fraction()
+        fill = self.avg_batch_fill()
+
+        # Priority 1: sustained idle
+        if idle is not None and idle > 0.20:
+            idle_cost = self.idle_cost_per_hour(gpu_hourly_rate)
+            return {
+                "action": "reduce max_num_seqs or scale down",
+                "basis": "observed",
+                "observation_minutes": round(self.elapsed_minutes, 1),
+                "reason": (
+                    f"GPU idle {idle:.0%} of the last "
+                    f"{self.elapsed_minutes:.0f} minutes. "
+                    f"Estimated idle cost: ${idle_cost:.2f}/hr."
+                ),
+                "latency_impact": "none — idle means no active requests",
+                "estimated_saving_per_hour": idle_cost,
+                "confidence": "high",
+            }
+
+        # Priority 2: sustained underfilled batch
+        if fill is not None and fill < 0.50 and max_num_seqs is not None:
+            return {
+                "action": f"reduce max_num_seqs from {max_num_seqs}",
+                "basis": "observed",
+                "observation_minutes": round(self.elapsed_minutes, 1),
+                "reason": (
+                    f"Batch fill averaged {fill:.0%} over "
+                    f"{self.elapsed_minutes:.0f} minutes. "
+                    f"Config reserves capacity current traffic does not use."
+                ),
+                "latency_impact": "unknown — may increase TTFT under burst. Monitor after applying.",
+                "estimated_saving_per_hour": None,
+                "confidence": "medium — assumes linear batch-throughput scaling",
+                "suggested_next_step": (
+                    f"throttle watch --try max_num_seqs=<lower_value> "
+                    f"--try-duration-minutes 10 "
+                    f"--gpu-rate-per-hour {gpu_hourly_rate}"
+                ),
+            }
+
+        return None
+
 
 def _scrape(url: str, timeout: float = 5.0) -> dict[str, float]:
     """
@@ -86,11 +190,16 @@ class CostSnapshot:
     # Derived cost (None = refused — see basis field)
     cost_per_hour: Optional[float]
     cost_per_million_tokens: Optional[float]
-    idle_fraction: Optional[float]          # None until window logic added
 
     # Batch fill (None if max_num_seqs unknown)
     batch_fill: Optional[float]
     max_num_seqs: Optional[int]
+
+    # Tier 2 — window-derived (None until 5 minutes of observation)
+    idle_fraction: Optional[float] = None
+    suggestion: Optional[dict] = None
+    window_ready: bool = False
+    window_elapsed_minutes: float = 0.0
 
     # Data quality
     metrics_present: list[str] = field(default_factory=list)
@@ -219,6 +328,7 @@ def stream_metrics(
                           If None, batch_fill is omitted from snapshots.
     """
     start = time.time()
+    window = _Window()
 
     while True:
         t0 = time.perf_counter()
@@ -249,13 +359,19 @@ def stream_metrics(
                 refusals=[{"figure": "all", "reason": str(e)}],
             )
         else:
-            yield _build_snapshot(
+            snap = _build_snapshot(
                 raw=raw,
                 gpu_hourly_rate=gpu_rate_per_hour,
                 scrape_url=metrics_url,
                 observation_seconds=observation_seconds,
                 max_num_seqs=max_num_seqs,
             )
+            window.push(snap)
+            snap.idle_fraction = window.idle_fraction()
+            snap.suggestion = window.suggest(gpu_rate_per_hour, max_num_seqs)
+            snap.window_ready = window.ready_full
+            snap.window_elapsed_minutes = round(window.elapsed_minutes, 1)
+            yield snap
 
         # Sleep for remainder of interval
         elapsed = time.perf_counter() - t0
