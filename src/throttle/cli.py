@@ -492,7 +492,13 @@ def build_parser() -> argparse.ArgumentParser:
         default=DEFAULT_GOLDEN_OUTPUT_DIR,
         help="new directory for B1.json through C3.json and golden.json",
     )
-    golden.add_argument(
+    golden_result_store = golden.add_argument_group(
+        "result store options",
+        "before a run, checks for a matching or near-matching prior result; "
+        "after a decision-eligible run, persists a record (see "
+        "docs/RESULT_STORE_DESIGN_PROPOSAL.md)",
+    )
+    golden_result_store.add_argument(
         "--operator",
         default=None,
         help=(
@@ -500,7 +506,7 @@ def build_parser() -> argparse.ArgumentParser:
             "(defaults to $USER@hostname if not set)"
         ),
     )
-    golden.add_argument(
+    golden_result_store.add_argument(
         "--hardware-ownership",
         choices=("owned", "rented"),
         default=None,
@@ -509,22 +515,22 @@ def build_parser() -> argparse.ArgumentParser:
             "result whose ownership can't be determined is not stored"
         ),
     )
-    golden.add_argument(
+    golden_result_store.add_argument(
         "--hardware-provider",
         default="unknown",
         help="e.g. runpod, lambda; only meaningful when --hardware-ownership rented",
     )
-    golden.add_argument(
+    golden_result_store.add_argument(
         "--hardware-rate-usd-per-hour",
         type=float,
         default=None,
     )
-    golden.add_argument(
+    golden_result_store.add_argument(
         "--environment-note",
         default="unknown",
         help="free text, e.g. 'RunPod pod, on-demand, deleted after run'",
     )
-    golden.add_argument(
+    golden_result_store.add_argument(
         "--no-result-store",
         action="store_true",
         help="don't check for or persist to the result store for this run",
