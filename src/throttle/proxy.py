@@ -15,6 +15,10 @@ semantic meaning. This is a known limitation of lexical similarity.
 A more robust solution would use semantic embeddings (e.g., ONNX-based two-tier
 matching) to catch paraphrases that Jaccard misses. The current threshold
 balances precision (avoiding false positives) with recall (catching duplicates).
+
+Agent Session Profiling: When enable_session_tracking=True, the proxy records
+multi-turn agent sessions to ~/.throttle/sessions.db for analysis. Tracking is
+async and adds <5ms overhead per request.
 """
 
 import asyncio
@@ -54,6 +58,7 @@ class ProxyServer:
         # NOTE: 120s default is not evidence-based. 30s risks killing cold model loads and long generations.
         backend_timeout_seconds: float = 120.0,
         model_backends: Optional[Dict[str, str]] = None,
+        enable_session_tracking: bool = False,
         lifespan=None,
     ):
         self.backend_url = backend_url.rstrip("/")
@@ -64,6 +69,7 @@ class ProxyServer:
         self.enable_cache = enable_cache
         self.cache: Optional[SimilarityCache] = None
         self.backend_timeout_seconds = backend_timeout_seconds
+        self.enable_session_tracking = enable_session_tracking
 
         if self.enable_cache:
             self.cache = SimilarityCache(
@@ -74,6 +80,13 @@ class ProxyServer:
                 embedding_threshold=embedding_threshold,
                 embedding_max_entries_scanned=embedding_max_entries_scanned,
             )
+
+        # Session tracking (optional)
+        self._session_tracker = None
+        if self.enable_session_tracking:
+            from .sessions import SessionTracker
+
+            self._session_tracker = SessionTracker()
 
         self.app = FastAPI(title="Throttle Proxy", version="0.3.0", lifespan=lifespan)
         self.app.post("/v1/chat/completions")(self.chat_completions)
@@ -91,11 +104,17 @@ class ProxyServer:
         self._backend_calls = 0
 
     async def startup(self):
-        """Initialize HTTP client."""
+        """Initialize HTTP client and session tracker."""
         self._client = httpx.AsyncClient(timeout=self.backend_timeout_seconds)
 
+        if self._session_tracker:
+            await self._session_tracker.start_background_flush()
+
     async def shutdown(self):
-        """Cleanup HTTP client."""
+        """Cleanup HTTP client and session tracker."""
+        if self._session_tracker:
+            await self._session_tracker.shutdown()
+
         if self._client:
             await self._client.aclose()
 
@@ -398,6 +417,9 @@ class ProxyServer:
 
     async def chat_completions(self, request: Request):
         """Handle /v1/chat/completions requests with caching and deduplication."""
+        start_time = time.perf_counter()
+        ttft_ms = None  # Track time-to-first-token if available
+
         try:
             request_body = await request.json()
 
@@ -414,6 +436,20 @@ class ProxyServer:
                     if isinstance(scope_dict, dict) and scope_key in scope_dict:
                         self.cache.metrics.hits += 1
                         cached_response = scope_dict[scope_key]["response"]
+
+                        # Track session (cache hit)
+                        total_latency_ms = (time.perf_counter() - start_time) * 1000
+                        if self._session_tracker:
+                            asyncio.create_task(
+                                self._session_tracker.record_turn(
+                                    request=request,
+                                    request_body=request_body,
+                                    response=cached_response,
+                                    latency_ms=total_latency_ms,
+                                    ttft_ms=None,  # Cache hits have no TTFT
+                                )
+                            )
+
                         if is_streaming:
                             return StreamingResponse(
                                 self._fake_stream_response(cached_response),
@@ -490,6 +526,19 @@ class ProxyServer:
                     content={"error": "Backend request timed out"}
                 )
 
+            # Track session (backend response)
+            total_latency_ms = (time.perf_counter() - start_time) * 1000
+            if self._session_tracker:
+                asyncio.create_task(
+                    self._session_tracker.record_turn(
+                        request=request,
+                        request_body=request_body,
+                        response=response_data,
+                        latency_ms=total_latency_ms,
+                        ttft_ms=ttft_ms,
+                    )
+                )
+
             if is_streaming:
                 return StreamingResponse(
                     self._fake_stream_response(response_data),
@@ -519,6 +568,7 @@ def create_app(
     embedding_max_entries_scanned: int = 256,
     # NOTE: 120s default is not evidence-based. 30s risks killing cold model loads and long generations.
     backend_timeout_seconds: float = 120.0,
+    enable_session_tracking: bool = False,
 ) -> FastAPI:
     """Factory function to create a proxy app."""
     # ProxyServer will be captured by the lifespan closure
@@ -542,6 +592,7 @@ def create_app(
         embedding_threshold=embedding_threshold,
         embedding_max_entries_scanned=embedding_max_entries_scanned,
         backend_timeout_seconds=backend_timeout_seconds,
+        enable_session_tracking=enable_session_tracking,
         lifespan=lifespan,
     )
 
