@@ -857,6 +857,155 @@ def build_parser() -> argparse.ArgumentParser:
         default=120.0,
         help="backend request timeout in seconds (default: 120.0). NOTE: this value is not evidence-based; 30 seconds risks killing cold model loads and long generations.",
     )
+    proxy.add_argument(
+        "--enable-session-tracking",
+        action="store_true",
+        help="enable agent session profiling (records to ~/.throttle/sessions.db)",
+    )
+
+    # Sessions command (agent profiling)
+    from .sessions_cli import add_sessions_subcommand
+    add_sessions_subcommand(subparsers)
+
+    # Provider management commands
+    providers = subparsers.add_parser(
+        "providers",
+        help="manage multi-provider configurations",
+        description="Configure and manage multiple inference providers for routing and failover.",
+    )
+    providers_sub = providers.add_subparsers(dest="providers_command", required=True)
+
+    providers_list = providers_sub.add_parser("list", help="list configured providers")
+
+    providers_add = providers_sub.add_parser("add", help="add a new provider")
+    providers_add.add_argument("--name", required=True, help="unique provider name")
+    providers_add.add_argument(
+        "--type",
+        required=True,
+        choices=["openai", "anthropic", "azure-openai", "aws-bedrock", "gcp-vertex", "custom"],
+        help="provider type",
+    )
+    providers_add.add_argument("--api-key-env", help="environment variable name for API key")
+    providers_add.add_argument("--base-url", help="custom base URL")
+    providers_add.add_argument("--region", help="region (for Azure/AWS/GCP)")
+    providers_add.add_argument("--resource-name", help="Azure resource name")
+    providers_add.add_argument("--deployment-id", help="Azure deployment ID")
+    providers_add.add_argument("--project-id", help="GCP project ID")
+    providers_add.add_argument("--cost-input", type=float, help="cost per million input tokens")
+    providers_add.add_argument("--cost-output", type=float, help="cost per million output tokens")
+    providers_add.add_argument("--priority", type=int, default=100, help="priority (lower = higher priority)")
+    providers_add.add_argument("--disabled", action="store_true", help="add provider but keep it disabled")
+    providers_add.add_argument("--max-retries", type=int, default=3, help="max retries")
+    providers_add.add_argument("--timeout", type=int, default=120, help="timeout in seconds")
+
+    providers_remove = providers_sub.add_parser("remove", help="remove a provider")
+    providers_remove.add_argument("name", help="provider name to remove")
+
+    providers_enable = providers_sub.add_parser("enable", help="enable a provider")
+    providers_enable.add_argument("name", help="provider name to enable")
+
+    providers_disable = providers_sub.add_parser("disable", help="disable a provider")
+    providers_disable.add_argument("name", help="provider name to disable")
+
+    providers_test = providers_sub.add_parser("test", help="test provider health")
+    providers_test.add_argument("--name", help="specific provider to test (tests all if not specified)")
+
+    # Routing command
+    route = subparsers.add_parser(
+        "route",
+        help="route requests with smart fallback and cost optimization",
+        description="Send requests through the routing engine with automatic provider selection and failover.",
+    )
+    route.add_argument("--model", required=True, help="model to request")
+    route.add_argument("--message", help="user message to send")
+    route.add_argument("--messages-file", type=Path, help="JSON file with messages array")
+    route.add_argument("--max-tokens", type=int, help="max output tokens")
+    route.add_argument("--temperature", type=float, help="sampling temperature")
+    route.add_argument(
+        "--strategy",
+        choices=["cost-optimized", "latency-optimized", "priority", "round-robin"],
+        default="cost-optimized",
+        help="routing strategy",
+    )
+    route.add_argument(
+        "--fallback",
+        choices=["none", "next-available", "all-providers", "retry-primary"],
+        default="next-available",
+        help="fallback behavior on failure",
+    )
+    route.add_argument("--max-retries", type=int, default=3, help="max retries per provider")
+    route.add_argument("--retry-delay", type=float, default=1.0, help="initial retry delay in seconds")
+    route.add_argument("--circuit-breaker", action="store_true", default=True, help="enable circuit breaker")
+    route.add_argument("--estimated-input-tokens", type=int, default=0, help="estimated input tokens for cost calculation")
+    route.add_argument("--estimated-output-tokens", type=int, default=0, help="estimated output tokens for cost calculation")
+    route.add_argument("--no-output", action="store_true", help="don't print response")
+
+    # Dashboard command
+    dashboard = subparsers.add_parser(
+        "dashboard",
+        help="launch web dashboard for real-time monitoring",
+        description="Start a web dashboard with real-time metrics, provider status, and alerts.",
+    )
+    dashboard.add_argument("--host", default="127.0.0.1", help="dashboard host")
+    dashboard.add_argument("--port", type=int, default=8888, help="dashboard port")
+    dashboard.add_argument("--reload", action="store_true", help="enable auto-reload")
+    dashboard.add_argument("--metrics-interval", type=float, default=5.0, help="metrics collection interval in seconds")
+    dashboard.add_argument("--no-alerts", action="store_true", help="disable alert checking")
+    dashboard.add_argument("--cost-threshold", type=float, default=100.0, help="cost alert threshold in USD")
+    dashboard.add_argument("--error-rate-threshold", type=float, default=0.1, help="error rate alert threshold (0.0-1.0)")
+    dashboard.add_argument("--latency-threshold", type=float, default=5000.0, help="latency alert threshold in ms")
+    dashboard.add_argument("--quiet", action="store_true", help="quiet mode")
+
+    # Alerts management commands
+    alerts = subparsers.add_parser(
+        "alerts",
+        help="configure alert notifications",
+        description="Configure Slack, email, and webhook notifications for cost and performance alerts.",
+    )
+    alerts_sub = alerts.add_subparsers(dest="alerts_command", required=True)
+
+    alerts_list = alerts_sub.add_parser("list", help="list configured alert notifiers")
+
+    alerts_add = alerts_sub.add_parser("add", help="add alert notifier")
+    alerts_add_sub = alerts_add.add_subparsers(dest="notifier_type", required=True)
+
+    # Slack notifier
+    slack = alerts_add_sub.add_parser("slack", help="add Slack webhook notifier")
+    slack.add_argument("--webhook-url", required=True, help="Slack webhook URL")
+    slack.add_argument("--channel", help="Slack channel (optional)")
+    slack.add_argument(
+        "--min-level",
+        choices=["info", "warning", "error", "critical"],
+        default="warning",
+        help="minimum alert level",
+    )
+
+    # Email notifier
+    email = alerts_add_sub.add_parser("email", help="add email notifier")
+    email.add_argument("--smtp-host", required=True, help="SMTP server host")
+    email.add_argument("--smtp-port", type=int, default=587, help="SMTP server port")
+    email.add_argument("--smtp-username", help="SMTP username")
+    email.add_argument("--smtp-password", help="SMTP password")
+    email.add_argument("--from-email", default="noreply@throttle.com", help="from email address")
+    email.add_argument("--to-emails", nargs="+", required=True, help="recipient email addresses")
+    email.add_argument(
+        "--min-level",
+        choices=["info", "warning", "error", "critical"],
+        default="warning",
+        help="minimum alert level",
+    )
+
+    # Webhook notifier
+    webhook = alerts_add_sub.add_parser("webhook", help="add generic webhook notifier")
+    webhook.add_argument("--url", required=True, help="webhook URL")
+    webhook.add_argument(
+        "--min-level",
+        choices=["info", "warning", "error", "critical"],
+        default="warning",
+        help="minimum alert level",
+    )
+
+    alerts_test = alerts_sub.add_parser("test", help="send test alert to all configured notifiers")
 
     return parser
 
@@ -3896,6 +4045,10 @@ def _handle_proxy(args: argparse.Namespace) -> int:
     print(f"Backend: {args.backend_url}")
     print(f"Backend timeout: {args.backend_timeout_seconds}s")
     print(f"Cache enabled: {args.enable_cache}")
+    print(f"Session tracking: {args.enable_session_tracking}")
+    if args.enable_session_tracking:
+        print(f"  Database: ~/.throttle/sessions.db")
+        print(f"  View sessions: throttle sessions")
     if args.enable_cache:
         print(f"  TTL: {args.cache_ttl_seconds}s")
         print(f"  Max size: {args.cache_max_size}")
@@ -3932,6 +4085,7 @@ def _handle_proxy(args: argparse.Namespace) -> int:
         embedding_threshold=args.embedding_threshold,
         embedding_max_entries_scanned=args.embedding_max_entries_scanned,
         backend_timeout_seconds=args.backend_timeout_seconds,
+        enable_session_tracking=args.enable_session_tracking,
     )
 
     try:
@@ -4097,6 +4251,55 @@ def main(argv: Sequence[str] | None = None) -> int:
         return _handle_proxy(args)
     if args.command == "watch":
         return _handle_watch(args)
+    if args.command == "sessions":
+        from .sessions_cli import handle_sessions_command
+        return handle_sessions_command(args)
+    if args.command == "providers":
+        from .providers_cli import (
+            handle_providers_list,
+            handle_providers_add,
+            handle_providers_remove,
+            handle_providers_enable,
+            handle_providers_disable,
+            handle_providers_test,
+        )
+        if args.providers_command == "list":
+            return handle_providers_list(args)
+        if args.providers_command == "add":
+            return handle_providers_add(args)
+        if args.providers_command == "remove":
+            return handle_providers_remove(args)
+        if args.providers_command == "enable":
+            return handle_providers_enable(args)
+        if args.providers_command == "disable":
+            return handle_providers_disable(args)
+        if args.providers_command == "test":
+            return handle_providers_test(args)
+    if args.command == "route":
+        from .cli_commands import handle_route
+        return handle_route(args)
+    if args.command == "dashboard":
+        from .cli_commands import handle_dashboard
+        return handle_dashboard(args)
+    if args.command == "alerts":
+        from .cli_commands import (
+            handle_alerts_list,
+            handle_alerts_add_slack,
+            handle_alerts_add_email,
+            handle_alerts_add_webhook,
+            handle_alerts_test,
+        )
+        if args.alerts_command == "list":
+            return handle_alerts_list(args)
+        if args.alerts_command == "add":
+            if args.notifier_type == "slack":
+                return handle_alerts_add_slack(args)
+            if args.notifier_type == "email":
+                return handle_alerts_add_email(args)
+            if args.notifier_type == "webhook":
+                return handle_alerts_add_webhook(args)
+        if args.alerts_command == "test":
+            return handle_alerts_test(args)
     parser.error("a subcommand is required")
     return EXIT_USAGE
 
