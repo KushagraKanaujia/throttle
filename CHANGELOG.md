@@ -2,7 +2,7 @@
 
 All notable changes to Throttle will be documented in this file.
 
-## [Unreleased]
+## [0.4.0] - 2026-09-23
 
 ### Added
 - `throttle check`: measures $/M tokens against a live endpoint in repeated
@@ -36,6 +36,14 @@ All notable changes to Throttle will be documented in this file.
   list (demo, cost, check).
 - `cost` and `demo` print a blended $/M line (total cost / all tokens) next to
   the input and output figures, with a note that those two are not additive.
+- Agent session profiling (opt-in). `throttle proxy --enable-session-tracking`
+  records per-turn timing (TTFT, total latency, gap since the previous turn)
+  and token counts for multi-turn agent sessions to `~/.throttle/sessions.db`.
+  Prompt and completion text are never stored: turns keep content hashes and
+  token counts, and sessions keep the client IP used for session grouping.
+- `throttle sessions` lists recorded sessions (`--since`, `--limit`) and, given
+  a session id, shows a per-session breakdown of where wall-clock time went
+  plus rule-based findings with suggested configuration changes.
 
 ### Changed
 - `--url` and `--endpoint-url` are accepted interchangeably, and
@@ -61,6 +69,9 @@ All notable changes to Throttle will be documented in this file.
   MORE EXPENSIVE, CHEAPER, NOT CALIBRATED) and its exit codes. Install
   instructions point at source, since PyPI still has 0.3.0; 0.4.0 is the next
   PyPI release.
+- Internal design notes, audit reports, and pilot/outreach material moved from
+  the repository root into `docs/internal/`. The proxy guide now lives at
+  `docs/PROXY_DEMO.md`.
 
 ### Fixed
 - README commands that did not run as written: the `diagnose` example had no
@@ -71,23 +82,6 @@ All notable changes to Throttle will be documented in this file.
 - The README credited the semantic-cache false-match example ("Is it safe /
   dangerous to use eval in Python?") with a 0.9804 score that belongs to a
   different pair; the recorded score is 0.9874 (`data/negation_pairs.json`).
-
-## [0.4.0] - 2026-09-23
-
-### Added
-- Agent session profiling (opt-in). `throttle proxy --enable-session-tracking`
-  records per-turn timing (TTFT, total latency, gap since the previous turn)
-  and token counts for multi-turn agent sessions to `~/.throttle/sessions.db`.
-  Prompt and completion text are never stored: turns keep content hashes and
-  token counts, and sessions keep the client IP used for session grouping.
-- `throttle sessions` lists recorded sessions (`--since`, `--limit`) and, given
-  a session id, shows a per-session breakdown of where wall-clock time went
-  plus rule-based findings with suggested configuration changes.
-
-### Changed
-- Internal design notes, audit reports, and pilot/outreach material moved from
-  the repository root into `docs/internal/`. The proxy guide now lives at
-  `docs/PROXY_DEMO.md`.
 
 ## [0.3.0] - 2026-08-22
 
