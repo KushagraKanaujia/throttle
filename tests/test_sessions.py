@@ -24,8 +24,17 @@ def temp_db():
 
 @pytest.fixture
 def tracker(temp_db):
-    """Create a SessionTracker with temporary database."""
-    return SessionTracker(db_path=temp_db)
+    """Create a SessionTracker with temporary database, closed on teardown.
+
+    Tests that already awaited ``shutdown()`` are unaffected (``close()`` is a
+    no-op once the connection is gone). Without this, every test that uses the
+    fixture leaks an open sqlite3 connection, which surfaces under
+    ``PYTHONWARNINGS=error`` as a ResourceWarning in whichever later test the
+    garbage collector happens to run in.
+    """
+    t = SessionTracker(db_path=temp_db)
+    yield t
+    t.close()
 
 
 def create_mock_request(session_header=None, client_ip="127.0.0.1"):
