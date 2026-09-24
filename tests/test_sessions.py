@@ -7,6 +7,8 @@ import time
 from pathlib import Path
 from unittest.mock import MagicMock
 
+from starlette.datastructures import Headers
+
 import pytest
 
 from throttle.sessions import SessionTracker, Turn
@@ -31,8 +33,8 @@ def create_mock_request(session_header=None, client_ip="127.0.0.1"):
     request = MagicMock()
     request.client = MagicMock()
     request.client.host = client_ip
-    request.headers = {"X-Throttle-Session": session_header} if session_header else {}
-    request.headers.get = lambda k, default=None: request.headers.get(k, default)
+    # Real Starlette Headers so lookups are case-insensitive like production.
+    request.headers = Headers({"x-throttle-session": session_header} if session_header else {})
     return request
 
 
@@ -66,8 +68,7 @@ async def test_explicit_session_header(tracker):
 
     # Session ID should match header
     sessions = tracker.get_recent_sessions(since_seconds=60)
-    assert len(sessions) > 0
-    # Note: the session ID is transformed but should contain the header value
+    assert [s["session_id"] for s in sessions] == ["my-session-123"]
 
 
 @pytest.mark.asyncio
@@ -100,64 +101,69 @@ async def test_multiple_turns_same_session(tracker):
     # Get sessions
     sessions = tracker.get_recent_sessions(since_seconds=60)
 
-    # Should have recorded all turns
-    # Note: actual session_id will be different due to implementation details
-    # Let's just verify we have sessions with turns
-    assert len(sessions) > 0
+    assert [s["session_id"] for s in sessions] == ["session-abc"]
+    assert sessions[0]["turn_count"] == 5
+    turns = tracker.get_session_turns("session-abc")
+    assert [t.turn_index for t in turns] == [0, 1, 2, 3, 4]
 
 
 @pytest.mark.asyncio
 async def test_turn_gap_calculation(tracker):
-    """Test gap between turns is calculated correctly."""
+    """Gap = start of this turn minus end of the previous turn (client-side time)."""
     request = create_mock_request(session_header="gap-test")
-
-    # First turn
-    request_body1 = {"messages": [{"role": "user", "content": "First"}], "model": "gpt-4"}
-    response1 = {
-        "choices": [{"message": {"content": "Response 1"}, "finish_reason": "stop"}],
+    response = {
+        "choices": [{"message": {"content": "ok"}, "finish_reason": "stop"}],
         "usage": {"prompt_tokens": 10, "completion_tokens": 5},
     }
-
+    t0 = 1_700_000_000.0
+    # Turn 0: starts at t0, takes 100ms -> ends t0 + 0.1
     await tracker.record_turn(
         request=request,
-        request_body=request_body1,
-        response=response1,
+        request_body={"messages": [{"role": "user", "content": "First"}]},
+        response=response,
         latency_ms=100.0,
-        ttft_ms=20.0,
+        started_at=t0,
     )
-
-    await tracker._flush_batch()
-
-    # Wait a bit
-    await asyncio.sleep(0.5)
-
-    # Second turn
-    request_body2 = {"messages": [{"role": "user", "content": "Second"}], "model": "gpt-4"}
-    response2 = {
-        "choices": [{"message": {"content": "Response 2"}, "finish_reason": "stop"}],
-        "usage": {"prompt_tokens": 15, "completion_tokens": 8},
-    }
-
+    # Turn 1: starts 2.6s after t0 -> gap is 2.5s
     await tracker.record_turn(
         request=request,
-        request_body=request_body2,
-        response=response2,
+        request_body={"messages": [{"role": "user", "content": "Second"}]},
+        response=response,
         latency_ms=120.0,
-        ttft_ms=25.0,
+        started_at=t0 + 2.6,
     )
-
     await tracker._flush_batch()
 
-    # Get turns for this session (need to find the actual session ID)
-    sessions = tracker.get_recent_sessions(since_seconds=60)
-    if sessions:
-        session_id = sessions[0]["session_id"]
-        turns = tracker.get_session_turns(session_id)
+    turns = tracker.get_session_turns("gap-test")
+    assert [t.turn_index for t in turns] == [0, 1]
+    assert turns[0].gap_since_previous_turn_seconds is None
+    assert turns[1].gap_since_previous_turn_seconds == pytest.approx(2.5, abs=1e-6)
 
-        if len(turns) >= 2:
-            # Second turn should have a gap
-            assert turns[1].gap_since_previous_turn_seconds is not None
-            assert turns[1].gap_since_previous_turn_seconds > 0.4  # Should be ~0.5s
+    metrics = tracker.compute_session_metrics("gap-test")
+    # wall clock = t0 .. t0+2.6+0.12
+    assert metrics.wall_clock_seconds == pytest.approx(2.72, abs=1e-6)
+    assert metrics.generation_seconds == pytest.approx(0.22, abs=1e-6)
+    assert metrics.idle_seconds == pytest.approx(2.5, abs=1e-6)
+
+
+@pytest.mark.asyncio
+async def test_turn_gap_inferred_from_wall_clock(tracker):
+    """Without started_at, the start is inferred as (record time - latency)."""
+    request = create_mock_request(session_header="gap-wall")
+    response = {"choices": [{"message": {"content": "ok"}}], "usage": {}}
+    body = {"messages": [{"role": "user", "content": "x"}]}
+
+    await tracker.record_turn(request=request, request_body=body, response=response, latency_ms=100.0)
+    await asyncio.sleep(0.5)
+    await tracker.record_turn(request=request, request_body=body, response=response, latency_ms=120.0)
+    await tracker._flush_batch()
+
+    turns = tracker.get_session_turns("gap-wall")
+    assert len(turns) == 2
+    # ~0.5s sleep minus the 0.12s attributed to turn 1's own latency
+    gap = turns[1].gap_since_previous_turn_seconds
+    assert gap is not None
+    assert 0.3 < gap < 1.5
 
 
 @pytest.mark.asyncio
@@ -189,13 +195,36 @@ async def test_tool_call_detection(tracker):
 
     await tracker._flush_batch()
 
-    sessions = tracker.get_recent_sessions(since_seconds=60)
-    if sessions:
-        session_id = sessions[0]["session_id"]
-        turns = tracker.get_session_turns(session_id)
+    turns = tracker.get_session_turns("tool-test")
+    assert len(turns) == 1
+    assert turns[0].contains_tool_calls is True
+    assert turns[0].finish_reason == "tool_calls"
+    # Empty content -> no completion hash
+    assert turns[0].completion_hash is None
 
-        if turns:
-            assert turns[0].contains_tool_calls is True
+
+@pytest.mark.asyncio
+async def test_tool_call_with_null_content(tracker):
+    """OpenAI returns content: null alongside tool_calls; must not crash."""
+    request = create_mock_request(session_header="tool-null")
+    response = {
+        "choices": [
+            {
+                "message": {"content": None, "tool_calls": [{"id": "c1"}]},
+                "finish_reason": "tool_calls",
+            }
+        ],
+        "usage": {"prompt_tokens": 20, "completion_tokens": 10},
+    }
+    await tracker.record_turn(
+        request=request,
+        request_body={"messages": [{"role": "user", "content": "go"}]},
+        response=response,
+        latency_ms=10.0,
+    )
+    await tracker._flush_batch()
+    turns = tracker.get_session_turns("tool-null")
+    assert len(turns) == 1 and turns[0].contains_tool_calls is True
 
 
 @pytest.mark.asyncio
@@ -229,16 +258,19 @@ async def test_session_metrics_computation(tracker):
     await tracker._flush_batch()
 
     sessions = tracker.get_recent_sessions(since_seconds=60)
-    if sessions:
-        session_id = sessions[0]["session_id"]
-        metrics = tracker.compute_session_metrics(session_id)
-
-        assert metrics is not None
-        assert metrics.turn_count == 3
-        assert metrics.total_prompt_tokens == 300
-        assert metrics.total_completion_tokens == 150
-        # Generation time should be ~0.6s (3 turns * 0.2s)
-        assert 0.5 < metrics.generation_seconds < 0.7
+    assert [s["session_id"] for s in sessions] == ["metrics-test"]
+    metrics = tracker.compute_session_metrics("metrics-test")
+    assert metrics is not None
+    assert metrics.turn_count == 3
+    assert metrics.total_prompt_tokens == 300
+    assert metrics.total_completion_tokens == 150
+    # Generation time is the sum of reported latencies: 3 turns * 0.2s
+    assert metrics.generation_seconds == pytest.approx(0.6)
+    # Two 0.3s sleeps, each minus the next turn's 0.2s latency (inferred start)
+    assert metrics.idle_seconds >= 0.19
+    assert metrics.generation_seconds + metrics.idle_seconds == pytest.approx(
+        metrics.wall_clock_seconds, abs=0.05
+    )
 
 
 def test_findings_high_redundant_prefill():
@@ -357,21 +389,221 @@ async def test_session_tracking_no_prompt_storage(tracker):
 
     # Read database directly to verify no text storage
     with tracker._lock:
-        cursor = tracker._conn.execute("SELECT prompt_hash, completion_hash FROM turns")
-        row = cursor.fetchone()
+        row = tracker._conn.execute("SELECT prompt_hash, completion_hash FROM turns").fetchone()
+        assert row is not None
+        assert row["prompt_hash"] is not None
+        assert row["completion_hash"] is not None
 
-        if row:
-            # Hashes should be present
-            assert row["prompt_hash"] is not None
-            assert row["completion_hash"] is not None
+        # Materialize every column of every row (sqlite3.Row's repr hides values)
+        dumped = []
+        for table in ("turns", "sessions"):
+            for r in tracker._conn.execute(f"SELECT * FROM {table}").fetchall():
+                dumped.append(repr(tuple(r)))
+        all_data = "\n".join(dumped)
 
-            # But the actual text should NOT be in database
-            # Search for the secret strings
-            cursor = tracker._conn.execute("SELECT * FROM turns")
-            all_data = str(cursor.fetchall())
+    assert "sk-1234567890" not in all_data
+    assert "hunter2" not in all_data
+    # Raw client IP is not stored either (session IDs use a hashed client key)
+    assert "127.0.0.1" not in all_data
 
-            assert secret_prompt not in all_data
-            assert secret_response not in all_data
+    # Also check the raw bytes on disk, including the WAL file
+    await tracker.shutdown()
+    for path in tracker.db_path.parent.glob(tracker.db_path.name + "*"):
+        raw = path.read_bytes()
+        assert b"sk-1234567890" not in raw
+        assert b"hunter2" not in raw
+
+
+def _resp(prompt_tokens=100, content="ok"):
+    return {
+        "choices": [{"message": {"content": content}, "finish_reason": "stop"}],
+        "usage": {"prompt_tokens": prompt_tokens, "completion_tokens": 5},
+    }
+
+
+@pytest.mark.asyncio
+async def test_growing_conversation_grouped_without_header(tracker):
+    """An agent that resends the full history each turn is one session."""
+    request = create_mock_request()
+    history = [{"role": "system", "content": "sys " * 100}]
+    for i in range(4):
+        history = history + [{"role": "user", "content": f"q{i}"}]
+        await tracker.record_turn(
+            request=request,
+            request_body={"messages": history},
+            response=_resp(prompt_tokens=100 + 20 * i),
+            latency_ms=10.0,
+        )
+        history = history + [{"role": "assistant", "content": f"a{i}"}]
+    await tracker._flush_batch()
+
+    sessions = tracker.get_recent_sessions(since_seconds=60)
+    assert len(sessions) == 1
+    assert sessions[0]["turn_count"] == 4
+    turns = tracker.get_session_turns(sessions[0]["session_id"])
+    assert turns[0].prefix_overlap_tokens == 0
+    for t in turns[1:]:
+        # Most of each later prompt repeats the previous one, but the estimate
+        # can never exceed the backend-reported prompt tokens.
+        assert 0.5 < t.prefix_overlap_percent < 1.0
+        assert 0 < t.prefix_overlap_tokens <= t.prompt_tokens
+    metrics = tracker.compute_session_metrics(sessions[0]["session_id"])
+    assert metrics.redundant_prefill_tokens <= metrics.total_prompt_tokens
+    assert 0 < metrics.redundant_percent <= 100
+
+
+@pytest.mark.asyncio
+async def test_unrelated_conversations_and_clients_are_separate(tracker):
+    body_a = {"messages": [{"role": "user", "content": "conversation A"}]}
+    body_b = {"messages": [{"role": "user", "content": "conversation B"}]}
+    await tracker.record_turn(create_mock_request(client_ip="10.0.0.1"), body_a, _resp(), 10.0)
+    await tracker.record_turn(create_mock_request(client_ip="10.0.0.1"), body_b, _resp(), 10.0)
+    # Same messages as A but from a different client -> different session
+    await tracker.record_turn(create_mock_request(client_ip="10.0.0.2"), body_a, _resp(), 10.0)
+    await tracker._flush_batch()
+
+    sessions = tracker.get_recent_sessions(since_seconds=60)
+    assert len(sessions) == 3
+    assert all("10.0.0" not in s["session_id"] for s in sessions)
+
+
+@pytest.mark.asyncio
+async def test_full_batch_flushes_without_deadlock(temp_db):
+    """Reaching batch_size inside record_turn must flush, not deadlock."""
+    tracker = SessionTracker(db_path=temp_db, batch_size=3)
+    request = create_mock_request(session_header="batch")
+
+    async def run():
+        for i in range(7):
+            await tracker.record_turn(
+                request, {"messages": [{"role": "user", "content": str(i)}]}, _resp(), 5.0
+            )
+
+    await asyncio.wait_for(run(), timeout=10)
+    # 2 full batches written, 1 turn still pending
+    assert len(tracker.get_session_turns("batch")) == 6
+    await tracker.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_explicit_session_resumes_after_restart(temp_db):
+    """Turn numbering continues across a proxy restart for explicit session IDs."""
+    request = create_mock_request(session_header="long-running")
+    body = {"messages": [{"role": "user", "content": "x"}]}
+
+    first = SessionTracker(db_path=temp_db)
+    await first.record_turn(request, body, _resp(), 10.0, started_at=1000.0)
+    await first.record_turn(request, body, _resp(), 10.0, started_at=1001.0)
+    await first.shutdown()
+
+    second = SessionTracker(db_path=temp_db)
+    await second.record_turn(request, body, _resp(), 10.0, started_at=1005.0)
+    await second.shutdown()
+
+    reader = SessionTracker(db_path=temp_db)
+    turns = reader.get_session_turns("long-running")
+    reader.close()
+    assert [t.turn_index for t in turns] == [0, 1, 2]
+    assert turns[2].gap_since_previous_turn_seconds == pytest.approx(1005.0 - 1001.01)
+
+
+@pytest.mark.asyncio
+async def test_proxy_records_sessions_end_to_end(temp_db):
+    """Requests through the real proxy app land in the session store."""
+    import httpx
+
+    from throttle.proxy import ProxyServer
+
+    def backend(req: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=_resp(prompt_tokens=42, content="pong"))
+
+    proxy = ProxyServer(
+        "http://backend.invalid",
+        enable_cache=False,
+        enable_session_tracking=True,
+        session_db_path=str(temp_db),
+    )
+    await proxy.startup()
+    await proxy._client.aclose()
+    proxy._client = httpx.AsyncClient(transport=httpx.MockTransport(backend))
+    try:
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=proxy.app), base_url="http://proxy"
+        ) as client:
+            for i in range(3):
+                r = await client.post(
+                    "/v1/chat/completions",
+                    json={"model": "m", "messages": [{"role": "user", "content": f"ping {i}"}]},
+                    headers={"X-Throttle-Session": "e2e"},
+                )
+                assert r.status_code == 200
+                assert r.json()["choices"][0]["message"]["content"] == "pong"
+    finally:
+        await proxy.shutdown()  # waits for background record tasks and flushes
+
+    reader = SessionTracker(db_path=temp_db)
+    turns = reader.get_session_turns("e2e")
+    reader.close()
+    assert [t.turn_index for t in turns] == [0, 1, 2]
+    assert all(t.prompt_tokens == 42 for t in turns)
+
+
+def _sessions_args(**kw):
+    import argparse
+
+    ns = argparse.Namespace(session_id=None, since="24h", limit=50, db=None)
+    for k, v in kw.items():
+        setattr(ns, k, v)
+    return ns
+
+
+def test_sessions_cli_empty_store_does_not_create_db(tmp_path, capsys):
+    from throttle.sessions_cli import handle_sessions_command
+
+    db = tmp_path / "missing" / "sessions.db"
+    assert handle_sessions_command(_sessions_args(db=str(db))) == 0
+    out = capsys.readouterr().out
+    assert "No sessions found in the last 24h 0m." in out
+    assert "--enable-session-tracking" in out
+    assert not db.exists()
+
+
+def test_sessions_cli_invalid_since(tmp_path, capsys):
+    from throttle.sessions_cli import handle_sessions_command
+
+    assert handle_sessions_command(_sessions_args(db=str(tmp_path / "s.db"), since="abc")) == 2
+    assert "Invalid time window" in capsys.readouterr().err
+
+
+@pytest.mark.asyncio
+async def test_sessions_cli_populated_store(temp_db, capsys):
+    from throttle.sessions_cli import handle_sessions_command
+
+    tracker = SessionTracker(db_path=temp_db)
+    for sid in ("alpha-session-1", "beta-session-2"):
+        req = create_mock_request(session_header=sid)
+        for i in range(2):
+            await tracker.record_turn(
+                req, {"messages": [{"role": "user", "content": str(i)}]}, _resp(), 100.0
+            )
+    await tracker.shutdown()
+
+    assert handle_sessions_command(_sessions_args(db=str(temp_db))) == 0
+    out = capsys.readouterr().out
+    assert "Recent Sessions:" in out
+    # Full IDs are shown so they can be passed back to `throttle sessions <id>`
+    assert "alpha-session-1" in out and "beta-session-2" in out
+
+    # Detail view by unique prefix
+    assert handle_sessions_command(_sessions_args(db=str(temp_db), session_id="alpha")) == 0
+    out = capsys.readouterr().out
+    assert "Session: alpha-session-1" in out
+    assert "Turn-by-Turn Timeline" in out
+
+    # Ambiguous prefix and unknown ID are errors, not crashes
+    assert handle_sessions_command(_sessions_args(db=str(temp_db), session_id="")) in (0, 1)
+    capsys.readouterr()
+    assert handle_sessions_command(_sessions_args(db=str(temp_db), session_id="zzz")) == 1
 
 
 def test_format_duration():

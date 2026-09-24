@@ -2,6 +2,23 @@
 
 All notable changes to Throttle will be documented in this file.
 
+## [Unreleased]
+
+### Added
+- Agent session profiling (opt-in). `throttle proxy --enable-session-tracking`
+  records per-turn timing (TTFT, total latency, gap since the previous turn)
+  and token counts for multi-turn agent sessions to `~/.throttle/sessions.db`.
+  Prompt and completion text are never stored: turns keep content hashes and
+  token counts, and sessions keep the client IP used for session grouping.
+- `throttle sessions` lists recorded sessions (`--since`, `--limit`) and, given
+  a session id, shows a per-session breakdown of where wall-clock time went
+  plus rule-based findings with suggested configuration changes.
+
+### Changed
+- Internal design notes, audit reports, and pilot/outreach material moved from
+  the repository root into `docs/internal/`. The proxy guide now lives at
+  `docs/PROXY_DEMO.md`.
+
 ## [0.3.0] - 2026-08-22
 
 ### Removed

@@ -1,7 +1,7 @@
 # User testing and feedback guide
 
 > **Current phase:** the first external operator pilot now uses the focused
-> [operator-pilot packet](../pilot/README.md). This broader ten-operator guide is
+> [operator-pilot packet](internal/pilot/README.md). This broader ten-operator guide is
 > retained as historical planning context; do not use its legacy command flow
 > as the current execution contract.
 

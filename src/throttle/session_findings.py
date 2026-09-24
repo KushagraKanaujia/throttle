@@ -43,8 +43,8 @@ def analyze_session(metrics: SessionMetrics, turns: List[Turn]) -> List[Finding]
                 severity="high",
                 category="prefix_caching",
                 observation=f"{metrics.redundant_percent:.1f}% of prompt tokens are redundant prefill ({metrics.redundant_prefill_tokens:,} tokens across {metrics.turn_count} turns)",
-                recommendation="Enable prefix caching on backend to reuse KV cache across turns. This avoids reprocessing shared conversation history.",
-                config_change="vLLM: --enable-prefix-caching | SGLang: prefix_cache_ttl=300 | Ollama: experimental prefix caching",
+                recommendation="Make sure prefix caching is enabled on the backend so the KV cache for shared conversation history is reused across turns instead of being prefilled again. (Redundant token counts are an estimate from message-level prefix overlap.)",
+                config_change="vLLM: --enable-prefix-caching (on by default in recent V1 releases) | SGLang: RadixAttention prefix cache is on unless --disable-radix-cache is set",
             )
         )
 
@@ -68,8 +68,8 @@ def analyze_session(metrics: SessionMetrics, turns: List[Turn]) -> List[Finding]
                 severity="high",
                 category="kv_cache_pressure",
                 observation=f"TTFT increases from {ttft_by_turn['early_median']:.0f}ms (early turns) to {ttft_by_turn['late_median']:.0f}ms (late turns) - {ttft_by_turn['growth_percent']:.0f}% growth",
-                recommendation="KV cache is filling up as conversation grows, causing evictions and recomputation. Increase cache capacity or reduce max conversation length.",
-                config_change="vLLM: --kv-cache-free-gpu-mem-fraction 0.95 (from default 0.90) or --max-model-len 4096 (reduce from current)",
+                recommendation="Time to first token grows as the conversation grows. Likely causes: prefill of an ever-longer context without prefix-cache reuse, or KV cache pressure causing evictions/preemption. Check prefix caching first, then KV cache capacity.",
+                config_change="vLLM: --enable-prefix-caching; if still growing, raise --gpu-memory-utilization (default 0.9) or lower --max-model-len",
             )
         )
 
@@ -113,7 +113,7 @@ def analyze_session(metrics: SessionMetrics, turns: List[Turn]) -> List[Finding]
                     category="throughput",
                     observation=f"Low throughput: {avg_tokens_per_second:.1f} tokens/sec during generation ({metrics.total_completion_tokens} tokens in {metrics.generation_seconds:.1f}s)",
                     recommendation="Check backend configuration. Possible issues: no batching, suboptimal max_num_seqs, memory-bound operations.",
-                    config_change="vLLM: increase --max-num-seqs or enable continuous batching",
+                    config_change="vLLM: check --max-num-seqs / --max-num-batched-tokens if requests are queuing",
                 )
             )
 

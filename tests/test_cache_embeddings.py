@@ -5,13 +5,45 @@ Tests cache.py embedding behavior directly without proxy async complexity.
 
 import pytest
 
-# Skip all tests if embeddings extra not installed
-try:
-    from throttle.cache import SimilarityCache, _EMBEDDINGS_AVAILABLE
-    if not _EMBEDDINGS_AVAILABLE:
-        pytest.skip("Embeddings extra not installed", allow_module_level=True)
-except ImportError:
-    pytest.skip("throttle.cache not available", allow_module_level=True)
+from throttle import embeddings
+from throttle.cache import SimilarityCache
+
+
+def test_model_load_failure_falls_back_to_jaccard(monkeypatch):
+    """If the model cannot be loaded (e.g. offline, not cached), the cache must
+    keep working on exact/Jaccard matching and not retry the load per request.
+    Runs without the embeddings extra or model."""
+    calls = {"n": 0}
+
+    def failing_get_embedding(text):
+        calls["n"] += 1
+        return None
+
+    monkeypatch.setattr(embeddings, "EMBEDDINGS_AVAILABLE", True)
+    monkeypatch.setattr(embeddings, "get_embedding", failing_get_embedding)
+    monkeypatch.setattr(embeddings, "get_load_error", lambda: "OSError: offline")
+
+    cache = SimilarityCache(ttl_seconds=3600, max_size=10, enable_embeddings=True)
+    cache.put("How do I optimize PostgreSQL queries?", {"data": 1})
+    assert cache.enable_embeddings is False  # disabled after first failed load
+    assert cache.get("How do I optimize PostgreSQL queries?") == {"data": 1}
+    assert cache.get("Ways to improve DB query speed") is None
+    assert cache.get_with_key_no_metrics("Something else entirely") is None
+    assert calls["n"] == 1
+
+
+# Everything below needs the real ONNX model.
+if not embeddings.EMBEDDINGS_AVAILABLE:
+    pytest.skip(
+        "embeddings extra not installed (pip install throttle-pro[embeddings])",
+        allow_module_level=True,
+    )
+if not embeddings.is_model_available():
+    pytest.skip(
+        f"embedding model could not be loaded: {embeddings.get_load_error()} "
+        "(needs network access or a cached sentence-transformers/all-MiniLM-L6-v2)",
+        allow_module_level=True,
+    )
 
 
 def test_embedding_enabled_with_extra_installed():
@@ -22,8 +54,22 @@ def test_embedding_enabled_with_extra_installed():
         enable_embeddings=True,
         embedding_threshold=0.95,
     )
-    assert cache.enable_embeddings == True
-    assert cache._embedder is not None
+    assert cache.enable_embeddings is True
+    cache.put("test", {"data": "value"})
+    assert cache._store["test"].embedding is not None
+
+
+def test_vectorized_scan_applies_negation_guard():
+    """Regression: the proxy's vectorized path must reject polarity flips.
+
+    "safe" vs "dangerous" scores ~0.98 cosine; without the guard the cached
+    answer to the opposite question would be served.
+    """
+    cache = SimilarityCache(ttl_seconds=3600, max_size=10, enable_embeddings=True,
+                            embedding_threshold=0.95)
+    cache.put("Is it safe to use eval in Python code?", {"s": "A"})
+    assert cache.get_with_key_no_metrics("Is it dangerous to use eval in Python code?") is None
+    assert cache.metrics.embedding_hits == 0
 
 
 def test_jaccard_first_then_embeddings():
@@ -41,7 +87,7 @@ def test_jaccard_first_then_embeddings():
     response1 = {scope1: {"_scope": scope1, "response": {"text": "Response 1"}}}
     cache.put("How do I optimize PostgreSQL queries?", response1)
 
-    # Exact match -> Jaccard hit
+    # Exact match -> dict lookup hit
     result = cache.get_with_key_no_metrics("How do I optimize PostgreSQL queries?")
     assert result is not None
     key, data = result
@@ -53,8 +99,10 @@ def test_jaccard_first_then_embeddings():
     cache.metrics.embedding_hits = 0
     cache.metrics.hits = 0
 
-    result2 = cache.get_with_key("How do I optimize PostgreSQL queries?")
+    # Case variant: not an exact dict match, but Jaccard similarity 1.0
+    result2 = cache.get_with_key("how do I optimize PostgreSQL queries?")
     assert result2 is not None
+    assert result2[0] == "How do I optimize PostgreSQL queries?"
     assert cache.metrics.lexical_hits == 1
     assert cache.metrics.embedding_hits == 0
 
@@ -98,9 +146,14 @@ def test_embedding_metrics_separate_from_lexical():
 
     cache.put("test prompt", {"data": "value"})
 
-    # Exact match -> lexical hit
+    # Exact match -> exact hit (dict lookup), lexical tier not consulted
     cache.get("test prompt")
-    assert cache.metrics.lexical_hits >= 1
+    assert cache.metrics.exact_hits == 1
+    assert cache.metrics.embedding_hits == 0
+
+    # Lexically similar prompt -> lexical hit (threshold 0.10)
+    cache.get("test prompt please")
+    assert cache.metrics.lexical_hits == 1
     assert cache.metrics.embedding_hits == 0
 
     # Different prompt (may or may not embedding match)

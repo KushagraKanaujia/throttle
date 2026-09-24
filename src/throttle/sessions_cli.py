@@ -6,11 +6,10 @@ Displays agent session profiling data collected by the proxy.
 from __future__ import annotations
 
 import sys
-from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, List
 
-from .sessions import SessionTracker, SessionMetrics
+from .sessions import SessionTracker
 from .session_findings import analyze_session, format_findings
 
 
@@ -50,7 +49,7 @@ def print_session_table(sessions_data: List[dict], tracker: SessionTracker) -> N
 
         if metrics:
             rows.append({
-                "session_id": session_id[:16] + "...",  # Truncate for display
+                "session_id": session_id,
                 "turns": str(metrics.turn_count),
                 "duration": format_duration(metrics.wall_clock_seconds),
                 "idle_pct": f"{metrics.idle_percent:.1f}%",
@@ -61,8 +60,8 @@ def print_session_table(sessions_data: List[dict], tracker: SessionTracker) -> N
         print("No complete sessions with metrics.")
         return
 
-    # Column widths
-    widths = [20, 7, 12, 10, 20]
+    # Column widths (full session IDs so they can be passed to `throttle sessions <id>`)
+    widths = [max(20, max(len(r["session_id"]) for r in rows)), 7, 12, 10, 20]
     headers = ["Session ID", "Turns", "Duration", "Idle %", "Redundant Pfx"]
 
     # Print table
@@ -152,7 +151,7 @@ def print_session_detail(session_id: str, tracker: SessionTracker) -> None:
 
         print("Prefix Overlap:")
         print(f"  Average: {avg_overlap_pct:.1f}%")
-        print(f"  Total redundant: {metrics.redundant_prefill_tokens:,} tokens ({metrics.redundant_percent:.1f}% of all prompt tokens)")
+        print(f"  Total redundant (estimated): {metrics.redundant_prefill_tokens:,} tokens ({metrics.redundant_percent:.1f}% of all prompt tokens)")
         print()
 
     # Findings
@@ -164,45 +163,85 @@ def print_session_detail(session_id: str, tracker: SessionTracker) -> None:
     print()
 
 
+DEFAULT_DB_PATH = Path.home() / ".throttle" / "sessions.db"
+
+
+def parse_since(value: str | None) -> float | None:
+    """Parse '30m', '24h', '7d', '2w' into seconds. Returns None if invalid."""
+    if not value:
+        return 86400.0
+    text = value.strip().lower()
+    units = {"m": 60, "h": 3600, "d": 86400, "w": 7 * 86400}
+    if len(text) < 2 or text[-1] not in units:
+        return None
+    try:
+        amount = float(text[:-1])
+    except ValueError:
+        return None
+    if amount <= 0:
+        return None
+    return amount * units[text[-1]]
+
+
+def _print_collection_help(since_seconds: float) -> None:
+    print(f"No sessions found in the last {format_duration(since_seconds)}.")
+    print("\nTo collect session data:")
+    print("  1. Start proxy with session tracking:")
+    print("     throttle proxy --backend-url <url> --enable-session-tracking")
+    print("  2. Send agent traffic through the proxy")
+    print("     (optional: set an X-Throttle-Session header to group turns explicitly)")
+    print("  3. Run `throttle sessions` again to see results")
+
+
 def handle_sessions_command(args: Any) -> int:
     """Handle `throttle sessions` CLI command."""
-    tracker = SessionTracker()
+    since_seconds = parse_since(getattr(args, "since", None))
+    if since_seconds is None:
+        print(
+            f"Invalid time window: {args.since}. Use a format like '30m', '24h', '7d', '2w'",
+            file=sys.stderr,
+        )
+        return 2
 
-    # Determine time window
-    if args.since:
-        # Parse time window (e.g., "7d", "24h", "2w")
-        since_str = args.since.lower()
-        if since_str.endswith("d"):
-            days = int(since_str[:-1])
-            since_seconds = days * 86400
-        elif since_str.endswith("h"):
-            hours = int(since_str[:-1])
-            since_seconds = hours * 3600
-        elif since_str.endswith("w"):
-            weeks = int(since_str[:-1])
-            since_seconds = weeks * 7 * 86400
-        else:
-            print(f"Invalid time window: {args.since}. Use format like '7d', '24h', '2w'", file=sys.stderr)
-            return 2
-    else:
-        # Default: last 24 hours
-        since_seconds = 86400
+    db_path = Path(getattr(args, "db", None) or DEFAULT_DB_PATH).expanduser()
+    if not db_path.exists():
+        # Read-only command: do not create an empty database as a side effect.
+        if getattr(args, "session_id", None):
+            print(f"Session {args.session_id} not found (no session database at {db_path}).")
+            return 1
+        _print_collection_help(since_seconds)
+        return 0
 
-    # Session detail view
+    tracker = SessionTracker(db_path=db_path)
+    try:
+        return _run_sessions_command(args, tracker, since_seconds)
+    finally:
+        tracker.close()
+
+
+def _run_sessions_command(args: Any, tracker: SessionTracker, since_seconds: float) -> int:
+    # Session detail view (accepts a unique prefix of the session ID)
     if args.session_id:
-        print_session_detail(args.session_id, tracker)
+        session_id = args.session_id
+        if not tracker.get_session_turns(session_id):
+            matches = tracker.find_session_ids(session_id)
+            if len(matches) > 1:
+                print(f"Session ID prefix '{session_id}' is ambiguous; matches:")
+                for m in matches:
+                    print(f"  {m}")
+                return 1
+            if not matches:
+                print(f"Session {session_id} not found.")
+                return 1
+            session_id = matches[0]
+        print_session_detail(session_id, tracker)
         return 0
 
     # List view
     sessions = tracker.get_recent_sessions(since_seconds=since_seconds, limit=args.limit)
 
     if not sessions:
-        print(f"No sessions found in the last {format_duration(since_seconds)}.")
-        print("\nTo collect session data:")
-        print("  1. Start proxy with session tracking:")
-        print("     throttle proxy --backend-url <url> --enable-session-tracking")
-        print("  2. Send agent traffic through the proxy")
-        print("  3. Run `throttle sessions` again to see results")
+        _print_collection_help(since_seconds)
         return 0
 
     print(f"\nShowing sessions from last {format_duration(since_seconds)}:")
@@ -271,13 +310,19 @@ def add_sessions_subcommand(subparsers: Any) -> None:
     sessions.add_argument(
         "session_id",
         nargs="?",
-        help="Show detailed view of a specific session",
+        help="Show detailed view of a specific session (full ID or unique prefix)",
     )
 
     sessions.add_argument(
         "--since",
         default="24h",
-        help="Time window to query (e.g., '7d', '24h', '2w'). Default: 24h",
+        help="Time window to query (e.g., '30m', '24h', '7d', '2w'). Default: 24h",
+    )
+
+    sessions.add_argument(
+        "--db",
+        default=None,
+        help="Path to the session database (default: ~/.throttle/sessions.db)",
     )
 
     sessions.add_argument(

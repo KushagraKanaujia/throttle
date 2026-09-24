@@ -46,10 +46,6 @@ def _assert_matrix_consistent(cache):
             assert np.allclose(matrix_row, store_embedding)
 
 
-@pytest.mark.skipif(
-    not pytest.importorskip("torch", reason="embeddings extra not installed"),
-    reason="embeddings extra not installed"
-)
 def test_matrix_consistency_on_put():
     """Matrix stays consistent after put operations."""
     cache = SimilarityCache(
@@ -71,10 +67,6 @@ def test_matrix_consistency_on_put():
     _assert_matrix_consistent(cache)
 
 
-@pytest.mark.skipif(
-    not pytest.importorskip("torch", reason="embeddings extra not installed"),
-    reason="embeddings extra not installed"
-)
 def test_matrix_consistency_on_ttl_eviction():
     """Matrix stays consistent after TTL eviction."""
     cache = SimilarityCache(
@@ -102,10 +94,6 @@ def test_matrix_consistency_on_ttl_eviction():
     assert cache._embedding_keys == []
 
 
-@pytest.mark.skipif(
-    not pytest.importorskip("torch", reason="embeddings extra not installed"),
-    reason="embeddings extra not installed"
-)
 def test_matrix_consistency_on_fifo_eviction():
     """Matrix stays consistent after FIFO eviction."""
     cache = SimilarityCache(
@@ -133,10 +121,6 @@ def test_matrix_consistency_on_fifo_eviction():
     assert "prompt4" in cache._store
 
 
-@pytest.mark.skipif(
-    not pytest.importorskip("torch", reason="embeddings extra not installed"),
-    reason="embeddings extra not installed"
-)
 def test_matrix_not_rebuilt_during_get():
     """Assert matrix is never rebuilt during a get operation."""
     cache = SimilarityCache(

@@ -39,25 +39,25 @@ It is **not**:
 
 ## Cross-Stack Compatibility Evidence
 
-Throttle was tested against four open-source inference engines on the same RunPod A100 80GB GPU to validate protocol compatibility. A fifth engine (TGI) failed to start due to a container issue unrelated to Throttle.
+Throttle was tested against four open-source inference engines on the same RunPod RTX 4090 24GB pod (per the run's `REPORT.md`) to validate protocol compatibility. A fifth engine (TGI) failed to start due to a container issue unrelated to Throttle.
 
-**Configuration:** Qwen/Qwen3-8B, closed-loop concurrency 1 and 4, $0.74/hour  
+**Configuration:** closed-loop concurrency 1 and 4, $0.74/hour. Models differed per engine: vLLM `Qwen/Qwen3-8B`; SGLang and LMDeploy `Qwen/Qwen2.5-3B-Instruct`; Ollama `qwen2.5:3b`  
 **Purpose:** Demonstrate OpenAI-compatible protocol works across backends  
 **Status:** Descriptive only — not decision-grade
 
 | Engine | Version | Status | Best measured throughput | Decision-eligible |
 | --- | --- | --- | --- | --- |
-| **vLLM** | 0.27.1 | ✓ Success | 143.92 tok/s | No (exploratory sweep) |
-| **SGLang** | unknown | ✓ Success | 230.49 tok/s | No (exploratory sweep) |
-| **Ollama** | 0.32.14 | ✓ Success | 172.52 tok/s | No (exploratory sweep) |
-| **LMDeploy** | unknown | ✓ Success | 238.32 tok/s | No (exploratory sweep) |
+| **vLLM** (Qwen3-8B) | 0.27.1 | ✓ Success | 143.92 tok/s | No (exploratory sweep) |
+| **SGLang** (Qwen2.5-3B-Instruct) | unknown | ✓ Success | 230.49 tok/s | No (exploratory sweep) |
+| **Ollama** (qwen2.5:3b) | 0.32.14 | ✓ Success | 172.52 tok/s | No (exploratory sweep) |
+| **LMDeploy** (Qwen2.5-3B-Instruct) | unknown | ✓ Success | 238.32 tok/s | No (exploratory sweep) |
 | **TGI** | N/A | ✗ Container failed | N/A | N/A |
 
 **Evidence:** [`validation/runpod-five-stack-20260819/`](validation/runpod-five-stack-20260819/)
 
 ### Why these results are not decision-grade
 
-Multi-condition sweeps run conditions in sequence (condition-major order) and cannot counterbalance time drift. Throttle correctly marks them as `decision_eligible: false`. The throughput numbers reflect each engine's default container configuration and are not controlled comparisons.
+Multi-condition sweeps run conditions in sequence (condition-major order) and cannot counterbalance time drift. Throttle correctly marks them as `decision_eligible: false`. The throughput numbers reflect each engine's default container configuration and are not controlled comparisons. They are also not comparable across engines because the models differ (vLLM ran an 8B model; the others ran 3B models).
 
 To make a decision-grade claim about any of these engines:
 1. Pin all runtime variables (model revision, image digest, GPU fingerprint, engine flags)

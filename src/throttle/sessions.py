@@ -13,8 +13,9 @@ import asyncio
 import hashlib
 import json
 import sqlite3
+import statistics
+import sys
 import time
-from collections import defaultdict, deque
 from dataclasses import dataclass, field
 from pathlib import Path
 from threading import Lock
@@ -79,11 +80,20 @@ class SessionTracker:
 
     Groups requests into sessions using:
     1. Explicit X-Throttle-Session header
-    2. Stable hash of longest common message prefix
-    3. Client IP + 10min idle timeout
+    2. Conversation continuation: the new messages array extends the previous
+       messages array of a recent session from the same client
+    3. Client + idle timeout (only when the request has no messages)
 
-    Writes turns to SQLite asynchronously with batching for performance.
+    Session IDs never contain the raw client IP; the client address is reduced
+    to a short one-way hash.
+
+    Writes turns to SQLite with batching; the per-request path is in-memory only
+    (except one lookup when an explicit session ID is first seen, to resume
+    turn numbering after a proxy restart).
     """
+
+    SESSION_HEADER = "X-Throttle-Session"
+    MAX_SESSION_ID_LENGTH = 128
 
     def __init__(
         self,
@@ -92,14 +102,15 @@ class SessionTracker:
         flush_interval_seconds: float = 5.0,
         idle_timeout_seconds: float = 600.0,  # 10 minutes
     ):
-        self.db_path = db_path or Path.home() / ".throttle" / "sessions.db"
+        self.db_path = Path(db_path) if db_path else Path.home() / ".throttle" / "sessions.db"
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
 
         self.batch_size = batch_size
         self.flush_interval_seconds = flush_interval_seconds
         self.idle_timeout_seconds = idle_timeout_seconds
 
-        # Thread-safe connection management
+        # Connection guarded by a (non-reentrant) thread lock. Never await
+        # while holding it.
         self._conn: sqlite3.Connection | None = None
         self._lock = Lock()
 
@@ -107,18 +118,15 @@ class SessionTracker:
         self._pending_turns: List[Turn] = []
         self._last_flush_time = time.time()
 
-        # Session state tracking
-        # Maps client_ip -> deque of (timestamp, messages_hash)
-        self._recent_requests: Dict[str, deque] = defaultdict(lambda: deque(maxlen=20))
-
-        # Maps session_id -> last_seen_timestamp
+        # In-memory session state (bounded by idle-timeout expiry)
+        # session_id -> wall-clock end time of the last turn
         self._active_sessions: Dict[str, float] = {}
-
-        # Maps session_id -> turn_index
+        # session_id -> next turn index
         self._session_turn_counts: Dict[str, int] = {}
-
-        # Maps session_id -> previous_messages_hash (for prefix overlap)
-        self._session_last_messages: Dict[str, str] = {}
+        # session_id -> messages of the last turn (memory only, never persisted)
+        self._session_last_messages: Dict[str, List[Dict[str, Any]]] = {}
+        # session_id -> hashed client key (for continuation matching)
+        self._session_client: Dict[str, str] = {}
 
         self._initialize_db()
 
@@ -214,112 +222,127 @@ class SessionTracker:
                 break
         return prefix
 
+    @staticmethod
+    def _client_key(request: Request) -> str:
+        """One-way short hash of the client address (raw IP is never stored)."""
+        host = request.client.host if getattr(request, "client", None) else "unknown"
+        return hashlib.sha256(str(host).encode()).hexdigest()[:8]
+
+    @staticmethod
+    def _serialized_len(messages: Sequence[Dict[str, Any]]) -> int:
+        return sum(
+            len(json.dumps(m, sort_keys=True, separators=(",", ":"), default=str))
+            for m in messages
+        )
+
     def _compute_prefix_overlap(
         self,
         current_messages: List[Dict[str, Any]],
-        previous_messages_hash: str | None,
-        client_ip: str,
+        previous_messages: List[Dict[str, Any]] | None,
+        prompt_tokens: int,
     ) -> tuple[int, float]:
-        """Compute prefix overlap tokens and percentage.
+        """Estimate how much of this prompt was already sent in the previous turn.
 
-        Returns (overlap_tokens, overlap_percent).
-        For simplicity, we estimate 1 message ≈ 50 tokens (conservative).
-        Actual token counts would require tiktoken, but we avoid new dependencies.
+        Returns (overlap_tokens, overlap_fraction). The fraction is the share of
+        the serialized messages that is an exact message-level prefix of the
+        previous turn's messages. overlap_tokens applies that fraction to the
+        backend-reported prompt_tokens (0 when the backend reported no usage).
+        This is an estimate: it does not tokenize and ignores the chat template.
         """
-        if not previous_messages_hash:
+        if not previous_messages or not current_messages:
             return 0, 0.0
 
-        # Try to find previous messages in recent requests
-        recent = self._recent_requests.get(client_ip, deque())
-        previous_messages = None
-
-        for timestamp, msg_hash, messages in recent:
-            if msg_hash == previous_messages_hash:
-                previous_messages = messages
-                break
-
-        if not previous_messages:
-            return 0, 0.0
-
-        # Find common prefix
         prefix = self._find_common_prefix(previous_messages, current_messages)
+        if not prefix:
+            return 0, 0.0
 
-        # Estimate tokens: ~50 per message (conservative)
-        TOKENS_PER_MESSAGE = 50
-        overlap_tokens = len(prefix) * TOKENS_PER_MESSAGE
-        total_tokens = len(current_messages) * TOKENS_PER_MESSAGE
-        overlap_percent = overlap_tokens / total_tokens if total_tokens > 0 else 0.0
+        total_len = self._serialized_len(current_messages)
+        if total_len <= 0:
+            return 0, 0.0
+        fraction = min(1.0, self._serialized_len(prefix) / total_len)
+        overlap_tokens = int(round(max(0, prompt_tokens) * fraction))
+        return overlap_tokens, fraction
 
-        return overlap_tokens, overlap_percent
+    def _expire_idle_sessions(self, now: float) -> None:
+        for session_id, last_seen in list(self._active_sessions.items()):
+            if now - last_seen > self.idle_timeout_seconds:
+                self._active_sessions.pop(session_id, None)
+                self._session_turn_counts.pop(session_id, None)
+                self._session_last_messages.pop(session_id, None)
+                self._session_client.pop(session_id, None)
 
     def _assign_session_id(
         self,
         request: Request,
         request_body: Dict[str, Any],
         arrival_time: float,
-    ) -> tuple[str, bool, str | None]:
-        """Assign session ID using priority: header → prefix → IP+timeout.
+    ) -> tuple[str, bool]:
+        """Assign session ID using priority: header -> continuation -> client+timeout.
 
-        Returns (session_id, is_explicit, prefix_hash).
+        Returns (session_id, is_explicit).
         """
-        client_ip = request.client.host if request.client else "unknown"
+        client_key = self._client_key(request)
+        self._expire_idle_sessions(arrival_time)
 
         # Priority 1: Explicit header
-        session_header = request.headers.get("X-Throttle-Session")
+        headers = getattr(request, "headers", None) or {}
+        session_header = headers.get(self.SESSION_HEADER)
         if session_header:
-            return session_header, True, None
+            session_header = str(session_header).strip()[: self.MAX_SESSION_ID_LENGTH]
+            if session_header:
+                return session_header, True
 
-        # Priority 2: Message prefix hash
-        messages = request_body.get("messages", [])
+        messages = request_body.get("messages") or []
         if messages:
-            messages_hash = self._compute_messages_hash(messages)
-
-            # Store recent request
-            self._recent_requests[client_ip].append((arrival_time, messages_hash, messages))
-
-            # Check if this hash matches any recent session
-            for session_id, last_seen in list(self._active_sessions.items()):
-                # Timeout check
-                if arrival_time - last_seen > self.idle_timeout_seconds:
-                    # Session expired
-                    del self._active_sessions[session_id]
-                    if session_id in self._session_turn_counts:
-                        del self._session_turn_counts[session_id]
-                    if session_id in self._session_last_messages:
-                        del self._session_last_messages[session_id]
+            # Priority 2: continuation of a recent session from the same client.
+            # Most recently active session wins.
+            candidates = sorted(
+                (
+                    (last_seen, sid)
+                    for sid, last_seen in self._active_sessions.items()
+                    if self._session_client.get(sid) == client_key
+                ),
+                reverse=True,
+            )
+            for _, sid in candidates:
+                prev = self._session_last_messages.get(sid)
+                if not prev:
                     continue
+                prefix = self._find_common_prefix(prev, messages)
+                # Same conversation if the new request carries >=80% of the
+                # previous turn's messages as its prefix.
+                if len(prefix) >= max(1, len(prev) * 0.8):
+                    return sid, False
 
-                # Check if messages share prefix with this session
-                if session_id.startswith(f"sess_{client_ip}_"):
-                    prev_hash = self._session_last_messages.get(session_id)
-                    if prev_hash:
-                        # Check if current messages extend previous messages
-                        for _, prev_msg_hash, prev_messages in self._recent_requests[client_ip]:
-                            if prev_msg_hash == prev_hash:
-                                prefix = self._find_common_prefix(prev_messages, messages)
-                                # If >80% overlap, consider it same session
-                                if len(prefix) >= len(prev_messages) * 0.8:
-                                    self._session_last_messages[session_id] = messages_hash
-                                    return session_id, False, messages_hash[:8]
+            prefix_hash = self._compute_messages_hash(messages)[:8]
+            return f"sess_{client_key}_{int(arrival_time)}_{prefix_hash}", False
 
-            # New session from prefix
-            prefix_hash = messages_hash[:8]
-            session_id = f"sess_{client_ip}_{int(arrival_time)}_{prefix_hash}"
-            self._session_last_messages[session_id] = messages_hash
-            return session_id, False, prefix_hash
+        # Priority 3: client + idle-timeout fallback (no messages to compare)
+        for sid in self._active_sessions:
+            if self._session_client.get(sid) == client_key and sid.endswith("_ip"):
+                return sid, False
+        return f"sess_{client_key}_{int(arrival_time)}_ip", False
 
-        # Priority 3: IP + timeout fallback
-        # Check for existing IP-based session
-        for session_id, last_seen in list(self._active_sessions.items()):
-            if (
-                session_id.startswith(f"sess_{client_ip}_")
-                and arrival_time - last_seen <= self.idle_timeout_seconds
-            ):
-                return session_id, False, None
-
-        # New IP-based session
-        session_id = f"sess_{client_ip}_{int(arrival_time)}_ip"
-        return session_id, False, None
+    def _load_persisted_session_state(self, session_id: str) -> tuple[int, float | None]:
+        """For a session not in memory, return (next_turn_index, last_end_time) from DB."""
+        try:
+            with self._lock:
+                if not self._conn:
+                    return 0, None
+                row = self._conn.execute(
+                    """
+                    SELECT turn_index, arrival_timestamp, total_latency_ms
+                    FROM turns WHERE session_id = ?
+                    ORDER BY turn_index DESC LIMIT 1
+                    """,
+                    (session_id,),
+                ).fetchone()
+        except sqlite3.Error:
+            return 0, None
+        if row is None:
+            return 0, None
+        last_end = row["arrival_timestamp"] + (row["total_latency_ms"] or 0.0) / 1000.0
+        return int(row["turn_index"]) + 1, last_end
 
     async def record_turn(
         self,
@@ -328,63 +351,72 @@ class SessionTracker:
         response: Dict[str, Any],
         latency_ms: float,
         ttft_ms: float | None = None,
+        started_at: float | None = None,
     ) -> None:
-        """Record a turn asynchronously (non-blocking for proxy).
+        """Record one completed request/response turn.
 
-        This is called from proxy.chat_completions() via asyncio.create_task().
+        Call after the response is complete. ``started_at`` is the wall-clock
+        (time.time()) moment the request arrived; if omitted it is inferred as
+        now - latency. The gap for a turn is its start minus the previous
+        turn's end, i.e. time the client spent outside the model.
         """
-        arrival_time = time.time()
-        client_ip = request.client.host if request.client else "unknown"
+        now = time.time()
+        latency_ms = max(0.0, float(latency_ms))
+        arrival_time = started_at if started_at is not None else now - latency_ms / 1000.0
+        end_time = arrival_time + latency_ms / 1000.0
+        client_key = self._client_key(request)
 
-        # Assign session
-        session_id, is_explicit, prefix_hash = self._assign_session_id(
-            request, request_body, arrival_time
-        )
+        session_id, is_explicit = self._assign_session_id(request, request_body, arrival_time)
 
-        # Update session state
-        self._active_sessions[session_id] = arrival_time
-        turn_index = self._session_turn_counts.get(session_id, 0)
-        self._session_turn_counts[session_id] = turn_index + 1
+        # Turn index and previous end time
+        if session_id in self._session_turn_counts:
+            turn_index = self._session_turn_counts[session_id]
+            prev_end = self._active_sessions.get(session_id)
+        elif is_explicit:
+            turn_index, prev_end = self._load_persisted_session_state(session_id)
+        else:
+            turn_index, prev_end = 0, None
 
-        # Extract metrics
-        messages = request_body.get("messages", [])
+        gap_seconds = None
+        if turn_index > 0 and prev_end is not None:
+            gap_seconds = max(0.0, arrival_time - prev_end)
+
+        messages = request_body.get("messages") or []
         prompt_hash = self._compute_messages_hash(messages)
 
-        # Get usage from response
-        usage = response.get("usage", {})
-        prompt_tokens = usage.get("prompt_tokens", 0)
-        completion_tokens = usage.get("completion_tokens", 0)
+        usage = response.get("usage") or {}
+        prompt_tokens = int(usage.get("prompt_tokens") or 0)
+        completion_tokens = int(usage.get("completion_tokens") or 0)
 
-        # Compute prefix overlap
-        previous_hash = self._session_last_messages.get(session_id) if turn_index > 0 else None
-        overlap_tokens, overlap_percent = self._compute_prefix_overlap(
-            messages, previous_hash, client_ip
+        overlap_tokens, overlap_fraction = self._compute_prefix_overlap(
+            messages,
+            self._session_last_messages.get(session_id) if turn_index > 0 else None,
+            prompt_tokens,
         )
 
-        # Check for tool calls
-        choices = response.get("choices", [])
+        choices = response.get("choices") or []
         contains_tool_calls = False
         finish_reason = None
+        completion_content: Any = None
         if choices:
-            message = choices[0].get("message", {})
-            contains_tool_calls = "tool_calls" in message and bool(message["tool_calls"])
+            message = choices[0].get("message") or {}
+            contains_tool_calls = bool(message.get("tool_calls"))
             finish_reason = choices[0].get("finish_reason")
+            completion_content = message.get("content")
+        if completion_content and not isinstance(completion_content, str):
+            completion_content = json.dumps(completion_content, sort_keys=True, default=str)
+        completion_hash = (
+            hashlib.sha256(completion_content.encode()).hexdigest() if completion_content else None
+        )
 
-        # Compute completion hash (hash the content, not the content itself)
-        completion_content = ""
-        if choices:
-            completion_content = choices[0].get("message", {}).get("content", "")
-        completion_hash = hashlib.sha256(completion_content.encode()).hexdigest() if completion_content else None
+        # Update in-memory session state
+        self._active_sessions[session_id] = end_time
+        self._session_turn_counts[session_id] = turn_index + 1
+        self._session_last_messages[session_id] = messages
+        self._session_client[session_id] = client_key
 
-        # Compute gap from previous turn
-        gap_seconds = None
-        if turn_index > 0:
-            # Query previous turn's timestamp
-            gap_seconds = await self._get_gap_from_previous_turn(session_id, turn_index)
-
-        # Create turn
         turn = Turn(
-            turn_id=None,  # Will be assigned by database
+            turn_id=None,  # Assigned by database
             session_id=session_id,
             turn_index=turn_index,
             arrival_timestamp=arrival_time,
@@ -394,85 +426,59 @@ class SessionTracker:
             prompt_tokens=prompt_tokens,
             completion_tokens=completion_tokens,
             prefix_overlap_tokens=overlap_tokens,
-            prefix_overlap_percent=overlap_percent,
+            prefix_overlap_percent=overlap_fraction,
             contains_tool_calls=contains_tool_calls,
             finish_reason=finish_reason,
             prompt_hash=prompt_hash,
             completion_hash=completion_hash,
-            metadata={"model": request_body.get("model", "unknown")},
+            metadata={
+                "model": request_body.get("model", "unknown"),
+                "explicit_session": is_explicit,
+            },
         )
 
-        # Add to batch
         with self._lock:
             self._pending_turns.append(turn)
+            should_flush = len(self._pending_turns) >= self.batch_size
 
-            # Flush if batch is full
-            if len(self._pending_turns) >= self.batch_size:
-                await self._flush_batch()
-
-    async def _get_gap_from_previous_turn(self, session_id: str, current_turn_index: int) -> float | None:
-        """Get gap from previous turn by querying database."""
-        try:
-            with self._lock:
-                if not self._conn:
-                    return None
-
-                cursor = self._conn.execute("""
-                    SELECT arrival_timestamp, total_latency_ms
-                    FROM turns
-                    WHERE session_id = ? AND turn_index = ?
-                    ORDER BY turn_index DESC
-                    LIMIT 1
-                """, (session_id, current_turn_index - 1))
-
-                row = cursor.fetchone()
-                if row:
-                    prev_arrival = row["arrival_timestamp"]
-                    prev_latency_ms = row["total_latency_ms"]
-                    prev_end = prev_arrival + (prev_latency_ms / 1000.0)
-                    gap = time.time() - prev_end
-                    return max(0.0, gap)  # Ensure non-negative
-
-                return None
-        except sqlite3.Error:
-            return None
+        # Flush outside the lock: _flush_batch takes the same non-reentrant lock.
+        if should_flush:
+            await self._flush_batch()
 
     async def _flush_batch(self) -> None:
-        """Flush pending turns to database."""
+        """Flush pending turns to the database (synchronous SQLite, batched)."""
         with self._lock:
             if not self._pending_turns or not self._conn:
                 return
-
             turns_to_write = self._pending_turns[:]
             self._pending_turns.clear()
             self._last_flush_time = time.time()
 
-        # Write to database (outside lock for better concurrency)
-        try:
-            with self._lock:
+            try:
                 for turn in turns_to_write:
-                    # Upsert session
-                    self._conn.execute("""
+                    explicit = 1 if turn.metadata.get("explicit_session") else 0
+                    self._conn.execute(
+                        """
                         INSERT INTO sessions (
                             session_id, first_seen_at, last_seen_at, client_ip,
                             explicit_header, prefix_hash, turn_count, created_at
-                        ) VALUES (?, ?, ?, ?, ?, ?, 1, ?)
+                        ) VALUES (?, ?, ?, NULL, ?, ?, 1, ?)
                         ON CONFLICT(session_id) DO UPDATE SET
-                            last_seen_at = ?,
+                            first_seen_at = MIN(first_seen_at, excluded.first_seen_at),
+                            last_seen_at = MAX(last_seen_at, excluded.last_seen_at),
                             turn_count = turn_count + 1
-                    """, (
-                        turn.session_id,
-                        turn.arrival_timestamp,
-                        turn.arrival_timestamp,
-                        "unknown",  # We don't store client_ip for privacy
-                        0,  # TODO: track explicit_header
-                        turn.prompt_hash[:8],
-                        turn.arrival_timestamp,
-                        turn.arrival_timestamp,
-                    ))
-
-                    # Insert turn
-                    self._conn.execute("""
+                        """,
+                        (
+                            turn.session_id,
+                            turn.arrival_timestamp,
+                            turn.arrival_timestamp,
+                            explicit,
+                            turn.prompt_hash[:8],
+                            time.time(),
+                        ),
+                    )
+                    self._conn.execute(
+                        """
                         INSERT INTO turns (
                             session_id, turn_index, arrival_timestamp, ttft_ms,
                             total_latency_ms, gap_since_previous_turn_seconds,
@@ -480,29 +486,31 @@ class SessionTracker:
                             prefix_overlap_percent, contains_tool_calls, finish_reason,
                             prompt_hash, completion_hash, metadata, created_at
                         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    """, (
-                        turn.session_id,
-                        turn.turn_index,
-                        turn.arrival_timestamp,
-                        turn.ttft_ms,
-                        turn.total_latency_ms,
-                        turn.gap_since_previous_turn_seconds,
-                        turn.prompt_tokens,
-                        turn.completion_tokens,
-                        turn.prefix_overlap_tokens,
-                        turn.prefix_overlap_percent,
-                        1 if turn.contains_tool_calls else 0,
-                        turn.finish_reason,
-                        turn.prompt_hash,
-                        turn.completion_hash,
-                        json.dumps(turn.metadata),
-                        time.time(),
-                    ))
-
+                        """,
+                        (
+                            turn.session_id,
+                            turn.turn_index,
+                            turn.arrival_timestamp,
+                            turn.ttft_ms,
+                            turn.total_latency_ms,
+                            turn.gap_since_previous_turn_seconds,
+                            turn.prompt_tokens,
+                            turn.completion_tokens,
+                            turn.prefix_overlap_tokens,
+                            turn.prefix_overlap_percent,
+                            1 if turn.contains_tool_calls else 0,
+                            turn.finish_reason,
+                            turn.prompt_hash,
+                            turn.completion_hash,
+                            json.dumps(turn.metadata),
+                            time.time(),
+                        ),
+                    )
                 self._conn.commit()
-        except sqlite3.Error as e:
-            # Log but don't crash proxy
-            print(f"Session tracking error: {e}")
+            except sqlite3.Error as e:
+                # Never crash the proxy over profiling data.
+                self._conn.rollback()
+                print(f"Session tracking error: {e}", file=sys.stderr)
 
     async def start_background_flush(self) -> None:
         """Start background task to flush pending turns periodically."""
@@ -542,6 +550,26 @@ class SessionTracker:
             if self._conn:
                 self._conn.close()
                 self._conn = None
+
+    def close(self) -> None:
+        """Close the database connection (synchronous; for read-only callers like the CLI)."""
+        with self._lock:
+            if self._conn:
+                self._conn.close()
+                self._conn = None
+
+    def find_session_ids(self, prefix: str, limit: int = 10) -> List[str]:
+        """Return session IDs that start with ``prefix`` (most recent first)."""
+        with self._lock:
+            if not self._conn:
+                return []
+            rows = self._conn.execute(
+                "SELECT session_id FROM sessions "
+                "WHERE substr(session_id, 1, length(?)) = ? "
+                "ORDER BY last_seen_at DESC LIMIT ?",
+                (prefix, prefix, limit),
+            ).fetchall()
+            return [r["session_id"] for r in rows]
 
     def get_recent_sessions(
         self, since_seconds: float = 86400, limit: int = 50
@@ -619,9 +647,8 @@ class SessionTracker:
             return None
 
         # Wall clock span
-        first_arrival = turns[0].arrival_timestamp
-        last_turn = turns[-1]
-        last_end = last_arrival + (last_turn.total_latency_ms / 1000.0)
+        first_arrival = min(t.arrival_timestamp for t in turns)
+        last_end = max(t.arrival_timestamp + t.total_latency_ms / 1000.0 for t in turns)
         wall_clock_seconds = last_end - first_arrival
 
         # Generation time
@@ -654,7 +681,7 @@ class SessionTracker:
             for t in turns
             if t.gap_since_previous_turn_seconds is not None
         ]
-        median_gap_seconds = sorted(gap_values)[len(gap_values) // 2] if gap_values else None
+        median_gap_seconds = statistics.median(gap_values) if gap_values else None
 
         return SessionMetrics(
             session_id=session_id,

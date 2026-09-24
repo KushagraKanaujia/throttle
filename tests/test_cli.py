@@ -532,6 +532,7 @@ class ParserAndPlanTests(unittest.TestCase):
                 "proxy",
                 "watch",
                 "report",
+                "sessions",
             },
         )
 

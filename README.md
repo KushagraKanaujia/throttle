@@ -1,71 +1,242 @@
 # Throttle
 
-**Benchmark your LLM inference server without guessing**
+**Find out what your LLM inference really costs, stop paying twice for the same answer, and see where your agents' time goes.**
 
-## What breaks without this
+Throttle is an open-source CLI and drop-in proxy for any OpenAI-compatible
+endpoint: vLLM, SGLang, Ollama, LMDeploy and similar servers. It is built for
+teams that self-host models or pay for inference and want real numbers
+instead of guesses.
 
-You're tuning `max_num_seqs` or batch size on your vLLM/Ollama server. You change it, curl a few requests, eyeball the latency, and deploy. But you don't know if throughput actually improved, if the change regressed under load, or if the test was fair. Throttle gives you decision-grade evidence: counterbalanced runs, statistical intervals, and strict validation gates so you know whether a configuration change actually won.
-
-## What it does
-
-Throttle measures existing OpenAI-compatible inference endpoints (vLLM, Ollama, SGLang, LMDeploy, etc.). It provisions nothing, changes nothing on the server, and never claims universal optimization. It runs controlled experiments:
-
-- **`throttle benchmark`**: Sustained load testing with repeated blocks, streaming validation, and cost attribution
-- **`throttle golden`**: Six-position counterbalanced B1/C1/B2/C2/B3/C3 protocol for decision-eligible configuration comparisons
-- **`throttle compare`**: Offline statistical comparison of saved runs
-- **`throttle proxy`**: OpenAI-compatible caching proxy for production traffic
-- **`throttle diagnose`**: Pre-flight bottleneck classification (dispatch/compute/memory-bound)
-- **`throttle smoke`**: Quick connectivity check (27 requests, always non-decision-grade)
-- **`throttle plan`**: Zero-traffic dry-run showing costs and limits before sending requests
-
-Results describe only the declared workload and manifest. No universal claims, no projected savings.
-
-## Complement to vLLM auto_tune
-
-vLLM's [auto_tune](https://docs.vllm.ai/en/latest/features/performance.html#automatic-tuning) does exactly what its name says: it automatically searches a parameter grid to find a good configuration for your hardware. It runs each candidate config sequentially, measures throughput, and reports the best one. This is excellent for quickly narrowing the search space without manual iteration.
-
-Throttle complements this workflow by answering the next question: **did that configuration change actually win?** After auto_tune (or manual tuning) gives you a candidate, Throttle's `golden` protocol runs a controlled baseline-vs-candidate comparison with counterbalanced ordering (B1/C1/B2/C2/B3/C3) to control for time drift, confidence intervals to quantify uncertainty, and strict validation gates to ensure the result is decision-grade.
-
-**What Throttle does not do:** Throttle does not search parameter spaces, suggest configs, or claim to be better than auto_tune. It validates changes. Use auto_tune to search, then use Throttle's golden protocol to prove the winning config actually beat your baseline.
-
-## One command to try it
-
-```bash
-# Install
-pipx install throttle-pro
-
-# Test against local Ollama (if you have it running)
-export OLLAMA_API_KEY="ollama"  # Ollama doesn't need auth, but throttle requires the variable
-throttle smoke \
-  --model llama3.2:1b \
-  --url http://localhost:11434/v1 \
-  --api-key-env OLLAMA_API_KEY \
-  --cost-model unknown \
-  --allow-unknown-cost
+```text
+your app / agent ──► throttle proxy ──► vLLM · SGLang · Ollama · LMDeploy
+                        │
+                        ├─ caches repeated and near-duplicate prompts
+                        └─ profiles multi-turn agent sessions
 ```
 
-## Validated Results
+## The problem
 
-**One decision-eligible result exists:**
+- **Inference is expensive, and much of it is wasted.** Apps re-send the same
+  or nearly the same prompt, and every call pays for full GPU time.
+  Agent loops re-send their whole conversation history on every turn.
+- **Config tuning happens blind.** Teams change `max_num_seqs` or batch size,
+  send a few curl requests, check the latency by eye and deploy. Nobody knows
+  whether the change won, lost, or just landed on a quiet minute.
+- **Agent traffic is a black box.** Nobody can say how much of a session was
+  spent generating, how much waiting on tools, or how many prompt tokens were
+  just history being prefilled again.
 
-Qwen2.5-0.5B-Instruct on **A100 80GB** with **vLLM 0.16.0 native protocol**, changing `max_num_seqs` from **1→8**, closed-loop concurrency 8, 128 max tokens: **+189.5% to +246.2%** throughput increase (95% CI, six-position counterbalanced golden protocol, `decision_eligible: true`).
+## What Throttle does
 
-Artifact: `validation/golden-live-20260817/golden.json`
+| | Command | What you get |
+| --- | --- | --- |
+| **Cache** | `throttle proxy --enable-cache` | A proxy you put in front of your model server. It answers repeated and near-duplicate prompts from memory, with no GPU call. |
+| **Profile agents** | `throttle proxy --enable-session-tracking` + `throttle sessions` | A per-session breakdown of time spent generating versus waiting, an estimate of redundant prefill, and suggested backend settings to check. |
+| **Price it** | `throttle cost`, `throttle watch` | Dollars per million tokens, measured against a live endpoint (`cost`) or read from vLLM `/metrics` (`watch`). |
+| **Prove a config change** | `throttle plan` → `smoke` → `benchmark` → `golden` | Traffic that is planned and capped before any request goes out, repeated measurement blocks, 95% intervals, and a six-position counterbalanced protocol for baseline-vs-candidate decisions. |
 
-**Backends tested on real GPUs but not decision-eligible:**
+Throttle provisions nothing and never changes your server. It measures, caches
+and reports.
 
-On **RTX 4090** (RunPod, Aug 19, 2026), Throttle successfully drove 1,608 measured streaming responses across **vLLM**, **SGLang**, **Ollama**, and **LMDeploy**. All four returned `status: complete`, conditions `decision_grade: true`, but overall `decision_eligible: false` due to:
-- Missing immutable provenance (image digest, model revision, runtime-verified flags)
-- Non-counterbalanced condition order (exploratory c1/c4 sweep, not golden protocol)
-- Search boundary reached (inconclusive)
+## Receipts
 
-See `validation/runpod-five-stack-20260819/REPORT.md` for full details. These runs demonstrate measurement compatibility, not configuration decisions.
+Every number below comes from a saved artifact in this repo or from a
+recorded local run. Nothing here is a projection.
 
-**Proxy verified:**
+| What | Result | Where it came from |
+| --- | --- | --- |
+| Config decision on a real GPU | `max_num_seqs` 1 → 8 on vLLM 0.16.0: **+189.5% to +246.2% throughput** (95% CI, point estimate +217.8%) | A100 80GB, Qwen2.5-0.5B-Instruct, six-position golden protocol, `decision_eligible: true`. [`validation/golden-live-20260817/`](validation/golden-live-20260817/) |
+| Cross-engine compatibility | vLLM, SGLang, Ollama and LMDeploy all measured end to end | RunPod GPUs, descriptive only (not decision-grade). [`validation/runpod-five-stack-20260819/`](validation/runpod-five-stack-20260819/) |
+| Proxy cache hit | Cold call **1.75 s**, then the same prompt from cache in **1.2 ms**, then a reworded prompt from cache in **9.5 ms** | Local Ollama `llama3.2:3b` on a MacBook (Apple M3 Pro, Metal), no datacenter GPU. 4 requests, 2 backend calls. |
+| Benchmark-harness cache on realistic traffic | 27.0% hit rate, total runtime 39.46 s → 28.28 s | Local Ollama `llama3.2:1b`, 73-prompt traffic sample. [`validation/CACHE_VALIDATION_SUMMARY.md`](validation/CACHE_VALIDATION_SUMMARY.md) |
+| Agent session profile | A simulated 4-turn agent: 41.9% of wall-clock time spent waiting on the client, an estimated 54.3% of prompt tokens redundant prefill | Local Ollama `llama3.2:3b` on a MacBook (Apple M3 Pro, Metal), no datacenter GPU. The tool pauses are scripted at 1.5 s each. |
 
-The caching proxy is CI-tested against **Ollama** with llama3.2:1b and llama3.2:3b models (`.github/workflows/ci.yml`).
+The golden result is the **only** decision-eligible result in this repo. It
+applies to that exact model, engine, GPU and workload, and it is not a savings
+projection. The cache and profiler numbers were measured on a laptop and show
+how the mechanism works. They do not predict hit rates or savings on your
+traffic. See [RESULTS.md](RESULTS.md) for the full evidence and its
+limitations.
 
-**See [RESULTS.md](RESULTS.md) for complete validated evidence**, including exact numbers, hardware details, protocol audit, and limitations. Every claim traces to a specific JSON artifact in `validation/`.
+## Quick demo (2 minutes, no GPU)
+
+Install from source. The PyPI release (`throttle-pro` 0.3.0) predates the
+agent session profiler.
+
+```sh
+git clone https://github.com/KushagraKanaujia/throttle.git
+cd throttle
+python3 -m venv .venv && . .venv/bin/activate
+pip install -e '.[embeddings]'
+```
+
+**1. The simulator (no server, no network, about 1 second):**
+
+```sh
+throttle demo
+```
+
+```text
+Metric                                       Baseline        Tuned        Delta
+--------------------------------------------------------------------------------
+Wall clock time (seconds)                       77.87        63.14       -14.73
+Total cost ($)                                 0.0324       0.0263      -0.0061
+...
+All values above are [SIMULATED] - they depend entirely on assumed
+throughput parameters, not real hardware measurements.
+```
+
+Steps 2–4 need [Ollama](https://ollama.com/download) running locally with
+`ollama pull llama3.2:3b`. That is enough on a laptop.
+
+**2. The caching proxy.** Start it in one terminal:
+
+```sh
+throttle proxy --backend-url http://localhost:11434 --port 8090 \
+  --enable-cache --enable-embeddings
+```
+
+In a second terminal, send a prompt, the same prompt again, a reworded
+version and an unrelated one:
+
+```sh
+ask() { curl -s -o /dev/null -w "HTTP %{http_code}  %{time_total}s\n" \
+  localhost:8090/v1/chat/completions -H 'Content-Type: application/json' \
+  -d "{\"model\":\"llama3.2:3b\",\"messages\":[{\"role\":\"user\",\"content\":\"$1\"}],\"max_tokens\":60,\"temperature\":0}"; }
+ask "Give me three tips for writing a good README."        # cold: goes to the model
+ask "Give me three tips for writing a good README."        # exact repeat
+ask "give me three tips for writing a great README"        # reworded
+ask "Give me three tips for writing a good cover letter."  # new topic: goes to the model
+curl -s localhost:8090/health
+```
+
+A recorded run (local Ollama on a laptop):
+
+```text
+HTTP 200  1.749980s
+HTTP 200  0.001239s
+HTTP 200  0.009501s
+HTTP 200  1.534536s
+{"status":"ok","cache_enabled":true,"cache_stats":{"hits":2,"misses":2,"evictions":0,
+ "exact_hits":1,"lexical_hits":0,"embedding_hits":1,...,"backend_calls":2}}
+```
+
+Four requests reached the model only twice. The reworded prompt was caught by
+the embedding tier and got the same answer. The first time the embedding tier
+runs, it needs to download `sentence-transformers/all-MiniLM-L6-v2` once. If
+the download fails, the proxy falls back to exact and lexical matching.
+
+**3. Price your endpoint.** The hourly rate is one you supply. A laptop has no
+real GPU price, so this example assumes $1.50/hour:
+
+```sh
+throttle cost --endpoint-url http://localhost:11434/v1 --model llama3.2:3b \
+  --gpu-hourly-rate 1.50 --num-requests 5
+```
+
+```text
+Measured Cost:
+  GPU hours: 0.001402
+  Total cost: $0.0021
+  Input cost: $3.55 per million tokens
+  Output cost: $11.81 per million tokens
+```
+
+The input and output figures each charge the full run cost to that one token
+type, so don't add them together. The prompt is synthetic and requests run
+one at a time.
+
+**4. Profile an agent.** Start the proxy with session tracking:
+
+```sh
+throttle proxy --backend-url http://localhost:11434 --port 8091 --enable-session-tracking
+```
+
+Point your agent's OpenAI base URL at `http://127.0.0.1:8091/v1` and run it.
+Adding an `X-Throttle-Session: <id>` header to each request is optional;
+without it, Throttle groups a growing conversation into one session by
+itself. Then look at the results:
+
+```sh
+throttle sessions                  # list recent sessions
+throttle sessions demo-agent-run   # breakdown for one session (ID or unique prefix)
+```
+
+Here is what it recorded for a simulated 4-turn coding agent that paused
+1.5 s per "tool call":
+
+```text
+Wall Clock Breakdown:
+  Generation:  6.3s (58.1%)  ███████████
+  Client Wait: 4.5s (41.9%)  ████████
+
+Prefix Overlap:
+  Average: 38.3%
+  Total redundant (estimated): 424 tokens (54.3% of all prompt tokens)
+
+[HIGH] Prefix Caching
+  Observation: 54.3% of prompt tokens are redundant prefill (424 tokens across 4 turns)
+  Config: vLLM: --enable-prefix-caching (on by default in recent V1 releases) | SGLang: RadixAttention prefix cache is on unless --disable-radix-cache is set
+```
+
+## Caching proxy
+
+`throttle proxy` is an OpenAI-compatible server (`/v1/chat/completions`,
+`/health`). Change your client's base URL to point at it and nothing else
+changes. Lookups go through three tiers, in this order:
+
+1. **Exact match:** the same messages under the same model and sampling parameters.
+2. **Lexical match:** Jaccard token overlap of at least 0.85. Always on when the cache is on.
+3. **Semantic match (opt-in):** `--enable-embeddings` uses MiniLM embeddings
+   via ONNX Runtime with a cosine threshold of 0.95. It catches reworded
+   prompts, not every paraphrase. In our local test, "What are three tips for
+   writing a good README?" scored 0.9494 and missed. A guard rejects
+   embedding matches whose meaning flips on negation, antonyms or version
+   conflicts, such as "Is it safe to use eval?" vs. "Is it dangerous to use eval?".
+
+A cache hit is always under the same model and identical sampling
+parameters. Savings depend entirely on how often your traffic repeats itself.
+The proxy has been verified against Ollama. vLLM, SGLang and LMDeploy are
+expected to work but have not yet been verified through the proxy on a GPU.
+See [Proxy mode](#proxy-mode) below and [docs/PROXY_DEMO.md](docs/PROXY_DEMO.md).
+
+## Agent session profiler
+
+Agents don't send one request. They send a loop of calls in which the prompt
+keeps growing. Start the proxy with `--enable-session-tracking` and Throttle
+records every turn's timing and token counts to `~/.throttle/sessions.db`.
+`throttle sessions` then shows:
+
+- **Wall-clock breakdown:** time spent generating versus time the model sat
+  idle waiting for the client, such as tool calls.
+- **Redundant prefill:** how much of each prompt repeated the previous turn,
+  applied to the prompt tokens the backend reports. This is an estimate, and
+  the output labels it as one.
+- **Findings:** rule-based suggestions naming the real backend flags to check,
+  for example `--enable-prefix-caching` on vLLM.
+
+Privacy: prompt and completion text are never stored, only content hashes,
+timings and token counts. Session IDs contain a short one-way hash of the
+client address, never the raw IP. Known limits: TTFT shows as `-` because
+the proxy buffers backend responses, and findings have no minimum sample
+size yet, so a short session can still produce a `[HIGH]` finding.
+
+## Built to be believed
+
+- `throttle plan` shows the destination, request count, token ceiling, time
+  limit and cost model **before any traffic is sent**.
+- Benchmark-family outputs (demo, smoke, benchmark, golden) label their
+  evidence kind: `[SIMULATED]`, smoke (`NON-DECISION-GRADE`), exploratory
+  sweep, or golden `decision_eligible`.
+- A failed, truncated or malformed response invalidates its block. Throttle
+  never reports an optimum it didn't test, and never projects monthly
+  savings.
+
+Throttle complements vLLM's
+[auto_tune](https://github.com/vllm-project/vllm/blob/main/benchmarks/auto_tune/README.md):
+auto_tune searches for a candidate config, and Throttle's `golden` protocol
+checks whether that candidate actually beat your baseline under controlled,
+counterbalanced conditions.
 
 ## Choose the right path first
 
@@ -74,6 +245,9 @@ make a configuration decision. They answer different questions:
 
 | Goal | Command | Can reach `decision_eligible: true`? |
 | --- | --- | --- |
+| See the cost model with no hardware | `throttle demo` | No (simulated) |
+| Price a live endpoint | `throttle cost` / `throttle watch` | No |
+| Cache production traffic / profile agents | `throttle proxy` / `throttle sessions` | Not applicable |
 | Check connectivity and response validity | `throttle smoke` | No |
 | Explore concurrency or request-rate levels | `throttle benchmark --concurrency 1 2 4 8 ...` | No |
 | Generate one safety-audited candidate test value | `throttle experimental-tuning ...` | No |
@@ -87,7 +261,14 @@ when the question is whether one verified server configuration beat another.
 
 ## Installation
 
-Throttle requires Python 3.11+ and is available on PyPI. Install with pipx (recommended for CLI tools):
+Throttle requires Python 3.11+.
+
+> **Note:** the PyPI release (`throttle-pro` 0.3.0) predates the agent session
+> profiler: it has no `throttle sessions` command and no
+> `throttle proxy --enable-session-tracking`. To use those, follow
+> [Install from source](#install-from-source) below.
+
+The PyPI release installs with pipx (recommended for CLI tools):
 
 ```sh
 pipx install throttle-pro
@@ -203,7 +384,7 @@ The fastest way to try Throttle is against a local Ollama server:
      --output smoke-with-cache.json
    ```
 
-The smoke run completes in under 2 minutes and sends 27 requests total (24 measured + 3 warmups). With `--enable-cache`, you'll see dramatically higher throughput for cached requests at higher concurrency levels.
+The smoke run sends 27 requests total (24 measured + 3 warm-ups) and stops at a 120-second ceiling. With `--enable-cache`, repeated prompts are answered from Throttle's in-process cache. Cache hits are reported separately and excluded from latency percentiles (see [Similarity cache](#similarity-cache)).
 
 ### Real staging endpoint: plan, then smoke
 
@@ -486,19 +667,19 @@ curl http://localhost:8080/health
 
 **Matching tiers**: the cache checks three tiers in order: exact match (O(1)), then lexical Jaccard token-overlap (threshold 0.85, always on), then an optional semantic embeddings tier.
 
-By default (lexical-only), **paraphrases will miss** despite identical meaning. For example, `"optimize PostgreSQL queries"` vs `"optimize database queries in PostgreSQL"` has Jaccard similarity ~0.64, below the 0.85 threshold, so the second request hits the backend. Exact or near-exact token matches work well without any extra setup.
+By default (lexical-only), **paraphrases will miss** despite identical meaning. For example, `"optimize PostgreSQL queries"` vs `"optimize database queries in PostgreSQL"` has Jaccard similarity 0.60, below the 0.85 threshold, so the second request hits the backend. Exact or near-exact token matches work well without any extra setup.
 
 **Semantic embeddings (opt-in)**: enable with `--enable-embeddings` to catch paraphrases like the example above. Uses `sentence-transformers/all-MiniLM-L6-v2` via ONNX Runtime, threshold 0.95. Requires the `embeddings` extra:
 ```bash
-pip install throttle-pro[embeddings]
+pip install 'throttle-pro[embeddings]'
 throttle proxy --backend-url http://localhost:11434 --enable-cache --enable-embeddings --port 8080
 ```
 If `--enable-embeddings` is passed without the extra installed, the proxy starts with embeddings marked `REQUESTED BUT UNAVAILABLE` and falls back to lexical-only matching rather than failing.
 
-**Threshold behavior**: cosine similarity from this model encodes topic, not polarity. At threshold 0.95, `"Is it safe to use eval?"` vs `"Is it dangerous to use eval?"` scores 0.9874, above the threshold on similarity alone. This is a structural property of the embedding model, not something a higher threshold fixes, so the cache runs an explicit negation/antonym/version-conflict guard before accepting an embeddings-tier hit and skips the match if one is detected.
+**Threshold behavior**: cosine similarity from this model encodes topic, not polarity. At threshold 0.95, `"Is it safe to use eval?"` vs `"Is it dangerous to use eval?"` scores ~0.98 (0.9804 as the proxy formats it), above the threshold on similarity alone. This is a structural property of the embedding model, not something a higher threshold fixes, so the cache runs an explicit negation/antonym/version-conflict guard before accepting an embeddings-tier hit and skips the match if one is detected.
 
 For detailed configuration, streaming behavior, error handling, and production deployment
-considerations, see [PROXY_DEMO.md](PROXY_DEMO.md).
+considerations, see [docs/PROXY_DEMO.md](docs/PROXY_DEMO.md).
 
 ## Boundary and uncertainty rules
 
@@ -675,9 +856,12 @@ throttle golden --dry-run \
   --output-dir golden-run-001
 ```
 
-This example matches the validated golden run in `validation/golden-live-20260817/`.
+This example mirrors the treatment, GPU, and engine of the validated golden run
+in `validation/golden-live-20260817/` (placeholders replace the pinned
+revision/digest).
 
-Replace those SLO examples with the operator's actual thresholds. A
+Add `--p95-slo-ms` / `--ttft-slo-ms` with the operator's actual thresholds if
+latency matters. A
 throughput-only golden decision is permitted when no latency SLO is declared,
 but the artifact says so explicitly and makes no latency claim.
 
@@ -753,7 +937,7 @@ throttle diagnose \
   --url https://inference.example/v1 \
   --api-key-env VLLM_API_KEY \
   --concurrency 1 4 8 \
-  --probe-requests 20 \
+  --requests-per-block 20 \
   --output diagnose.json
 ```
 
@@ -766,7 +950,7 @@ Based on client-side timing heuristics, it classifies the server into one of fiv
 - **memory-bound** (VRAM limits): TTFT degrades sharply; recommended tuning: `kv_cache_block_size`, `prefix_caching`, `max_model_len`.
 - **mixed**: multiple competing bottlenecks; run exploratory sweeps to isolate.
 
-If the error rate exceeds 50%, or samples are insufficient, it returns `classification: inconclusive` (exit code `3`). It always sets `decision_eligible: false` and cannot be used with `throttle compare`.
+If the error rate exceeds 50%, or samples are insufficient, it returns `classification: inconclusive`. Both `inconclusive` and `mixed` exit with code `3`. It always sets `decision_eligible: false` and cannot be used with `throttle compare`.
 
 ## Experimental suggestion-only tuning
 
@@ -875,34 +1059,32 @@ returns `130`.
 
 ## Test
 
-The test suite has two counts depending on whether a live Ollama backend is available at localhost:11434:
-
-**Without Ollama (offline-only tests):**
 ```sh
-PYTHONPATH=src .venv/bin/python -m pytest tests/ -v
-# Expected: 397 passed, 10 skipped
+.venv/bin/python -m pytest -q
 ```
 
-**With Ollama running (includes integration tests):**
-```sh
-# Start Ollama first: ollama serve
-# Pull models: ollama pull llama3.2:1b && ollama pull llama3.2:3b
-PYTHONPATH=src .venv/bin/python -m pytest tests/ -v
-# Expected: 406 passed, 1 skipped
-```
+Every test should pass. Some tests skip when their prerequisites are missing:
+the live-proxy integration tests need Ollama at `localhost:11434` with
+`llama3.2:1b` and `llama3.2:3b` pulled, and the embedding tests need the
+`embeddings` extra plus a downloadable or cached
+`sentence-transformers/all-MiniLM-L6-v2`. In CI without network access, set
+`HF_HUB_OFFLINE=1` so a missing model skips quickly instead of retrying the
+download.
 
-The 9 additional tests verify proxy cache behavior, integration, and streaming against a live backend. Without Ollama, these tests skip gracefully. The 1 always-skipped test requires embeddings dependencies (`pip install throttle-pro[embeddings]`).
-
-The suite blocks non-loopback DNS/socket use via an offline guard in CI. It covers modes, URL/proxy safety, response validation, streaming termination, hard stops, partial reports, cost separation, open/closed-loop scheduling, confidence and boundary logic, manifest tampering, saved comparisons, the GuideLLM subprocess boundary, the six-run golden gate, and the opt-in collector/analyzer/safety chain. Default commands are tested with collector bombs so they cannot accidentally start experimental metric collection.
+The suite blocks non-loopback DNS/socket use via an offline guard in CI. It covers modes, URL/proxy safety, response validation, streaming termination, hard stops, partial reports, cost separation, open/closed-loop scheduling, confidence and boundary logic, manifest tampering, saved comparisons, the GuideLLM subprocess boundary, the six-run golden gate, the caching proxy, agent session tracking, and the opt-in collector/analyzer/safety chain. Default commands are tested with collector bombs so they cannot accidentally start experimental metric collection.
 
 ## Explicitly deferred
 
-Throttle still does not build or perform automatic vLLM/TensorRT-LLM
+Throttle does not build or perform automatic vLLM/TensorRT-LLM
 reconfiguration, GPU/pod provisioning, replica autoscaling, GPU/instance
-selection, spot orchestration, semantic/prefix caching, production traffic
-proxying, async job queues, non-OpenAI backends, distributed multi-host tests,
-accounts/teams, a hosted dashboard, a database/history/telemetry system,
-production-log load discovery, monthly-savings claims, or a polished UI.
+selection, spot orchestration, async job queues, non-OpenAI backends,
+distributed multi-host tests, accounts/teams, a hosted dashboard, remote
+telemetry, production-log load discovery, monthly-savings claims, or a
+polished UI. The proxy's response cache is in-memory and per-process.
+Throttle persists only local files: the opt-in session database
+(`~/.throttle/sessions.db`) and, for decision-eligible golden runs, the local
+result store (`~/.throttle/results`, disable with `--no-result-store`). The proxy does not yet stream backend tokens
+through: it buffers each response, so it cannot measure TTFT.
 
 Remaining limitations and the current evidence boundary are listed in
 [Known gaps](docs/KNOWN_GAPS.md).

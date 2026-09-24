@@ -1,159 +1,144 @@
 # Throttle Quickstart
 
-Get from nothing to seeing GPU cost estimates in under 5 minutes.
+This takes you from nothing to a simulated cost comparison, a live cache hit,
+and a measured $/M-token figure in about five minutes. You don't need a GPU.
 
 ## Prerequisites
 
 - Python 3.11 or later
-- No GPU required for the simulator demo
+- Step 1 needs nothing else
+- Steps 2 and 3 need [Ollama](https://ollama.com/download) running locally
+  with `ollama pull llama3.2:3b`
 
 ## Install
 
 ```bash
-# Create a fresh virtual environment
-python3 -m venv throttle-demo
-source throttle-demo/bin/activate
-
-# Install throttle
-pip install throttle
+git clone https://github.com/KushagraKanaujia/throttle.git
+cd throttle
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -e '.[embeddings]'
+throttle --version
 ```
 
-## Run the Demo
+The PyPI release (`pipx install throttle-pro`, currently 0.3.0) predates the
+agent session profiler. Install from source to get every command below.
 
-The fastest way to see what throttle does is to run the simulator demo:
+## 1. Run the simulator demo
 
 ```bash
 throttle demo
 ```
 
 This command:
-- Generates a sample workload (100 requests)
-- Simulates vLLM-style GPU inference
-- Compares self-hosted GPU costs to API pricing
-- Completes in under 1 second
-- Requires no GPU or network connection
+- generates a sample workload of 300 requests,
+- simulates vLLM-style continuous batching at `max_num_seqs` 128 (baseline)
+  and 256 (tuned),
+- prints a cost table with confidence intervals and a sensitivity analysis,
+- finishes in about a second and makes no network calls.
 
-### Example Output
+Output excerpt:
 
-```
-Throttle GPU Cost Simulator Demo
-============================================================
-
-[SIMULATED] Generating sample workload...
-[SIMULATED] Generated 100 requests
-
-[SIMULATED] Simulator configuration:
-[SIMULATED]   Model: 7B parameter (ASSUMED)
-[SIMULATED]   GPU: A100 40GB @ $1.50/hour
-[SIMULATED]   Prefill throughput: 5000 tok/sec (ASSUMED)
-[SIMULATED]   Decode throughput: 100 tok/sec (ASSUMED)
-[SIMULATED]   Max concurrent sequences: 256 (ASSUMED)
-
-[SIMULATED] Running vLLM continuous batching simulation...
-[SIMULATED] Simulation complete in 0.01 seconds
-
-Cost Comparison
-============================================================
-
-Workload:
-  Total requests: 100
-  Total input tokens: 50,722
-  Total output tokens: 14,592
-
-Self-Hosted GPU (Simulated vLLM on A100 40GB):
-[SIMULATED]   Wall clock time: 47.03 seconds
-[SIMULATED]   GPU hours: 0.013064
-[SIMULATED]   Total cost: $0.0196
-[SIMULATED]   Input cost: $0.39 per million tokens
-[SIMULATED]   Output cost: $1.34 per million tokens
-
-API Pricing (OpenAI GPT-3.5-turbo):
-[MEASURED]   Input cost: $0.50 per million tokens
-[MEASURED]   Output cost: $1.50 per million tokens
-[MEASURED]   Total cost for this workload: $0.0472
-
-Cost Difference:
-[SIMULATED]   Self-hosted saves: $0.0277 (58.5% cheaper)
-
-IMPORTANT:
-All [SIMULATED] values use assumed throughput and configuration parameters.
-Run 'throttle cost' against a real GPU endpoint for measured costs.
+```text
+Configuration being compared:
+  Parameter: max_num_seqs
+  Baseline: 128 concurrent sequences
+  Tuned:    256 concurrent sequences
+...
+Metric                                       Baseline        Tuned        Delta
+--------------------------------------------------------------------------------
+Wall clock time (seconds)                       77.87        63.14       -14.73
+GPU hours                                    0.021630     0.017538    -0.004092
+Input cost ($/M tokens)                          0.35         0.28        -0.07
+Output cost ($/M tokens)                         0.11         0.09        -0.02
+Total cost ($)                                 0.0324       0.0263      -0.0061
+...
+All values above are [SIMULATED] - they depend entirely on assumed
+throughput parameters, not real hardware measurements.
 ```
 
-## Measure Real Costs
+Every number in this output is simulated from assumed throughput. It shows
+how the cost model works. It is not a measurement.
 
-To measure actual costs against a live inference server:
+## 2. Put the caching proxy in front of Ollama
+
+Terminal 1:
 
 ```bash
-# First, make sure you have an OpenAI-compatible inference server running
-# For example, using Ollama:
-# ollama serve &
+throttle proxy --backend-url http://localhost:11434 --port 8090 \
+  --enable-cache --enable-embeddings
+```
 
-# Then run cost measurement
+Terminal 2:
+
+```bash
+ask() { curl -s -o /dev/null -w "HTTP %{http_code}  %{time_total}s\n" \
+  localhost:8090/v1/chat/completions -H 'Content-Type: application/json' \
+  -d "{\"model\":\"llama3.2:3b\",\"messages\":[{\"role\":\"user\",\"content\":\"$1\"}],\"max_tokens\":60,\"temperature\":0}"; }
+ask "Give me three tips for writing a good README."
+ask "Give me three tips for writing a good README."
+ask "give me three tips for writing a great README"
+ask "Give me three tips for writing a good cover letter."
+curl -s localhost:8090/health
+```
+
+On a laptop, the first call took about 1.75 s. The exact repeat took about
+1 ms and the reworded prompt about 9.5 ms. The unrelated prompt went to the
+model again. `/health` reported `"backend_calls":2` for the four requests.
+Your timings will differ.
+
+## 3. Measure real cost per million tokens
+
+```bash
 throttle cost \
   --endpoint-url http://localhost:11434/v1 \
-  --model llama3.2:1b \
+  --model llama3.2:3b \
   --gpu-hourly-rate 1.50 \
-  --num-requests 20
+  --num-requests 5
 ```
 
-This will:
-- Send 20 test requests to your endpoint
-- Measure actual throughput and timing
-- Calculate real dollars per million tokens
-- Show 95% confidence intervals
+This sends real requests, measures throughput and timing, and converts the
+results to dollars per million tokens at the hourly rate you supply. On a
+laptop there is no real hourly price, so $1.50 is an assumption. The input
+and output $/M figures each charge the full run cost to that token type, so
+don't add them together.
 
-## Validate the Simulator
+## Next steps
 
-To check how accurate the simulator is for your hardware:
+- Profile an agent: `throttle proxy ... --enable-session-tracking`, then
+  `throttle sessions` (see the README's "Agent session profiler" section)
+- Before sending traffic to a real endpoint, preview it: `throttle plan --help`
+- For decision-grade config comparisons, see `throttle golden --help` and
+  [docs/GOLDEN_PROTOCOL.md](docs/GOLDEN_PROTOCOL.md)
 
-```bash
-throttle validate-sim \
-  --endpoint-url http://localhost:11434/v1 \
-  --model llama3.2:1b \
-  --gpu-hourly-rate 1.50
-```
-
-This compares simulator predictions to real measurements and shows the error percentage.
-
-## Next Steps
-
-- Use the simulator to explore different scenarios without hardware
-- Measure actual costs to see real numbers
-- Run `throttle validate-sim` to calibrate the simulator for your setup
-- For production benchmarks, see `throttle golden --help`
-
-## Getting Help
+## Getting help
 
 ```bash
-# See all available commands
 throttle --help
-
-# Get help for a specific command
 throttle demo --help
 throttle cost --help
+throttle proxy --help
 ```
 
 ## Troubleshooting
 
-### "httpx is required for cost measurement"
-
-Install httpx:
-```bash
-pip install httpx
-```
-
 ### "Failed to connect to endpoint"
 
 Make sure your inference server is running:
-```bash
-# For Ollama
-ollama serve
 
-# Check it's accessible
+```bash
+ollama serve
 curl http://localhost:11434/api/tags
 ```
 
-### Simulator shows different costs than real measurements
+### The proxy says embeddings are unavailable
 
-This is expected! The simulator uses assumed throughput values. Run `throttle validate-sim` to see how far off it is, then use `throttle cost` for real measurements.
+The embedding tier needs the `embeddings` extra (`pip install -e '.[embeddings]'`)
+and a one-time download of `sentence-transformers/all-MiniLM-L6-v2`. Without
+them, the proxy falls back to exact and lexical matching, so reworded prompts
+will miss.
+
+### Simulator costs differ from real measurements
+
+That is expected. The simulator uses assumed throughput values. Use
+`throttle cost` for measured numbers.

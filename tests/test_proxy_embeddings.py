@@ -9,6 +9,28 @@ import pytest
 from contextlib import asynccontextmanager
 
 from throttle.proxy import ProxyServer
+from throttle import embeddings
+
+
+def _embedding_model_skip_reason():
+    if not embeddings.EMBEDDINGS_AVAILABLE:
+        return "embeddings extra not installed (pip install throttle-pro[embeddings])"
+    if not embeddings.is_model_available():
+        return (
+            f"embedding model could not be loaded: {embeddings.get_load_error()} "
+            "(needs network access or a cached sentence-transformers/all-MiniLM-L6-v2)"
+        )
+    return None
+
+
+# Tests asserting on embedding-tier behavior need the real ONNX model. Without
+# it the cache falls back to Jaccard-only and these assertions cannot hold.
+# The model is probed lazily (first use of the fixture), not at import time.
+@pytest.fixture
+def require_embedding_model():
+    reason = _embedding_model_skip_reason()
+    if reason:
+        pytest.skip(reason)
 
 
 async def _wait_for_server(host: str, port: int, timeout: float = 5.0):
@@ -94,7 +116,7 @@ async def _fake_backend():
 
 
 @pytest.mark.asyncio
-async def test_embedding_hit_that_jaccard_misses():
+async def test_embedding_hit_that_jaccard_misses(require_embedding_model):
     """Test a: Semantically similar prompts under identical scope produce embedding hit."""
 
     @asynccontextmanager
@@ -169,7 +191,7 @@ async def test_embedding_hit_that_jaccard_misses():
 
 
 @pytest.mark.asyncio
-async def test_weak_paraphrase_does_not_hit_at_threshold_095():
+async def test_weak_paraphrase_does_not_hit_at_threshold_095(require_embedding_model):
     """Test that PostgreSQL pair (cosine=0.878) correctly misses at threshold 0.95."""
 
     @asynccontextmanager
@@ -647,7 +669,7 @@ async def test_embedding_miss_on_cross_scope():
             await proxy_task
 
 @pytest.mark.asyncio
-async def test_embedding_hit_with_multiple_scopes_returns_requesting_scope():
+async def test_embedding_hit_with_multiple_scopes_returns_requesting_scope(require_embedding_model):
     """Test: Embedding hit with cached entries under multiple scopes returns requesting scope's response.
 
     Scenario: Two scopes (model-a, model-b) both cache responses to near-identical prompts.

@@ -138,7 +138,7 @@ class SimilarityCache:
 
         Measured 2026-08-24: cosine similarity encodes topic, not polarity.
         At threshold 0.95, "Is it safe to use eval?" vs "Is it dangerous to use eval?"
-        scored 0.9874. This is structural, not tunable.
+        scored 0.9804 (as the proxy formats it, "user: <text>"). This is structural, not tunable.
         """
         import re
         # Normalize: lowercase, remove punctuation, split into tokens
@@ -235,8 +235,26 @@ class SimilarityCache:
                 self._remove_embedding_rows(set(expired_keys))
 
     def _embed_prompt(self, prompt: str) -> Optional["np.ndarray"]:
-        """Generate embedding for prompt. Caller must hold lock."""
-        return embeddings.get_embedding(prompt)
+        """Generate embedding for prompt. Caller must hold lock.
+
+        If the embedding model cannot be loaded (e.g. offline with no cached
+        weights), the embedding tier is disabled for this cache with a single
+        warning and matching falls back to exact + Jaccard only.
+        """
+        emb = embeddings.get_embedding(prompt)
+        if emb is None and self.enable_embeddings:
+            load_error = embeddings.get_load_error()
+            if load_error is not None:
+                if not self._embedding_fallback_logged:
+                    logger.warning(
+                        f"Embedding model unavailable ({load_error}). "
+                        "Falling back to Jaccard-only matching."
+                    )
+                    self._embedding_fallback_logged = True
+                self.enable_embeddings = False
+                self._embedding_matrix = None
+                self._embedding_keys = []
+        return emb
 
     def get(self, prompt: str) -> Optional[Any]:
         """Retrieves structured response data if an exact or similarity match is found."""
@@ -344,15 +362,26 @@ class SimilarityCache:
                     # Vectorized cosine: (N,384) @ (384,) = (N,)
                     similarities = scan_matrix @ query_emb
 
-                    # Find best match
-                    best_idx = int(np.argmax(similarities))
-                    best_score = float(similarities[best_idx])
-
                     self.metrics.embedding_comparisons_performed += len(scan_keys)
 
-                    logger.debug(f"Embedding scan: best_score={best_score:.4f}, threshold={self.embedding_threshold}, hit={best_score >= self.embedding_threshold}")
+                    # Find best match that passes the negation/version guard
+                    # (same guard as get_with_key; cosine encodes topic, not
+                    # polarity, so "safe" vs "dangerous" can score > 0.95).
+                    best_idx = -1
+                    best_score = -1.0
+                    for idx in np.argsort(-similarities):
+                        score = float(similarities[idx])
+                        if score < self.embedding_threshold:
+                            break
+                        if self._has_negation_or_version_conflict(prompt, scan_keys[int(idx)]):
+                            continue
+                        best_idx = int(idx)
+                        best_score = score
+                        break
 
-                    if best_score >= self.embedding_threshold:
+                    logger.debug(f"Embedding scan: best_score={best_score:.4f}, threshold={self.embedding_threshold}, hit={best_idx >= 0}")
+
+                    if best_idx >= 0:
                         self.metrics.embedding_hits += 1
                         best_key = scan_keys[best_idx]
                         best_data = self._store[best_key].response_data
