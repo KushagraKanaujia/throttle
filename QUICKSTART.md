@@ -14,17 +14,12 @@ about five minutes. You don't need a GPU.
 ## Install
 
 ```bash
-git clone https://github.com/KushagraKanaujia/throttle.git
-cd throttle
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -e .
-throttle --version
+pipx install throttle-pro
+throttle --version   # 0.4.0
 ```
 
-Install from source. PyPI (`pipx install throttle-pro`) still has 0.3.0,
-which has no `throttle check` and no agent session profiler; 0.4.0 is the
-next PyPI release.
+No pipx? `python3 -m pip install --user pipx && python3 -m pipx ensurepath`,
+or install into a virtualenv with `pip install throttle-pro`.
 
 Run `throttle` with no arguments at any point to print these steps in the
 terminal.
@@ -264,8 +259,8 @@ prompt goes to the model. The reworded prompt shares too few words with the
 first one for the lexical tier, so it goes to the model too: 3 backend calls
 for 4 requests. Your timings will differ.
 
-Semantic matching (`--enable-embeddings`, needs `pip install -e
-'.[embeddings]'`) also catches some reworded prompts, but it is opt-in for a
+Semantic matching (`--enable-embeddings`, needs
+`pipx install --force 'throttle-pro[embeddings]'`) also catches some reworded prompts, but it is opt-in for a
 reason: opposite questions such as "Is it safe to use eval in Python?" and
 "Is it dangerous to use eval in Python?" scored 0.9874 similarity, above the
 0.95 threshold. A guard rejects known negation and antonym flips, but a
@@ -303,7 +298,7 @@ curl http://localhost:11434/api/tags
 
 ### The proxy says embeddings are unavailable
 
-The embedding tier needs the `embeddings` extra (`pip install -e '.[embeddings]'`)
+The embedding tier needs the `embeddings` extra (`pipx install --force 'throttle-pro[embeddings]'`)
 and a one-time download of `sentence-transformers/all-MiniLM-L6-v2`. Without
 them, the proxy falls back to exact and lexical matching, so reworded prompts
 will miss.

@@ -65,22 +65,16 @@ traffic. (The proxy cache row used the opt-in semantic tier,
 
 ## Install
 
-Throttle needs Python 3.11+. Install from source; everything in this README
-runs from the source in this repository:
+Throttle needs Python 3.11+. Install it from PyPI with pipx:
 
 ```sh
-git clone https://github.com/KushagraKanaujia/throttle.git
-cd throttle
-python3 -m venv .venv
-. .venv/bin/activate
-python -m pip install -e .
-throttle --version
+pipx install throttle-pro
+throttle --version   # 0.4.0
 ```
 
-PyPI (`pipx install throttle-pro`) still has 0.3.0, which has no `throttle
-check` and no agent session profiler. 0.4.0 is the next PyPI release. Add the
-`embeddings` extra (`python -m pip install -e '.[embeddings]'`) only if you
-want the proxy's opt-in semantic cache tier.
+Add the `embeddings` extra (`pipx install 'throttle-pro[embeddings]'`) only if
+you want the proxy's opt-in semantic cache tier. To hack on Throttle itself,
+see [Install from source](#install-from-source).
 
 ## Quick demo (5 minutes, no GPU)
 
@@ -512,8 +506,14 @@ when the question is whether one verified server configuration beat another.
 
 ## Installation
 
-Throttle requires Python 3.11+. Install it from source, as in
-[Install](#install) above:
+Throttle requires Python 3.11+. The package on PyPI is `throttle-pro`:
+
+```sh
+pipx install throttle-pro
+throttle --version
+```
+
+### Install from source
 
 ```sh
 git clone https://github.com/KushagraKanaujia/throttle.git
@@ -527,12 +527,6 @@ throttle --version
 Optional extras: `python -m pip install -e '.[embeddings]'` for the proxy's
 semantic cache tier, and `python -m pip install pyyaml` for the config file
 below.
-
-**PyPI:** the package is `throttle-pro`, but PyPI still has 0.3.0, which
-predates `throttle check`, the agent session profiler and the flag fixes in
-[CHANGELOG.md](CHANGELOG.md). 0.4.0 is the next PyPI release; until then
-`pipx install throttle-pro` gives you the older CLI, and the commands in this
-README may not match it.
 
 **vLLM with Prometheus metrics exposed** (default port 8000): read live $/M
 tokens without sending any requests:
