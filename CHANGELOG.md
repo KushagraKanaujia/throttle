@@ -2,6 +2,87 @@
 
 All notable changes to Throttle will be documented in this file.
 
+## [0.4.0] - 2026-09-23
+
+### Added
+- `throttle check`: measures $/M tokens against a live endpoint in repeated
+  blocks (95% Student-t CI across blocks), fingerprints the serving config
+  (`/v1/models`, vLLM `/metrics` `*_info` labels, `--label`, `--config
+  KEY=VALUE`, the ASSUMED GPU rate), saves each check to a local history
+  (`~/.throttle/checks/`, `--history-dir`, `$THROTTLE_CHECK_HISTORY_DIR`) and
+  compares it with the previous check of the same endpoint (or `--against
+  ID`). Also `--history`, `--json`, `--monthly-tokens` (labelled PROJECTED),
+  and pre-traffic caps on requests, tokens, concurrency, time and worst-case
+  GPU spend.
+- Run-to-run noise bound for `check` verdicts. A within-run CI cannot see
+  drift between runs, so CHEAPER / MORE EXPENSIVE now needs a measured change
+  larger than `t(0.975, df) x sqrt(2) x SD`, where SD is the pooled relative
+  SD of $/M among earlier repeat checks (last 24 h, not counting the check
+  being judged) of the baseline's config and of this check's config (same
+  endpoint, fingerprint, workload and Throttle version), **and**
+  non-overlapping CIs. Otherwise NO WINNER, naming every failed condition.
+  With fewer than 2 df (e.g. under 3 earlier repeats of one config), or a
+  baseline more than 24 h old, the verdict is NOT CALIBRATED and no monthly
+  figure is projected. A hint is printed when two same-config checks have
+  non-overlapping CIs.
+- `check` judges only the MEASURED part of a change: when the ASSUMED GPU
+  rate differs from the baseline's, the new check is put on the baseline's
+  rate and the rate-driven part is printed separately. A Throttle upgrade is
+  listed as a change; history lines without an `id` are skipped and counted.
+- `check` exit codes: 4 for a calibrated MORE EXPENSIVE whose measured
+  change is at or above `--fail-if-costlier PCT`; 5 for NOT CALIBRATED when `--fail-if-costlier` is
+  set (0 without it).
+- Running `throttle` with no arguments prints a three-step getting-started
+  list (demo, cost, check).
+- `cost` and `demo` print a blended $/M line (total cost / all tokens) next to
+  the input and output figures, with a note that those two are not additive.
+- Agent session profiling (opt-in). `throttle proxy --enable-session-tracking`
+  records per-turn timing (TTFT, total latency, gap since the previous turn)
+  and token counts for multi-turn agent sessions to `~/.throttle/sessions.db`.
+  Prompt and completion text are never stored: turns keep content hashes and
+  token counts, and sessions keep the client IP used for session grouping.
+- `throttle sessions` lists recorded sessions (`--since`, `--limit`) and, given
+  a session id, shows a per-session breakdown of where wall-clock time went
+  plus rule-based findings with suggested configuration changes.
+
+### Changed
+- `--url` and `--endpoint-url` are accepted interchangeably, and
+  `http://host:port`, `.../v1` or the full chat-completions route all work in
+  `cost`, `measure`, `check`, `plan`, `smoke` and `benchmark`; `proxy` accepts
+  `--url` for `--backend-url`.
+- `--gpu-hourly-rate`, `--gpu-rate-per-hour` and `--total-hourly-price` are
+  aliases. On `plan`/`smoke`/`benchmark`, an hourly price implies
+  `--cost-model dedicated-hourly` (printed as inferred); `--gpu-hourly-rate`
+  with `--gpus` > 1 is refused as ambiguous.
+- `cost`, `measure` and `check` default `--model` to the server's only model
+  from `/v1/models` and name it; with several models the error lists them.
+- A localhost endpoint with no `OPENAI_API_KEY` set sends no Authorization
+  header (and says so) instead of refusing; remote endpoints still need a key.
+- Clearer errors: a non-200 from the chat route says whether the URL or the
+  model is wrong (listing served models), usage errors name the subcommand
+  that was run, and the unknown-cost refusal suggests `--gpu-hourly-rate`.
+- The `plan` output calls the spend limit a ceiling, not an estimate.
+- README and QUICKSTART now lead with $/M tokens and re-checking after each
+  config change; caching is documented as one opt-in lever (off by default,
+  semantic tier opt-in with its false-match risk). `throttle check` is
+  documented with recorded local-Ollama output for each verdict (NO WINNER,
+  MORE EXPENSIVE, CHEAPER, NOT CALIBRATED) and its exit codes. Install
+  instructions point at source, since PyPI still has 0.3.0; 0.4.0 is the next
+  PyPI release.
+- Internal design notes, audit reports, and pilot/outreach material moved from
+  the repository root into `docs/internal/`. The proxy guide now lives at
+  `docs/PROXY_DEMO.md`.
+
+### Fixed
+- README commands that did not run as written: the `diagnose` example had no
+  price and exited with a usage error, and the similarity-cache example used
+  `https://...` placeholders (now a local `smoke` run). The agent-profiler
+  steps now say that the proxy writes sessions to disk every 5 to 10 seconds,
+  so `throttle sessions` run immediately after a request can show nothing.
+- The README credited the semantic-cache false-match example ("Is it safe /
+  dangerous to use eval in Python?") with a 0.9804 score that belongs to a
+  different pair; the recorded score is 0.9874 (`data/negation_pairs.json`).
+
 ## [0.3.0] - 2026-08-22
 
 ### Removed

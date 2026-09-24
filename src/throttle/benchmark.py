@@ -336,10 +336,19 @@ def validate_config(config: RunConfig, *, for_traffic: bool = True) -> None:
     normalize_chat_completions_url(
         config.endpoint.url, allow_insecure_http=config.allow_insecure_http
     )
-    if for_traffic and (
-        not isinstance(config.endpoint.api_key, str) or not config.endpoint.api_key
-    ):
+    if for_traffic and not isinstance(config.endpoint.api_key, str):
         raise ValueError("API key must not be empty")
+    if for_traffic and not config.endpoint.api_key:
+        # A keyless run is allowed only against a loopback endpoint with the
+        # native runner (local Ollama / vLLM usually have no auth). Remote
+        # endpoints and the GuideLLM subprocess still require a key.
+        host = urlsplit(config.endpoint.url.strip()).hostname
+        if not (
+            config.backend == "native"
+            and host
+            and _is_loopback_host(str(host))
+        ):
+            raise ValueError("API key must not be empty")
     config.cost.validate()
     config.limits.validate()
     if not _is_int(config.max_tokens) or config.max_tokens <= 0:
@@ -471,8 +480,10 @@ def validate_config(config: RunConfig, *, for_traffic: bool = True) -> None:
     estimate = config.cost.estimated_upper_bound(config.limits.max_elapsed_seconds)
     if estimate is None and for_traffic and not config.allow_unknown_cost:
         raise ValueError(
-            "the selected billing model cannot enforce max spend; pass "
-            "--allow-unknown-cost to acknowledge this explicitly"
+            "the selected billing model cannot enforce max spend. For a $/M "
+            "figure, supply a price: --gpu-hourly-rate 1.50 (same as --cost-model "
+            "dedicated-hourly --total-hourly-price 1.50); or pass "
+            "--allow-unknown-cost to acknowledge this explicitly (no dollar figure)"
         )
     if (
         for_traffic
@@ -2307,10 +2318,14 @@ async def run_native(
     client_timeout = httpx.Timeout(config.request_timeout_seconds)
     try:
         async with httpx.AsyncClient(
-            headers={
-                "Authorization": f"Bearer {config.endpoint.api_key}",
-                "Accept-Encoding": "identity",
-            },
+            headers=(
+                {
+                    "Authorization": f"Bearer {config.endpoint.api_key}",
+                    "Accept-Encoding": "identity",
+                }
+                if config.endpoint.api_key
+                else {"Accept-Encoding": "identity"}
+            ),
             timeout=client_timeout,
             limits=limits,
             transport=transport,

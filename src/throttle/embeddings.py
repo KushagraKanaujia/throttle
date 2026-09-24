@@ -8,15 +8,32 @@ import logging
 from threading import Lock
 from typing import Optional
 
-try:
-    import numpy as np
-    import onnxruntime as ort
-    from tokenizers import Tokenizer
-    from huggingface_hub import hf_hub_download
-    EMBEDDINGS_AVAILABLE = True
-except ImportError:
-    EMBEDDINGS_AVAILABLE = False
-    np = None  # type: ignore
+import importlib.util
+
+# The heavy optional dependencies are only imported when the embedding tier is
+# actually used. Importing onnxruntime at CLI startup slowed every command and
+# could abort the process at interpreter shutdown (exit 134, libc++
+# recursive_mutex) even for commands that never embed anything.
+EMBEDDINGS_AVAILABLE = all(
+    importlib.util.find_spec(m) is not None
+    for m in ("numpy", "onnxruntime", "tokenizers", "huggingface_hub")
+)
+np = None  # type: ignore
+ort = None  # type: ignore
+Tokenizer = None  # type: ignore
+hf_hub_download = None  # type: ignore
+
+
+def _import_backends() -> None:
+    """Import numpy/onnxruntime/tokenizers/huggingface_hub on first use."""
+    global np, ort, Tokenizer, hf_hub_download
+    if ort is not None:
+        return
+    import numpy as _np
+    import onnxruntime as _ort
+    from tokenizers import Tokenizer as _Tokenizer
+    from huggingface_hub import hf_hub_download as _hf_hub_download
+    np, ort, Tokenizer, hf_hub_download = _np, _ort, _Tokenizer, _hf_hub_download
 
 logger = logging.getLogger(__name__)
 
@@ -24,21 +41,36 @@ logger = logging.getLogger(__name__)
 _embedder: Optional["_DirectEmbedder"] = None
 _load_lock = Lock()
 _failure_count = 0
+# Reason the model could not be loaded (e.g. offline with no cached weights).
+# Once set, loading is not retried for the lifetime of the process, so a
+# missing model does not trigger a network download attempt on every request.
+_load_error: Optional[str] = None
+
+_DEFAULT_MODEL_ID = "sentence-transformers/all-MiniLM-L6-v2"
+
+
+def _download(model_id: str, filename: str) -> str:
+    """Resolve a model file, preferring the local HF cache over the network."""
+    try:
+        return hf_hub_download(repo_id=model_id, filename=filename, local_files_only=True)
+    except Exception:
+        return hf_hub_download(repo_id=model_id, filename=filename)
 
 
 class _DirectEmbedder:
     """Direct ONNX embedder using pre-exported weights."""
 
-    def __init__(self, model_id: str = "sentence-transformers/all-MiniLM-L6-v2"):
+    def __init__(self, model_id: str = _DEFAULT_MODEL_ID):
         if not EMBEDDINGS_AVAILABLE:
             raise ImportError(
                 "Embedding dependencies not installed. "
                 "Install with: pip install throttle-pro[embeddings]"
             )
 
-        # Download pre-exported ONNX model and tokenizer
-        model_path = hf_hub_download(repo_id=model_id, filename="onnx/model.onnx")
-        tokenizer_path = hf_hub_download(repo_id=model_id, filename="tokenizer.json")
+        _import_backends()
+        # Pre-exported ONNX model and tokenizer (local cache first, then Hub)
+        model_path = _download(model_id, "onnx/model.onnx")
+        tokenizer_path = _download(model_id, "tokenizer.json")
 
         self.tokenizer = Tokenizer.from_file(tokenizer_path)
         self.session = ort.InferenceSession(model_path)
@@ -92,25 +124,53 @@ class _DirectEmbedder:
 
 def _get_embedder() -> Optional["_DirectEmbedder"]:
     """Get or create the singleton embedder instance. Thread-safe single-flight."""
-    global _embedder
+    global _embedder, _load_error
 
     if not EMBEDDINGS_AVAILABLE:
         return None
 
     if _embedder is not None:
         return _embedder
+    if _load_error is not None:
+        return None
 
     with _load_lock:
         # Double-check after acquiring lock
         if _embedder is not None:
             return _embedder
+        if _load_error is not None:
+            return None
 
         try:
             _embedder = _DirectEmbedder()
             return _embedder
         except Exception as e:
-            logger.error(f"Failed to initialize embedder: {e}")
+            _load_error = f"{type(e).__name__}: {e}"
+            logger.error(
+                f"Failed to initialize embedder ({_load_error}). "
+                "Semantic embedding tier disabled for this process."
+            )
             return None
+
+
+def is_model_available() -> bool:
+    """Return True if the embedding model is installed and loads successfully.
+
+    Triggers the (one-time) model load. Returns False when the optional
+    dependencies are missing or the weights cannot be obtained (for example
+    no network access and nothing in the local HuggingFace cache).
+    """
+    return _get_embedder() is not None
+
+
+def get_load_error() -> Optional[str]:
+    """Why the embedding model is unavailable, or None if it is (or may be) usable."""
+    if not EMBEDDINGS_AVAILABLE:
+        return (
+            "Embedding dependencies not installed "
+            "(pip install throttle-pro[embeddings])"
+        )
+    return _load_error
 
 
 def get_embedding(text: str) -> Optional["np.ndarray"]:
@@ -140,8 +200,21 @@ def get_embeddings(texts: list[str]) -> "np.ndarray":
     """
     global _failure_count
 
-    if not EMBEDDINGS_AVAILABLE or not np:
-        return np.zeros((len(texts), 384), dtype=np.float32)
+    if EMBEDDINGS_AVAILABLE:
+        try:
+            _import_backends()
+        except ImportError:
+            pass
+    if not EMBEDDINGS_AVAILABLE or np is None:
+        # numpy may be missing entirely; return a plain zero matrix if possible
+        try:
+            import numpy as _np
+        except ImportError:
+            raise ImportError(
+                "Embedding dependencies not installed. "
+                "Install with: pip install throttle-pro[embeddings]"
+            )
+        return _np.zeros((len(texts), 384), dtype=_np.float32)
 
     embedder = _get_embedder()
     if embedder is None:

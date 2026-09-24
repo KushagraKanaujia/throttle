@@ -3,3 +3,4 @@ include LICENSE
 include docs/GOLDEN_PROTOCOL.md
 include docs/KNOWN_GAPS.md
 include docs/REPORT_SCHEMA.md
+include CHANGELOG.md

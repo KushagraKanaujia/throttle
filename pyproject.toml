@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "throttle-pro"
-version = "0.3.0"
-description = "Honest load and cost benchmarking for OpenAI-compatible chat endpoints"
+version = "0.4.0"
+description = "Measure LLM inference cost, cache repeated prompts, and profile agent sessions for any OpenAI-compatible endpoint"
 readme = "README.md"
 license = "MIT"
 license-files = ["LICENSE"]

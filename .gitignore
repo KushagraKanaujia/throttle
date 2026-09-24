@@ -43,7 +43,7 @@ Thumbs.db
 /benchmark.json
 /comparison.json
 *.json.bak
-demo*.json
+/demo*.json
 
 # Scratch test files for local debugging (not for commit)
 /test_*.py
@@ -52,3 +52,20 @@ demo*.json
 
 # Build artifacts are generated in CI and uploaded as artifacts
 dist/
+
+# Additional packaging/tooling output
+.eggs/
+*.egg
+.tox/
+.nox/
+wheels/
+.ipynb_checkpoints/
+
+# Local Throttle state (result stores, session profiler DBs, experimental temp dirs)
+.throttle/
+*.db
+*.sqlite
+*.sqlite3
+.throttle-experimental-*
+/validation_*.json
+*.bak

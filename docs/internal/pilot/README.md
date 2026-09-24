@@ -10,8 +10,8 @@ decision.
 As of 2026-08-17:
 
 - engineering evidence: one valid six-position [live golden
-  comparison](../validation/golden-live-20260817/golden.json) exists, with its
-  [sanitized audit](../validation/golden-live-20260817/RUN_AUDIT.md);
+  comparison](../../../validation/golden-live-20260817/golden.json) exists, with its
+  [sanitized audit](../../../validation/golden-live-20260817/RUN_AUDIT.md);
 - external qualified operators recruited: **0**;
 - external staging endpoints tested: **0**;
 - operator decisions influenced: **0**;

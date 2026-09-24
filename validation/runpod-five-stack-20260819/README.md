@@ -8,13 +8,13 @@ Pod identifier: `o4zw3lkzv9yr69`
 
 ## Summary
 
-Throttle was tested against five different open-source inference engines on the same RunPod A100 80GB GPU to validate cross-stack compatibility. Four of the five engines completed successfully; one (TGI) failed to start due to a container issue unrelated to Throttle.
+Throttle was tested against five different open-source inference engines on the same RunPod RTX 4090 24GB pod (per `REPORT.md`) to validate cross-stack compatibility. Four of the five engines completed successfully; one (TGI) failed to start due to a container issue unrelated to Throttle.
 
 ## Results
 
 All four successful runs used:
-- Model: `Qwen/Qwen3-8B`
-- GPU: A100 80GB PCIe (RunPod)
+- Model (per engine, from each JSON manifest): vLLM `Qwen/Qwen3-8B`; SGLang and LMDeploy `Qwen/Qwen2.5-3B-Instruct`; Ollama `qwen2.5:3b`
+- GPU: NVIDIA GeForce RTX 4090 24GB (RunPod, per `REPORT.md`; the manifests record `runtime.gpu` as `unknown`)
 - Workload: closed-loop concurrency 1 and 4
 - Cost model: $0.74/hour dedicated
 - Throttle version: 0.2.0
@@ -26,6 +26,8 @@ All four successful runs used:
 | Ollama | 0.32.14 | Success | 172.52 | No (exploratory sweep) |
 | LMDeploy | unknown | Success | 238.32 | No (exploratory sweep) |
 | TGI | N/A | Container failed to start | N/A | N/A |
+
+Throughput is not comparable across engines: the models differ (vLLM ran an 8B model; the others ran 3B models).
 
 ## Purpose
 

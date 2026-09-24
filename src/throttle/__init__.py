@@ -1,3 +1,3 @@
 """Throttle: safety-first measurement for OpenAI-compatible endpoints."""
 
-__version__ = "0.3.0"
+__version__ = "0.4.0"
