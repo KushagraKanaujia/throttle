@@ -8,15 +8,32 @@ import logging
 from threading import Lock
 from typing import Optional
 
-try:
-    import numpy as np
-    import onnxruntime as ort
-    from tokenizers import Tokenizer
-    from huggingface_hub import hf_hub_download
-    EMBEDDINGS_AVAILABLE = True
-except ImportError:
-    EMBEDDINGS_AVAILABLE = False
-    np = None  # type: ignore
+import importlib.util
+
+# The heavy optional dependencies are only imported when the embedding tier is
+# actually used. Importing onnxruntime at CLI startup slowed every command and
+# could abort the process at interpreter shutdown (exit 134, libc++
+# recursive_mutex) even for commands that never embed anything.
+EMBEDDINGS_AVAILABLE = all(
+    importlib.util.find_spec(m) is not None
+    for m in ("numpy", "onnxruntime", "tokenizers", "huggingface_hub")
+)
+np = None  # type: ignore
+ort = None  # type: ignore
+Tokenizer = None  # type: ignore
+hf_hub_download = None  # type: ignore
+
+
+def _import_backends() -> None:
+    """Import numpy/onnxruntime/tokenizers/huggingface_hub on first use."""
+    global np, ort, Tokenizer, hf_hub_download
+    if ort is not None:
+        return
+    import numpy as _np
+    import onnxruntime as _ort
+    from tokenizers import Tokenizer as _Tokenizer
+    from huggingface_hub import hf_hub_download as _hf_hub_download
+    np, ort, Tokenizer, hf_hub_download = _np, _ort, _Tokenizer, _hf_hub_download
 
 logger = logging.getLogger(__name__)
 
@@ -50,6 +67,7 @@ class _DirectEmbedder:
                 "Install with: pip install throttle-pro[embeddings]"
             )
 
+        _import_backends()
         # Pre-exported ONNX model and tokenizer (local cache first, then Hub)
         model_path = _download(model_id, "onnx/model.onnx")
         tokenizer_path = _download(model_id, "tokenizer.json")
@@ -182,6 +200,11 @@ def get_embeddings(texts: list[str]) -> "np.ndarray":
     """
     global _failure_count
 
+    if EMBEDDINGS_AVAILABLE:
+        try:
+            _import_backends()
+        except ImportError:
+            pass
     if not EMBEDDINGS_AVAILABLE or np is None:
         # numpy may be missing entirely; return a plain zero matrix if possible
         try:

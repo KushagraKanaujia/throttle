@@ -1,42 +1,46 @@
 # Throttle
 
-**Find out what your LLM inference really costs, stop paying twice for the same answer, and see where your agents' time goes.**
+**Know what your LLM inference costs in dollars per million tokens, and whether your last serving-config change made it cheaper or more expensive, with statistics that won't call a winner from overlapping or uncalibrated evidence.**
 
-Throttle is an open-source CLI and drop-in proxy for any OpenAI-compatible
-endpoint: vLLM, SGLang, Ollama, LMDeploy and similar servers. It is built for
-teams that self-host models or pay for inference and want real numbers
-instead of guesses.
+Throttle is an open-source CLI for any OpenAI-compatible endpoint: vLLM,
+SGLang, Ollama, LMDeploy and similar servers. It is for teams that self-host
+models, pay for GPU time, and want to know their real $/M tokens instead of
+guessing.
 
 ```text
-your app / agent ──► throttle proxy ──► vLLM · SGLang · Ollama · LMDeploy
-                        │
-                        ├─ caches repeated and near-duplicate prompts
-                        └─ profiles multi-turn agent sessions
+change a serving setting ──► throttle check ──► $/M tokens (95% CI) + what changed + verdict
+        ▲                                                                   │
+        └──────────── keep the change, or roll it back ◄────────────────────┘
 ```
 
 ## The problem
 
-- **Inference is expensive, and much of it is wasted.** Apps re-send the same
-  or nearly the same prompt, and every call pays for full GPU time.
-  Agent loops re-send their whole conversation history on every turn.
-- **Config tuning happens blind.** Teams change `max_num_seqs` or batch size,
-  send a few curl requests, check the latency by eye and deploy. Nobody knows
-  whether the change won, lost, or just landed on a quiet minute.
-- **Agent traffic is a black box.** Nobody can say how much of a session was
-  spent generating, how much waiting on tools, or how many prompt tokens were
-  just history being prefilled again.
+- **You pay for GPU hours but budget in $/M tokens.** The conversion between
+  the two is throughput, and throughput depends on the serving config: batch
+  size, `max_num_seqs`, quantization, engine version, GPU type.
+- **Config changes ship blind.** Someone changes a flag, sends a few curl
+  requests, eyeballs the latency and deploys. Nobody re-measures $/M tokens, so
+  a change that makes every token more expensive shows up weeks later on the
+  bill.
+- **Noise looks like a win.** Two measurements taken at different times differ
+  from machine load alone. On a MacBook, five checks of the same unchanged
+  local Ollama server, all started within three minutes, measured between $8.26
+  and $8.59 per million output tokens: a 4.0% spread, although a single check's
+  95% interval was as narrow as about ±1%. A tool that calls the lowest one "4% cheaper"
+  is reporting noise.
 
 ## What Throttle does
 
 | | Command | What you get |
 | --- | --- | --- |
-| **Cache** | `throttle proxy --enable-cache` | A proxy you put in front of your model server. It answers repeated and near-duplicate prompts from memory, with no GPU call. |
+| **Price it** | `throttle cost`, `throttle watch` | Dollars per million tokens, measured against a live endpoint (`cost`) or read from vLLM `/metrics` (`watch`). The GPU $/hr is yours and always labelled ASSUMED; tokens and time are MEASURED. |
+| **Re-check it after every config change** | `throttle check` | $/M tokens with a 95% confidence interval, what changed in the config, and a verdict against the last check. CHEAPER or MORE EXPENSIVE only when the measured change is larger than a run-to-run noise bound estimated from at least 3 recent repeat checks **and** the intervals don't overlap. Otherwise NO WINNER, or NOT CALIBRATED when there is no recent noise measurement yet. `--fail-if-costlier` makes it a CI gate. |
+| **Prove a config change** | `throttle plan` → `smoke` → `benchmark` → `golden` | Traffic that is planned and capped before any request goes out, repeated measurement blocks, 95% intervals, and a six-position counterbalanced protocol for a decision-grade baseline-vs-candidate answer. |
+| **Cache (one lever, off by default)** | `throttle proxy --enable-cache` | A proxy in front of your model server that answers exact and near-exact repeated prompts from memory. Semantic matching is a separate opt-in with a known false-match risk (see [Caching proxy](#caching-proxy)). |
 | **Profile agents** | `throttle proxy --enable-session-tracking` + `throttle sessions` | A per-session breakdown of time spent generating versus waiting, an estimate of redundant prefill, and suggested backend settings to check. |
-| **Price it** | `throttle cost`, `throttle watch` | Dollars per million tokens, measured against a live endpoint (`cost`) or read from vLLM `/metrics` (`watch`). |
-| **Prove a config change** | `throttle plan` → `smoke` → `benchmark` → `golden` | Traffic that is planned and capped before any request goes out, repeated measurement blocks, 95% intervals, and a six-position counterbalanced protocol for baseline-vs-candidate decisions. |
 
-Throttle provisions nothing and never changes your server. It measures, caches
-and reports.
+Throttle provisions nothing and never changes your server. It measures and
+reports; `--config KEY=VALUE` only records what you changed.
 
 ## Receipts
 
@@ -47,23 +51,38 @@ recorded local run. Nothing here is a projection.
 | --- | --- | --- |
 | Config decision on a real GPU | `max_num_seqs` 1 → 8 on vLLM 0.16.0: **+189.5% to +246.2% throughput** (95% CI, point estimate +217.8%) | A100 80GB, Qwen2.5-0.5B-Instruct, six-position golden protocol, `decision_eligible: true`. [`validation/golden-live-20260817/`](validation/golden-live-20260817/) |
 | Cross-engine compatibility | vLLM, SGLang, Ollama and LMDeploy all measured end to end | RunPod GPUs, descriptive only (not decision-grade). [`validation/runpod-five-stack-20260819/`](validation/runpod-five-stack-20260819/) |
+| Agent session profile | A simulated 4-turn agent: 41.9% of wall-clock time spent waiting on the client, an estimated 54.3% of prompt tokens redundant prefill | Local Ollama `llama3.2:3b` on a MacBook (Apple M3 Pro, Metal), no datacenter GPU. The tool pauses are scripted at 1.5 s each. |
 | Proxy cache hit | Cold call **1.75 s**, then the same prompt from cache in **1.2 ms**, then a reworded prompt from cache in **9.5 ms** | Local Ollama `llama3.2:3b` on a MacBook (Apple M3 Pro, Metal), no datacenter GPU. 4 requests, 2 backend calls. |
 | Benchmark-harness cache on realistic traffic | 27.0% hit rate, total runtime 39.46 s → 28.28 s | Local Ollama `llama3.2:1b`, 73-prompt traffic sample. [`validation/CACHE_VALIDATION_SUMMARY.md`](validation/CACHE_VALIDATION_SUMMARY.md) |
-| Agent session profile | A simulated 4-turn agent: 41.9% of wall-clock time spent waiting on the client, an estimated 54.3% of prompt tokens redundant prefill | Local Ollama `llama3.2:3b` on a MacBook (Apple M3 Pro, Metal), no datacenter GPU. The tool pauses are scripted at 1.5 s each. |
 
 The golden result is the **only** decision-eligible result in this repo. It
 applies to that exact model, engine, GPU and workload, and it is not a savings
 projection. The cache and profiler numbers were measured on a laptop and show
 how the mechanism works. They do not predict hit rates or savings on your
-traffic. See [RESULTS.md](RESULTS.md) for the full evidence and its
-limitations.
+traffic. (The proxy cache row used the opt-in semantic tier,
+`--enable-embeddings`; the default proxy has no semantic tier.) See
+[RESULTS.md](RESULTS.md) for the full evidence and its limitations.
 
-## Quick demo (2 minutes, no GPU)
+## Install
+
+Throttle needs Python 3.11+. Install from source; everything in this README
+runs from the source in this repository:
 
 ```sh
-pipx install 'throttle-pro[embeddings]'
-throttle --version   # 0.4.0
+git clone https://github.com/KushagraKanaujia/throttle.git
+cd throttle
+python3 -m venv .venv
+. .venv/bin/activate
+python -m pip install -e .
+throttle --version
 ```
+
+PyPI (`pipx install throttle-pro`) still has 0.3.0, which has no `throttle
+check` and no agent session profiler. 0.4.0 is the next PyPI release. Add the
+`embeddings` extra (`python -m pip install -e '.[embeddings]'`) only if you
+want the proxy's opt-in semantic cache tier.
+
+## Quick demo (5 minutes, no GPU)
 
 **1. The simulator (no server, no network, about 1 second):**
 
@@ -75,20 +94,149 @@ throttle demo
 Metric                                       Baseline        Tuned        Delta
 --------------------------------------------------------------------------------
 Wall clock time (seconds)                       77.87        63.14       -14.73
+GPU hours                                    0.021630     0.017538    -0.004092
+Blended cost ($/M tokens, in + out)              0.08         0.07        -0.02
+Input cost ($/M tokens)                          0.35         0.28        -0.07
+Output cost ($/M tokens)                         0.11         0.09        -0.02
 Total cost ($)                                 0.0324       0.0263      -0.0061
 ...
 All values above are [SIMULATED] - they depend entirely on assumed
 throughput parameters, not real hardware measurements.
 ```
 
-Steps 2–4 need [Ollama](https://ollama.com/download) running locally with
-`ollama pull llama3.2:3b`. That is enough on a laptop.
+Steps 2 to 5 need [Ollama](https://ollama.com/download) running locally with
+`ollama pull llama3.2:3b`. That is enough on a laptop. Run `throttle` with no
+arguments for the same getting-started steps in the terminal.
 
-**2. The caching proxy.** Start it in one terminal:
+**2. Price your endpoint.** The hourly rate is one you supply. A laptop has no
+real GPU price, so the examples here assume $1.50/hour unless they say
+otherwise:
 
 ```sh
-throttle proxy --backend-url http://localhost:11434 --port 8090 \
-  --enable-cache --enable-embeddings
+throttle cost --url http://localhost:11434 --model llama3.2:3b \
+  --gpu-hourly-rate 1.50 --num-requests 5
+```
+
+Recorded on a MacBook (Apple M3 Pro, local Ollama 0.32.5, `llama3.2:3b`;
+GPU rate ASSUMED):
+
+```text
+Measured Cost [MEASURED time x ASSUMED $1.50/hr]:
+  GPU hours: 0.001494
+  Total cost: $0.0022
+  Blended cost: $2.87 per million tokens (input + output, 780 tokens)
+  Input cost: $3.78 per million tokens
+  Output cost: $11.98 per million tokens
+  Note: input and output $/M each charge the whole run to one token type;
+  they are not additive. Compare the blended figure with a per-token bill.
+```
+
+The input and output figures each charge the full run cost to that one token
+type, so don't add them together; the blended line is the one to hold next to
+a per-token bill. The prompt is synthetic and requests run one at a time.
+
+`--url` and `--endpoint-url` are the same flag, and both `http://host:port`
+and `http://host:port/v1` work here and in `measure`, `check` and
+`plan`/`smoke`/`benchmark`. (`proxy` takes `--backend-url`.) `--model` can be
+left out of `cost`, `measure` and `check` only: if the server lists exactly
+one model at `/v1/models`, that model is used and named in the output; if it
+lists several, the error names them.
+
+**3. Re-check cost after a config change.** `throttle check` is the command to
+rerun. It measures $/M tokens in repeated blocks, fingerprints the serving
+config it can see (`/v1/models`, vLLM `/metrics` `*_info` labels, plus
+anything you declare with `--config KEY=VALUE`), saves the result to
+`~/.throttle/checks/`, and compares it with the previous check of the same
+endpoint. The workflow:
+
+```sh
+# 1. record today's config, three times, changing nothing: the repeats measure run-to-run noise
+for i in 1 2 3; do
+  throttle check --url http://localhost:11434 --model llama3.2:3b \
+    --gpu-hourly-rate 1.50 --label before
+done
+# 2. change one server setting (for Ollama, e.g. restart it with OLLAMA_NUM_PARALLEL=4), then:
+throttle check --url http://localhost:11434 --model llama3.2:3b \
+  --gpu-hourly-rate 1.50 --label after --config OLLAMA_NUM_PARALLEL=4 \
+  --monthly-tokens 500M
+```
+
+What those commands printed on a MacBook (Apple M3 Pro, local Ollama
+0.32.5, `llama3.2:3b`, default check workload of 5 blocks x 4 requests; GPU
+rate ASSUMED). The first check has nothing to compare with:
+
+```text
+Result
+  $8.64 per million output tokens   [MEASURED]
+  95% CI $8.08 to $9.20, across 5 blocks (Student t)
+  same GPU spend per other tokens (not additive): $12.93/M input tokens; $5.18/M tokens (input + output)
+  = $1.50/hr [ASSUMED] x measured wall-clock / measured tokens, at concurrency 2. Cost at a different production concurrency will differ.
+
+Compared with: nothing yet. This is the first check for this endpoint;
+the next check will be compared against it.
+```
+
+The second and third `before` checks are compared with the one before them,
+but there is not yet enough repeat evidence for a verdict. The second:
+
+```text
+Compared with check 20260924T054047Z-aae3a6b5 (2026-09-24T05:40:47Z, 1 min ago, label before)
+  What changed in the config: nothing Throttle can see (add --config KEY=VALUE for settings the endpoint does not report)
+  before  $8.64/M output tokens  (95% CI $8.08 to $9.20)
+  now     $9.36/M output tokens  (95% CI $8.62 to $10.10)
+  change  +$0.7198 per million output tokens (+8.3%)
+  noise   run-to-run noise bound: not measured (needs 3 earlier checks of one config and workload within 24 h, not counting this one; or 2 each of the before and after configs)
+          baseline and this check (same config): label before, 1 earlier check(s), no repeat yet
+  why     run-to-run noise unknown: 0 degree(s) of freedom from repeat checks within 24 h, 2 needed (e.g. 3 checks of the baseline config, not counting this one).
+  Verdict: NOT CALIBRATED — run-to-run noise unknown. Two checks at different times can differ from load alone. Run 'throttle check' at least 3 times without changing anything (within 24 h) to measure your noise, or use 'throttle golden' for a counterbalanced decision.
+```
+
+The third, with 2 earlier checks (1 degree of freedom), is still not enough:
+the range of one pair is not an estimate of noise.
+
+```text
+Compared with check 20260924T054117Z-c4d9627f (2026-09-24T05:41:17Z, 1 min ago, label before)
+  What changed in the config: nothing Throttle can see (add --config KEY=VALUE for settings the endpoint does not report)
+  before  $9.36/M output tokens  (95% CI $8.62 to $10.10)
+  now     $9.49/M output tokens  (95% CI $8.62 to $10.36)
+  change  +$0.1294 per million output tokens (+1.4%)
+  noise   run-to-run noise bound: not measured (needs 3 earlier checks of one config and workload within 24 h, not counting this one; or 2 each of the before and after configs)
+          baseline and this check (same config): label before, 2 earlier check(s), spread 8.3%
+  why     run-to-run noise unknown: 1 degree(s) of freedom from repeat checks within 24 h, 2 needed (e.g. 3 checks of the baseline config, not counting this one).
+  Verdict: NOT CALIBRATED — run-to-run noise unknown. Two checks at different times can differ from load alone. Run 'throttle check' at least 3 times without changing anything (within 24 h) to measure your noise, or use 'throttle golden' for a counterbalanced decision.
+```
+
+For this recording Ollama was **not** actually restarted, so the server was
+unchanged and the right answer to step 2 is "no winner". It measured 11.5%
+cheaper anyway, with a tighter CI than the baseline's, and Throttle did not
+call it a win or project a monthly saving, because the three unchanged
+`before` checks already disagreed by up to 9.8%:
+
+```text
+Compared with check 20260924T054147Z-fa7d9cda (2026-09-24T05:41:47Z, 2 min ago, label before)
+  What changed in the config:
+    config.OLLAMA_NUM_PARALLEL: (not set) -> 4
+    label: before -> after
+  before  $9.49/M output tokens  (95% CI $8.62 to $10.36)
+  now     $8.40/M output tokens  (95% CI $8.14 to $8.67)
+  change  -$1.09 per million output tokens (-11.5%)
+  noise   run-to-run noise bound 30.4% [MEASURED from 3 earlier checks of unchanged configs within 24 h: t x sqrt(2) x 5.0% SD, 2 df]
+          baseline config: label before, 3 earlier check(s), spread 9.8%
+          this check's config: label after, 0 earlier check(s), no repeat yet
+  monthly not projected: with NO WINNER the difference is not distinguishable from noise
+  Verdict: NO WINNER, the change (-11.5%) is not larger than the run-to-run noise bound (30.4% = t x sqrt(2) x 5.0% run-to-run SD, 2 df); and the 95% confidence intervals overlap, so the difference is within measurement noise.
+```
+
+See
+[`throttle check`: verdicts and exit codes](#throttle-check-verdicts-and-exit-codes)
+for the exact rules and what a changed GPU rate does.
+
+**4. Optional: the caching proxy.** Caching is one cost lever. It is off by
+default, and it only helps when your traffic repeats itself. Start the proxy
+in one terminal:
+
+```sh
+throttle proxy --backend-url http://localhost:11434 --port 8090 --enable-cache
 ```
 
 In a second terminal, send a prompt, the same prompt again, a reworded
@@ -105,43 +253,22 @@ ask "Give me three tips for writing a good cover letter."  # new topic: goes to 
 curl -s localhost:8090/health
 ```
 
-A recorded run (local Ollama on a laptop):
+Recorded on a MacBook (Apple M3 Pro, local Ollama 0.32.5):
 
 ```text
-HTTP 200  1.749980s
-HTTP 200  0.001239s
-HTTP 200  0.009501s
-HTTP 200  1.534536s
-{"status":"ok","cache_enabled":true,"cache_stats":{"hits":2,"misses":2,"evictions":0,
- "exact_hits":1,"lexical_hits":0,"embedding_hits":1,...,"backend_calls":2}}
+HTTP 200  1.386167s
+HTTP 200  0.001539s
+HTTP 200  1.356098s
+HTTP 200  1.406699s
+{"status":"ok","cache_enabled":true,"cache_stats":{"hits":1,"misses":3,"evictions":0,"exact_hits":1,"lexical_hits":0,"embedding_hits":0,"embedding_scans_attempted":0,"embedding_comparisons_performed":0,"backend_calls":3}}
 ```
 
-Four requests reached the model only twice. The reworded prompt was caught by
-the embedding tier and got the same answer. The first time the embedding tier
-runs, it needs to download `sentence-transformers/all-MiniLM-L6-v2` once. If
-the download fails, the proxy falls back to exact and lexical matching.
+The exact repeat came from the cache in 1.5 ms. The reworded prompt shares
+too few words with the first for the default lexical tier, so it went to the
+model. The opt-in semantic tier (`--enable-embeddings`) would catch it, at a
+cost described under [Caching proxy](#caching-proxy).
 
-**3. Price your endpoint.** The hourly rate is one you supply. A laptop has no
-real GPU price, so this example assumes $1.50/hour:
-
-```sh
-throttle cost --endpoint-url http://localhost:11434/v1 --model llama3.2:3b \
-  --gpu-hourly-rate 1.50 --num-requests 5
-```
-
-```text
-Measured Cost:
-  GPU hours: 0.001402
-  Total cost: $0.0021
-  Input cost: $3.55 per million tokens
-  Output cost: $11.81 per million tokens
-```
-
-The input and output figures each charge the full run cost to that one token
-type, so don't add them together. The prompt is synthetic and requests run
-one at a time.
-
-**4. Profile an agent.** Start the proxy with session tracking:
+**5. Profile an agent.** Start the proxy with session tracking:
 
 ```sh
 throttle proxy --backend-url http://localhost:11434 --port 8091 --enable-session-tracking
@@ -150,11 +277,13 @@ throttle proxy --backend-url http://localhost:11434 --port 8091 --enable-session
 Point your agent's OpenAI base URL at `http://127.0.0.1:8091/v1` and run it.
 Adding an `X-Throttle-Session: <id>` header to each request is optional;
 without it, Throttle groups a growing conversation into one session by
-itself. Then look at the results:
+itself. The proxy writes turns to disk in batches (every 5 to 10 seconds, and
+when it stops), so wait about 10 seconds after the last request. Then look at
+the results:
 
 ```sh
 throttle sessions                  # list recent sessions
-throttle sessions demo-agent-run   # breakdown for one session (ID or unique prefix)
+throttle sessions <SESSION_ID>     # breakdown for one session (ID or unique prefix)
 ```
 
 Here is what it recorded for a simulated 4-turn coding agent that paused
@@ -174,20 +303,139 @@ Prefix Overlap:
   Config: vLLM: --enable-prefix-caching (on by default in recent V1 releases) | SGLang: RadixAttention prefix cache is on unless --disable-radix-cache is set
 ```
 
+## `throttle check`: verdicts and exit codes
+
+A 95% CI is computed across blocks inside one run, so it cannot see
+run-to-run drift (machine load, thermal state, other tenants). Two checks
+taken at different times are not a controlled comparison. So `check` also
+estimates a **run-to-run noise bound** from its own recent history:
+
+- A *same-config group* is every stored check with the same endpoint, the
+  same config fingerprint (model, `--label`, GPU rate, server-reported
+  settings, `--config` pairs), the same workload (prompts, requests per block,
+  concurrency, max tokens) and the same Throttle version.
+- Only two groups count: the baseline's config and this check's config (one
+  group if they are the same). The check being judged is never part of its own
+  noise estimate, and only checks created within 24 hours of it count.
+- The run-to-run SD is the pooled relative standard deviation of the groups'
+  $/M point estimates, with `df = sum(n - 1)` over the groups. It needs
+  `df >= 2`: for example 3 earlier checks of the baseline config, or 2 each of
+  the before and after configs.
+- The bound is `t(0.975, df) x sqrt(2) x SD`, a 95% bound on the difference
+  between two single checks of one unchanged config. With 2 df, t is 4.303, so
+  3 repeats give a wide bound; more repeats tighten it.
+- A baseline more than 24 hours older than the check is NOT CALIBRATED:
+  drift over that gap was never measured. Re-check the baseline config first.
+
+The label is part of the config: rerunning an unchanged server under a new
+label starts a new group, so it does not calibrate itself.
+
+| Verdict | When | Monthly figure |
+| --- | --- | --- |
+| **CHEAPER** / **MORE EXPENSIVE** | Same workload, \|measured change\| is larger than the run-to-run bound, **and** the 95% CIs do not overlap | With `--monthly-tokens`, the change per month is printed, labelled PROJECTED |
+| **NO WINNER** | The change is not larger than the bound or the CIs overlap (every failed condition is named), or the two checks used different workloads | Not projected |
+| **NOT CALIBRATED** | Fewer than 2 df of recent repeat checks, or the baseline is more than 24 h old | Not projected; before/now, both CIs, the change and the reason are still printed |
+
+When two checks of the same config and workload have non-overlapping CIs,
+`check` also prints a `hint` line naming both check IDs and saying that
+"your machine's run-to-run noise is larger than within-run noise, so a
+within-run CI alone understates the uncertainty".
+
+**The GPU rate is ASSUMED, so it never decides a verdict.** $/M scales
+linearly with the rate you type. When it differs from the baseline's, the
+check is put on the baseline's rate and only that measured part (throughput)
+is judged; the rate-driven part is printed separately as arithmetic. The same
+laptop, the same unchanged server, `--gpu-hourly-rate 3.00` against the third
+`before` check above:
+
+```sh
+throttle check --url http://localhost:11434 --model llama3.2:3b \
+  --gpu-hourly-rate 3.00 --label rate-3.00 --against <CHECK_ID> \
+  --no-save --fail-if-costlier 5
+```
+
+```text
+Compared with check 20260924T054147Z-fa7d9cda (2026-09-24T05:41:47Z, 1 min ago, label before)
+  What changed in the config:
+    gpu_hourly_rate_usd (ASSUMED): 1.5000 -> 3.0000
+    label: before -> rate-3.00
+  before  $9.49/M output tokens  (95% CI $8.62 to $10.36)
+  now     $18.42/M output tokens  (95% CI $17.12 to $19.72)
+  change  +$8.94 per million output tokens (+94.2%)
+  note    the GPU rate changed ($1.50/hr -> $3.00/hr) [ASSUMED]: that alone moves $/M by +100.0%, arithmetic on rates you typed, not a measurement.
+          At the old rate this check measures $9.21/M (-2.9% vs before) [MEASURED throughput]; the verdict judges only that part.
+  noise   run-to-run noise bound 30.4% [MEASURED from 3 earlier checks of unchanged configs within 24 h: t x sqrt(2) x 5.0% SD, 2 df]
+          baseline config: label before, 3 earlier check(s), spread 9.8%
+          this check's config: label rate-3.00, 0 earlier check(s), no repeat yet
+  Verdict: NO WINNER, the measured change at the baseline's GPU rate (-2.9%) is not larger than the run-to-run noise bound (30.4% = t x sqrt(2) x 5.0% run-to-run SD, 2 df); and the 95% confidence intervals overlap, so the difference is within measurement noise.
+```
+
+It exited with code 0. $/M at the typed rates went up 94.2%, but nothing
+measured got worse (-2.9% at the old rate, inside the 30.4% bound), so it is
+not MORE EXPENSIVE and the CI gate does not fail. `<CHECK_ID>` is an ID from
+`throttle check --history`. With `--json`, the check, its comparison and the
+noise groups are also written to a file.
+
+None of these recordings produced CHEAPER or MORE EXPENSIVE: the server never
+actually changed. The test suite (`tests/test_check.py`) covers the directional
+verdicts, the CI gate's exit 4, and the cases above.
+
+**Exit codes:**
+
+| Code | Meaning |
+| --- | --- |
+| `0` | Check done: CHEAPER, NO WINNER, first check, or NOT CALIBRATED without `--fail-if-costlier` |
+| `1` | Measurement failed; nothing recorded |
+| `2` | Usage error |
+| `4` | `--fail-if-costlier PCT` tripped: a calibrated MORE EXPENSIVE whose measured change (at the baseline's GPU rate) is at least PCT percent |
+| `5` | `--fail-if-costlier` given and the verdict is NOT CALIBRATED; treat it as a warning or a failure |
+
+Other options:
+
+```sh
+throttle check --history                                # every past check, all endpoints
+throttle check --history --url http://localhost:11434   # only this endpoint
+throttle check --history --limit 5                      # only the newest 5
+```
+
+`--history` sends no traffic. On a measuring check, `--against CHECK_ID`
+compares with a chosen check instead of the latest one, `--json PATH` also
+writes the check, its comparison and the noise groups as JSON, and
+`--no-save` compares without adding the check to history.
+
+`check` sends its own fixed workload (built-in prompts, 5 blocks x 4
+requests, concurrency 2, max 64 output tokens by default), so its $/M is not
+comparable with `throttle cost`; compare checks with checks. Keep the
+workload flags identical between checks, or the comparison is NO WINNER. It
+is capped before any traffic like `smoke`: at most 10,000 requests, 1,024
+output tokens per request, 2,000,000 requested output tokens, concurrency 64,
+300 seconds, and a worst-case GPU time (rate x time ceiling) of $3.00; each
+has a `--max-*` flag to raise it. `check` is still not a controlled
+experiment; for a decision-grade answer use the golden protocol below.
+
 ## Caching proxy
 
 `throttle proxy` is an OpenAI-compatible server (`/v1/chat/completions`,
 `/health`). Change your client's base URL to point at it and nothing else
-changes. Lookups go through three tiers, in this order:
+changes. The cache is off unless you pass `--enable-cache`. Lookups go
+through these tiers, in this order:
 
 1. **Exact match:** the same messages under the same model and sampling parameters.
-2. **Lexical match:** Jaccard token overlap of at least 0.85. Always on when the cache is on.
-3. **Semantic match (opt-in):** `--enable-embeddings` uses MiniLM embeddings
-   via ONNX Runtime with a cosine threshold of 0.95. It catches reworded
-   prompts, not every paraphrase. In our local test, "What are three tips for
-   writing a good README?" scored 0.9494 and missed. A guard rejects
-   embedding matches whose meaning flips on negation, antonyms or version
-   conflicts, such as "Is it safe to use eval?" vs. "Is it dangerous to use eval?".
+2. **Lexical match:** Jaccard token overlap of at least 0.85. On whenever the cache is on.
+3. **Semantic match (opt-in):** `--enable-embeddings` (needs the
+   `embeddings` extra) uses MiniLM embeddings via ONNX Runtime with a cosine
+   threshold of 0.95. It catches some reworded prompts, not every paraphrase:
+   in our local test, "What are three tips for writing a good README?" scored
+   0.9494 and missed.
+
+**The semantic tier can return an answer to a different question.** Cosine
+similarity from this model encodes topic, not polarity: "Is it safe to use
+eval in Python?" and "Is it dangerous to use eval in Python?" scored
+**0.9874**, well above the 0.95 threshold
+([`data/negation_pairs.json`](data/negation_pairs.json)). A guard rejects
+embedding matches whose meaning flips on known negations, antonyms or version
+conflicts, but it cannot catch every opposite phrasing. Turn the semantic
+tier on only for traffic where a wrong cached answer is acceptable.
 
 A cache hit is always under the same model and identical sampling
 parameters. Savings depend entirely on how often your traffic repeats itself.
@@ -224,8 +472,15 @@ size yet, so a short session can still produce a `[HIGH]` finding.
   evidence kind: `[SIMULATED]`, smoke (`NON-DECISION-GRADE`), exploratory
   sweep, or golden `decision_eligible`.
 - A failed, truncated or malformed response invalidates its block. Throttle
-  never reports an optimum it didn't test, and never projects monthly
-  savings.
+  never reports an optimum it didn't test.
+- `throttle check` calls nothing CHEAPER or MORE EXPENSIVE unless the
+  measured change beats a run-to-run noise bound estimated from at least 3
+  recent repeat checks (a t bound, not the range of one pair) and the 95%
+  intervals are disjoint. A change in the ASSUMED GPU rate alone is never a
+  verdict. In a simulation with identical true cost and 5% run-to-run noise,
+  it declared a false winner in about 3-4% of comparisons. A monthly figure appears only when you pass
+  `--monthly-tokens`, and is labelled PROJECTED (MEASURED $/M x your ASSUMED
+  volume); a monthly *change* appears only with a calibrated verdict.
 
 Throttle complements vLLM's
 [auto_tune](https://github.com/vllm-project/vllm/blob/main/benchmarks/auto_tune/README.md):
@@ -242,6 +497,7 @@ make a configuration decision. They answer different questions:
 | --- | --- | --- |
 | See the cost model with no hardware | `throttle demo` | No (simulated) |
 | Price a live endpoint | `throttle cost` / `throttle watch` | No |
+| Re-check $/M after each config change | `throttle check` | No (a calibrated CHEAPER / MORE EXPENSIVE is a guard rail, not a controlled experiment) |
 | Cache production traffic / profile agents | `throttle proxy` / `throttle sessions` | Not applicable |
 | Check connectivity and response validity | `throttle smoke` | No |
 | Explore concurrency or request-rate levels | `throttle benchmark --concurrency 1 2 4 8 ...` | No |
@@ -256,50 +512,37 @@ when the question is whether one verified server configuration beat another.
 
 ## Installation
 
-Throttle requires Python 3.11+.
-
-Throttle is on PyPI as `throttle-pro`. Install it with pipx (recommended for CLI tools):
-
-```sh
-pipx install throttle-pro
-throttle --version
-```
-
-If you don't have pipx, install it first:
-```sh
-# macOS
-brew install pipx
-
-# Linux/WSL
-python3 -m pip install --user pipx
-python3 -m pipx ensurepath
-```
-
-**Alternative:** If you're already inside a virtualenv, use pip:
-```sh
-pip install throttle-pro
-```
-
-**Quickstart:** If you have a vLLM server with Prometheus metrics exposed (default port 8000), get live cost-per-million-tokens instantly:
-
-```sh
-throttle watch --gpu-rate-per-hour 1.50
-```
-
-This reads `/metrics` without sending requests — one command to see real-time $/MTok.
-
-### Install from source
-
-To install the development version:
+Throttle requires Python 3.11+. Install it from source, as in
+[Install](#install) above:
 
 ```sh
 git clone https://github.com/KushagraKanaujia/throttle.git
 cd throttle
 python3 -m venv .venv
 . .venv/bin/activate
-python -m pip install .
+python -m pip install -e .
 throttle --version
 ```
+
+Optional extras: `python -m pip install -e '.[embeddings]'` for the proxy's
+semantic cache tier, and `python -m pip install pyyaml` for the config file
+below.
+
+**PyPI:** the package is `throttle-pro`, but PyPI still has 0.3.0, which
+predates `throttle check`, the agent session profiler and the flag fixes in
+[CHANGELOG.md](CHANGELOG.md). 0.4.0 is the next PyPI release; until then
+`pipx install throttle-pro` gives you the older CLI, and the commands in this
+README may not match it.
+
+**vLLM with Prometheus metrics exposed** (default port 8000): read live $/M
+tokens without sending any requests:
+
+```sh
+throttle watch --gpu-rate-per-hour 1.50
+```
+
+This reads `/metrics` only. Without a vLLM server on port 8000 it exits with
+an error that says it cannot reach the metrics endpoint.
 
 ### Configuration File (Optional)
 
@@ -307,16 +550,16 @@ Throttle supports loading default values from `~/.throttle/config.yaml` to avoid
 
 **Setup:**
 ```sh
-# Install PyYAML (optional dependency)
-pip install pyyaml
+# Install PyYAML (optional dependency), inside the clone's virtualenv
+python -m pip install pyyaml
 
-# Create config directory and copy example
+# Create config directory and copy the example (-n: never overwrite an existing config)
 mkdir -p ~/.throttle
-cp .throttle.yaml.example ~/.throttle/config.yaml
-
-# Edit with your preferred defaults
-nano ~/.throttle/config.yaml
+cp -n .throttle.yaml.example ~/.throttle/config.yaml
 ```
+
+Then edit `~/.throttle/config.yaml` and uncomment the defaults you want (every
+line in the example starts commented out).
 
 **Example config:**
 ```yaml
@@ -344,37 +587,33 @@ The fastest way to try Throttle is against a local Ollama server:
 
 2. **Pull and start a small model:**
    ```sh
-   ollama pull llama3.2:1b
+   ollama pull llama3.2:3b
    ollama serve  # if not already running
    ```
 
 3. **Run a smoke test:**
    ```sh
-   # Set a dummy API key (Ollama doesn't need one, but throttle requires the variable)
-   export OLLAMA_API_KEY="ollama"
-
+   # No key needed: for a localhost URL with OPENAI_API_KEY unset and no
+   # --api-key-env given, throttle sends no Authorization header and says so.
+   # $1.50/hr is an ASSUMED rate (a laptop has no GPU bill); use your own.
    throttle smoke \
-     --model llama3.2:1b \
+     --model llama3.2:3b \
      --url http://localhost:11434/v1 \
-     --api-key-env OLLAMA_API_KEY \
-     --cost-model unknown \
-     --allow-unknown-cost \
+     --cost-model dedicated-hourly --gpus 1 --total-hourly-price 1.50 \
      --output smoke.json
    ```
 
 4. **Test the cache feature:**
    ```sh
    throttle smoke \
-     --model llama3.2:1b \
+     --model llama3.2:3b \
      --url http://localhost:11434/v1 \
-     --api-key-env OLLAMA_API_KEY \
-     --cost-model unknown \
-     --allow-unknown-cost \
+     --cost-model dedicated-hourly --gpus 1 --total-hourly-price 1.50 \
      --enable-cache \
      --output smoke-with-cache.json
    ```
 
-The smoke run sends 27 requests total (24 measured + 3 warm-ups) and stops at a 120-second ceiling. With `--enable-cache`, repeated prompts are answered from Throttle's in-process cache. Cache hits are reported separately and excluded from latency percentiles (see [Similarity cache](#similarity-cache)).
+The smoke run sends 27 requests total (24 measured + 3 warm-ups) and stops at a 120-second ceiling; `throttle plan` with the same options shows the estimated cost upper bound ($0.05 at $1.50/hr) before any traffic. With `--cost-model unknown --allow-unknown-cost` it runs without a price but ends with no dollar figure. With `--enable-cache`, repeated prompts are answered from Throttle's in-process cache. Cache hits are reported separately and excluded from latency percentiles (see [Similarity cache](#similarity-cache)).
 
 ### Real staging endpoint: plan, then smoke
 
@@ -418,9 +657,6 @@ send traffic. Review the destination, request/token/time limits, cost model,
 and privacy warning before proceeding. With unknown billing it deliberately
 blocks traffic until the operator explicitly acknowledges that the spend
 calculation is unavailable.
-
-For source development instead of the pre-built wheel, use
-`python -m pip install -e .` inside the clone.
 
 GuideLLM is an optional, out-of-process cross-check backend. The pinned release
 is exactly 0.7.3 and its official Python support is 3.10–3.13, so use a 3.13
@@ -592,12 +828,18 @@ Throttle supports an opt-in in-memory similarity cache for bypassing inference
 when prompts are semantically similar. Enable with `--enable-cache`:
 
 ```bash
-throttle benchmark --url https://... --model ... \
+throttle smoke --model llama3.2:3b --url http://localhost:11434 \
+  --gpu-hourly-rate 1.50 \
   --enable-cache \
   --cache-ttl-seconds 3600 \
   --cache-max-size 1000 \
-  --cache-similarity-threshold 0.85
+  --cache-similarity-threshold 0.85 \
+  --output smoke-cache.json
 ```
+
+The same cache flags work on `throttle benchmark`. Against local Ollama this
+smoke run answered 17 of its 27 requests from the cache (`cache_hit_rate`
+0.63 in `smoke-cache.json`), because the smoke workload repeats its prompts.
 
 Cache hits are excluded from GPU latency percentiles to preserve decision-grade
 measurements: a 1ms cache lookup must not pollute a p95 computed from 50-500ms
@@ -617,7 +859,7 @@ responses for external HTTP clients. Unlike the benchmark cache (which only
 accelerates Throttle's own load generator), the proxy serves production
 traffic from curl, OpenAI SDKs, and other HTTP clients.
 
-**Quick start** (start Ollama first with `ollama serve` and `ollama pull llama3.2:1b`):
+**Quick start** (start Ollama first with `ollama serve` and `ollama pull llama3.2:3b`):
 
 ```bash
 # Start proxy - backend URL does NOT include /v1 (proxy appends it automatically)
@@ -632,7 +874,7 @@ throttle proxy \
 curl -X POST http://localhost:8080/v1/chat/completions \
   -H "Content-Type: application/json" \
   -d '{
-    "model": "llama3.2:1b",
+    "model": "llama3.2:3b",
     "messages": [{"role": "user", "content": "Hello"}],
     "max_tokens": 50
   }'
@@ -644,7 +886,7 @@ curl http://localhost:8080/health
 curl -X POST http://localhost:8080/v1/chat/completions \
   -H "Content-Type: application/json" \
   -d '{
-    "model": "llama3.2:1b",
+    "model": "llama3.2:3b",
     "messages": [{"role": "user", "content": "Hello"}],
     "max_tokens": 50
   }'
@@ -659,14 +901,14 @@ curl http://localhost:8080/health
 
 By default (lexical-only), **paraphrases will miss** despite identical meaning. For example, `"optimize PostgreSQL queries"` vs `"optimize database queries in PostgreSQL"` has Jaccard similarity 0.60, below the 0.85 threshold, so the second request hits the backend. Exact or near-exact token matches work well without any extra setup.
 
-**Semantic embeddings (opt-in)**: enable with `--enable-embeddings` to catch paraphrases like the example above. Uses `sentence-transformers/all-MiniLM-L6-v2` via ONNX Runtime, threshold 0.95. Requires the `embeddings` extra:
+**Semantic embeddings (opt-in)**: enable with `--enable-embeddings` to catch some paraphrases the lexical tier misses. Uses `sentence-transformers/all-MiniLM-L6-v2` via ONNX Runtime, threshold 0.95. Requires the `embeddings` extra, installed inside the clone:
 ```bash
-pip install 'throttle-pro[embeddings]'
+python -m pip install -e '.[embeddings]'
 throttle proxy --backend-url http://localhost:11434 --enable-cache --enable-embeddings --port 8080
 ```
 If `--enable-embeddings` is passed without the extra installed, the proxy starts with embeddings marked `REQUESTED BUT UNAVAILABLE` and falls back to lexical-only matching rather than failing.
 
-**Threshold behavior**: cosine similarity from this model encodes topic, not polarity. At threshold 0.95, `"Is it safe to use eval?"` vs `"Is it dangerous to use eval?"` scores ~0.98 (0.9804 as the proxy formats it), above the threshold on similarity alone. This is a structural property of the embedding model, not something a higher threshold fixes, so the cache runs an explicit negation/antonym/version-conflict guard before accepting an embeddings-tier hit and skips the match if one is detected.
+**Threshold behavior**: cosine similarity from this model encodes topic, not polarity. At threshold 0.95, `"Is it safe to use eval in Python?"` vs `"Is it dangerous to use eval in Python?"` scores 0.9874 ([`data/negation_pairs.json`](data/negation_pairs.json)), above the threshold on similarity alone. This is a structural property of the embedding model, not something a higher threshold fixes, so the cache runs an explicit negation/antonym/version-conflict guard before accepting an embeddings-tier hit and skips the match if one is detected. The guard only knows the patterns it lists; an opposite question phrased another way can still be served the wrong cached answer, which is why this tier is opt-in.
 
 For detailed configuration, streaming behavior, error handling, and production deployment
 considerations, see [docs/PROXY_DEMO.md](docs/PROXY_DEMO.md).
@@ -928,8 +1170,14 @@ throttle diagnose \
   --api-key-env VLLM_API_KEY \
   --concurrency 1 4 8 \
   --requests-per-block 20 \
+  --cost-model dedicated-hourly \
+  --gpus 1 \
+  --total-hourly-price 0.50 \
   --output diagnose.json
 ```
+
+Like `smoke`, `diagnose` refuses to send traffic without a price; use
+`--cost-model unknown --allow-unknown-cost` to run it with no dollar figure.
 
 The command runs 1 block of 20 requests per concurrency level with 3 warm-ups (maximum 200 total requests) under a strict 60-second execution ceiling.
 
@@ -1033,6 +1281,13 @@ Reports contain hashes and aggregate numeric evidence, not endpoint URLs,
 hostnames, keys, authorization headers, prompts, responses, raw exception text,
 or GuideLLM raw output. Engine flag names/values are validated before they can
 enter a manifest; accelerator fingerprints are stored only as SHA-256.
+(`throttle check` history is different: it is a local file that keeps each
+check's endpoint URL so it can compare checks of the same endpoint. It holds
+no keys, prompts or responses.)
+
+These exit codes are for plan/smoke/benchmark/compare/golden. `throttle check`
+has its own (0, 1, 2, 4, 5), listed under
+[`throttle check`: verdicts and exit codes](#throttle-check-verdicts-and-exit-codes).
 
 - `0`: complete smoke, or a supported benchmark/comparison result.
 - `1`: stopped/invalid/operational failure; a sanitized artifact is written
@@ -1069,10 +1324,12 @@ Throttle does not build or perform automatic vLLM/TensorRT-LLM
 reconfiguration, GPU/pod provisioning, replica autoscaling, GPU/instance
 selection, spot orchestration, async job queues, non-OpenAI backends,
 distributed multi-host tests, accounts/teams, a hosted dashboard, remote
-telemetry, production-log load discovery, monthly-savings claims, or a
+telemetry, production-log load discovery, monthly-savings claims (the only
+monthly figure is `throttle check --monthly-tokens`, labelled PROJECTED), or a
 polished UI. The proxy's response cache is in-memory and per-process.
-Throttle persists only local files: the opt-in session database
-(`~/.throttle/sessions.db`) and, for decision-eligible golden runs, the local
+Throttle persists only local files: the `throttle check` history
+(`~/.throttle/checks/`, or `--history-dir` / `$THROTTLE_CHECK_HISTORY_DIR`),
+the opt-in session database (`~/.throttle/sessions.db`) and, for decision-eligible golden runs, the local
 result store (`~/.throttle/results`, disable with `--no-result-store`). The proxy does not yet stream backend tokens
 through: it buffers each response, so it cannot measure TTFT.
 

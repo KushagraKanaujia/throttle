@@ -531,6 +531,7 @@ class ParserAndPlanTests(unittest.TestCase):
                 "validate-sim",
                 "proxy",
                 "watch",
+                "check",
                 "report",
                 "sessions",
             },
@@ -629,7 +630,7 @@ class ParserAndPlanTests(unittest.TestCase):
         self.assertIn("Requests: exactly 27 including warm-ups", output)
         self.assertIn("max 128 output tokens/request", output)
         self.assertIn(PRIVATE_ENDPOINT + "/chat/completions", output)
-        self.assertIn("blocked until --allow-unknown-cost", output)
+        self.assertIn("blocked until a price or --allow-unknown-cost", output)
         native.assert_not_called()
         guidellm.assert_not_called()
 

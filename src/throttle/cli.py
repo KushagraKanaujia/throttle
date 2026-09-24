@@ -61,6 +61,7 @@ from .golden import (
     validate_golden_sequence,
 )
 from .models import CostModel, EndpointConfig, LoadCondition, RunConfig, SafetyLimits
+from .check import CHECK_DESCRIPTION, CHECK_EPILOG, add_check_arguments, handle_check
 from .provenance import ACCELERATOR_BACKENDS
 from .result_store import (
     Provenance,
@@ -84,6 +85,36 @@ EXIT_FAILED = 1
 EXIT_USAGE = 2
 EXIT_INCONCLUSIVE = 3
 EXIT_CANCELLED = 130
+
+GETTING_STARTED = """\
+Get your first $/M-token number (3 commands):
+
+  1. See the output without a server (simulated, no traffic):
+       throttle demo
+
+  2. Measure a real endpoint (local Ollama shown; any OpenAI-compatible URL works,
+     with or without /v1). The hourly rate is what your GPU(s) cost you:
+       throttle cost --url http://localhost:11434 --model llama3.2:3b --gpu-hourly-rate 1.50
+
+  3. Catch cost drift: record today's config three times (the repeats measure
+     run-to-run noise), change one server setting, check again. Each check is compared
+     with the last one for that endpoint (95% CI and noise bound; overlap is NO WINNER,
+     fewer than 3 recent repeats is NOT CALIBRATED). --config only records what you changed:
+       throttle check --url http://localhost:11434 --model llama3.2:3b --gpu-hourly-rate 1.50 --label before
+       (run it two more times, unchanged)
+       (change a setting, e.g. restart Ollama with OLLAMA_NUM_PARALLEL=4, then:)
+       throttle check --url http://localhost:11434 --model llama3.2:3b --gpu-hourly-rate 1.50 --label after --config OLLAMA_NUM_PARALLEL=4
+
+Other commands: plan / smoke / benchmark / golden (capped, evidence-labelled runs),
+measure + compare (repeated trials to JSON), watch (read vLLM /metrics),
+proxy + sessions (optional cache and agent profiling), report, diagnose.
+Run 'throttle COMMAND --help' for details.
+"""
+
+DEMO_COST_HINT = (
+    "throttle cost --url http://localhost:11434 --model <model> "
+    "--gpu-hourly-rate 1.50 --num-requests 5"
+)
 
 EXPLORATORY_SWEEP_WARNING = (
     "NOTE: this {kind} sweep is exploratory only and cannot reach "
@@ -119,24 +150,55 @@ def _positive_float(value: str) -> float:
     return parsed
 
 
+class _ExplicitApiKeyEnv(argparse.Action):
+    """Store --api-key-env and remember that the user typed it."""
+
+    def __call__(self, parser, namespace, values, option_string=None):  # type: ignore[override]
+        setattr(namespace, self.dest, values)
+        setattr(namespace, "api_key_env_explicit", True)
+
+
 def _add_endpoint_options(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--model", required=True, help="model identifier sent to the API"
     )
     parser.add_argument(
-        "--url", required=True, help="base URL or exact chat-completions route"
+        "--url",
+        "--endpoint-url",
+        dest="url",
+        required=True,
+        help=(
+            "server URL: http://host:port, http://host:port/v1, or the exact "
+            "chat-completions route (--endpoint-url is accepted too)"
+        ),
     )
     parser.add_argument(
         "--api-key-env",
         default="OPENAI_API_KEY",
         metavar="NAME",
-        help="environment variable containing the bearer key",
+        action=_ExplicitApiKeyEnv,
+        help=(
+            "environment variable containing the bearer key (default: "
+            "OPENAI_API_KEY; for a localhost endpoint with no key set, no key is sent)"
+        ),
     )
     parser.add_argument(
         "--allow-insecure-http",
         action="store_true",
         help="allow plaintext HTTP away from loopback (unsafe; recorded in manifest)",
     )
+
+
+class _HourlyPriceAction(argparse.Action):
+    """Store the hourly price and remember which spelling the user typed.
+
+    --total-hourly-price clearly means all GPUs; --gpu-hourly-rate reads like
+    a per-GPU rate, so combining it with --gpus N > 1 is refused as ambiguous.
+    """
+
+    def __call__(self, parser, namespace, values, option_string=None):  # type: ignore[override]
+        setattr(namespace, self.dest, values)
+        setattr(namespace, "hourly_price_flag", option_string)
 
 
 def _add_cost_options(parser: argparse.ArgumentParser) -> None:
@@ -148,11 +210,28 @@ def _add_cost_options(parser: argparse.ArgumentParser) -> None:
             "serverless-active-seconds",
             "user-supplied",
         ),
-        default="unknown",
+        default=None,
+        help=(
+            "how you pay for the endpoint (default: dedicated-hourly when an "
+            "hourly price is given, otherwise unknown)"
+        ),
     )
     parser.add_argument("--gpus", type=_positive_int, default=1)
     dedicated = parser.add_mutually_exclusive_group()
-    dedicated.add_argument("--total-hourly-price", type=_positive_float)
+    dedicated.add_argument(
+        "--total-hourly-price",
+        "--gpu-hourly-rate",
+        "--gpu-rate-per-hour",
+        dest="total_hourly_price",
+        type=_positive_float,
+        action=_HourlyPriceAction,
+        metavar="USD",
+        help=(
+            "what ALL GPUs behind the endpoint cost per hour together, in dollars "
+            "(--gpu-hourly-rate is accepted too; implies --cost-model dedicated-hourly). "
+            "For a per-GPU price use --per-gpu-hourly-price with --gpus"
+        ),
+    )
     dedicated.add_argument("--per-gpu-hourly-price", type=_positive_float)
     parser.add_argument("--active-second-price", type=_positive_float)
     parser.add_argument("--max-active-workers", type=_positive_int)
@@ -338,15 +417,115 @@ def _build_headers(api_key: str | None) -> dict[str, str]:
     return headers
 
 
+def _chat_completions_url(value: str) -> str:
+    """Accept http://host:port, http://host:port/v1, or the exact route.
+
+    Mirrors the path rules of ``normalize_chat_completions_url`` (used by
+    plan/smoke/check) without its HTTPS policy, so cost/measure keep accepting
+    the URLs they accepted before.
+    """
+
+    from urllib.parse import urlsplit
+
+    base = value.strip().rstrip("/")
+    if base.endswith("/chat/completions"):
+        return base
+    if not urlsplit(base).path:
+        return base + "/v1/chat/completions"
+    return base + "/chat/completions"
+
+
+def _models_url(chat_url: str) -> str:
+    return chat_url[: -len("/chat/completions")] + "/models"
+
+
+def _server_root_url(value: str) -> str:
+    """Strip a trailing /v1 or /v1/chat/completions (proxy appends its own)."""
+
+    base = value.strip().rstrip("/")
+    for suffix in ("/chat/completions", "/v1"):
+        if base.endswith(suffix):
+            base = base[: -len(suffix)]
+    return base
+
+
+def _list_models(client: Any, chat_url: str, headers: Mapping[str, str]) -> list[str] | None:
+    """Return model ids from {base}/models, or None when the listing is unavailable."""
+
+    try:
+        response = client.get(_models_url(chat_url), headers=dict(headers))
+        if response.status_code != 200:
+            return None
+        data = response.json().get("data")
+        if not isinstance(data, list):
+            return None
+        return [str(item["id"]) for item in data if isinstance(item, dict) and item.get("id")]
+    except Exception:
+        return None
+
+
+def _print_endpoint_failure(
+    client: Any,
+    chat_url: str,
+    status: int,
+    model: str,
+    headers: Mapping[str, str],
+    body: str = "",
+) -> None:
+    """Explain a non-200 from the chat route: wrong URL vs wrong model."""
+
+    print(f"Error: POST {chat_url} returned HTTP {status}")
+    models = _list_models(client, chat_url, headers) if 400 <= status < 500 else None
+    if models is not None and model not in models:
+        listed = ", ".join(models) if models else "(none)"
+        print(f"  Model '{model}' is not served here. Models at {_models_url(chat_url)}: {listed}")
+        if models:
+            print(f"  Re-run with --model {models[0]}")
+    elif models is not None:
+        snippet = " ".join(body.split())[:200]
+        print(f"  The server lists model '{model}' but rejected the request: {snippet or '(empty body)'}")
+    elif status == 404:
+        print(f"  No model listing at {_models_url(chat_url)} either, so the URL is likely wrong.")
+        print("  Give the server root (http://host:port) or its /v1 base; both are accepted.")
+    elif status in (401, 403):
+        print("  The server wants a key: pass --api-key or set OPENAI_API_KEY.")
+
+
+def _resolve_model(
+    client: Any, chat_url: str, model: str | None, headers: Mapping[str, str]
+) -> str | None:
+    """Return the model to request, or None after printing why none was chosen."""
+
+    if model:
+        return model
+    models = _list_models(client, chat_url, headers)
+    if models is None:
+        print(f"Error: --model is required (could not list models at {_models_url(chat_url)})")
+        return None
+    if len(models) == 1:
+        print(f"Model: {models[0]} (the only model this server lists; pass --model to choose)")
+        return models[0]
+    listed = ", ".join(models) if models else "(none)"
+    print(f"Error: --model is required; this server lists: {listed}")
+    return None
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="throttle",
-        description="Safety-first measurements for an existing OpenAI-compatible endpoint.",
+        description=(
+            "Measure what LLM inference costs in dollars per million tokens, and "
+            "which serving-config change lowers it."
+        ),
+        epilog=GETTING_STARTED,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument(
         "--version", action="version", version=f"%(prog)s {__version__}"
     )
-    subparsers = parser.add_subparsers(dest="command", required=True)
+    subparsers = parser.add_subparsers(
+        dest="command", required=True, metavar="COMMAND"
+    )
 
     plan = subparsers.add_parser(
         "plan",
@@ -621,16 +800,27 @@ def build_parser() -> argparse.ArgumentParser:
     )
     cost.add_argument(
         "--endpoint-url",
+        "--url",
+        dest="endpoint_url",
         required=True,
-        help="inference server URL (e.g., http://localhost:8000/v1)",
+        help=(
+            "inference server URL: http://host:port or http://host:port/v1 "
+            "(--url is accepted too)"
+        ),
     )
     cost.add_argument(
         "--model",
-        default="default",
-        help="model name to request (default: 'default')",
+        default=None,
+        help=(
+            "model name to request (default: the server's only model, read "
+            "from /v1/models; required when it serves several)"
+        ),
     )
     cost.add_argument(
         "--gpu-hourly-rate",
+        "--gpu-rate-per-hour",
+        "--total-hourly-price",
+        dest="gpu_hourly_rate",
         type=float,
         required=True,
         help="GPU hourly rate in dollars (e.g., 1.50 for A100 spot pricing)",
@@ -689,16 +879,27 @@ def build_parser() -> argparse.ArgumentParser:
     )
     measure.add_argument(
         "--endpoint-url",
+        "--url",
+        dest="endpoint_url",
         required=True,
-        help="inference server URL to measure",
+        help=(
+            "inference server URL: http://host:port or http://host:port/v1 "
+            "(--url is accepted too)"
+        ),
     )
     measure.add_argument(
         "--model",
-        default="default",
-        help="model name (default: 'default')",
+        default=None,
+        help=(
+            "model name (default: the server's only model, read from /v1/models; "
+            "required when it serves several)"
+        ),
     )
     measure.add_argument(
         "--gpu-hourly-rate",
+        "--gpu-rate-per-hour",
+        "--total-hourly-price",
+        dest="gpu_hourly_rate",
         type=float,
         required=True,
         help="GPU hourly rate in dollars",
@@ -735,6 +936,15 @@ def build_parser() -> argparse.ArgumentParser:
         help="API key for authentication (also reads OPENAI_API_KEY env var)",
     )
 
+    # throttle check: repeat-use cost drift check (see throttle/check.py)
+    check = subparsers.add_parser(
+        "check",
+        help="after a serving change, measure $/M tokens and compare with the last check",
+        description=CHECK_DESCRIPTION,
+        epilog=CHECK_EPILOG,
+    )
+    add_check_arguments(check)
+
     watch = subparsers.add_parser(
         "watch",
         help="read vLLM /metrics and report cost per million tokens (no requests sent)",
@@ -753,6 +963,9 @@ def build_parser() -> argparse.ArgumentParser:
     )
     watch.add_argument(
         "--gpu-rate-per-hour",
+        "--gpu-hourly-rate",
+        "--total-hourly-price",
+        dest="gpu_rate_per_hour",
         type=float,
         required=True,
         metavar="DOLLARS",
@@ -791,8 +1004,14 @@ def build_parser() -> argparse.ArgumentParser:
     )
     proxy.add_argument(
         "--backend-url",
+        "--url",
+        "--endpoint-url",
+        dest="backend_url",
         required=True,
-        help="backend inference server URL (e.g., http://localhost:8000)",
+        help=(
+            "backend inference server URL, with or without /v1 "
+            "(e.g., http://localhost:8000; --url is accepted too)"
+        ),
     )
     proxy.add_argument(
         "--host",
@@ -867,15 +1086,47 @@ def build_parser() -> argparse.ArgumentParser:
     from .sessions_cli import add_sessions_subcommand
     add_sessions_subcommand(subparsers)
 
+    # argparse's help=SUPPRESS does not hide a subparser: it leaks as
+    # "==SUPPRESS==" in --help. Drop the hidden command from the listing only;
+    # it stays runnable.
+    subparsers._choices_actions = [
+        action
+        for action in subparsers._choices_actions
+        if action.dest != "validate-sim"
+    ]
+    parser._throttle_subparsers = dict(subparsers.choices)  # type: ignore[attr-defined]
     return parser
 
 
 def _parser_error(parser: argparse.ArgumentParser, message: str) -> None:
-    parser.error(message)
+    """Report a usage error under the subcommand the user actually ran."""
+
+    command = getattr(parser, "_throttle_active_command", None)
+    subparser = getattr(parser, "_throttle_subparsers", {}).get(command)
+    if subparser is None:
+        parser.error(message)
+    print(f"{subparser.prog}: error: {message}", file=sys.stderr)
+    print(f"Run '{subparser.prog} --help' for its options.", file=sys.stderr)
+    raise SystemExit(EXIT_USAGE)
+
+
+def _inferred_cost_model(args: argparse.Namespace) -> str:
+    """Pick the billing model when --cost-model was not given.
+
+    Only an explicitly supplied hourly price selects dedicated-hourly; a price
+    is never assumed. Anything else stays ``unknown`` so the spend gate holds.
+    """
+
+    if args.cost_model is not None:
+        return args.cost_model
+    if args.total_hourly_price is not None or args.per_gpu_hourly_price is not None:
+        return "dedicated-hourly"
+    return "unknown"
 
 
 def _cost_model(parser: argparse.ArgumentParser, args: argparse.Namespace) -> CostModel:
-    kind = args.cost_model.replace("-", "_")
+    explicit_kind = args.cost_model is not None
+    kind = _inferred_cost_model(args).replace("-", "_")
     dedicated_values = (args.total_hourly_price, args.per_gpu_hourly_price)
     serverless_values = (
         args.active_second_price,
@@ -883,16 +1134,26 @@ def _cost_model(parser: argparse.ArgumentParser, args: argparse.Namespace) -> Co
         args.billed_active_seconds,
     )
     if kind == "unknown":
-        if any(
-            value is not None
-            for value in (
-                *dedicated_values,
-                *serverless_values,
-                args.user_supplied_total,
-            )
+        for value, flag, model in (
+            (args.total_hourly_price, "--total-hourly-price", "dedicated-hourly"),
+            (args.per_gpu_hourly_price, "--per-gpu-hourly-price", "dedicated-hourly"),
+            (args.active_second_price, "--active-second-price", "serverless-active-seconds"),
+            (args.max_active_workers, "--max-active-workers", "serverless-active-seconds"),
+            (args.billed_active_seconds, "--billed-active-seconds", "serverless-active-seconds"),
+            (args.user_supplied_total, "--user-supplied-total", "user-supplied"),
         ):
-            _parser_error(parser, "price fields require their matching --cost-model")
+            if value is not None:
+                _parser_error(
+                    parser,
+                    f"price fields require their matching --cost-model: "
+                    f"{flag} requires --cost-model {model}",
+                )
         return CostModel()
+    if kind == "dedicated_hourly" and not explicit_kind:
+        print(
+            "Cost model: dedicated-hourly (inferred from the hourly price you gave)",
+            file=sys.stderr,
+        )
     if kind == "dedicated_hourly":
         if sum(value is not None for value in dedicated_values) != 1:
             _parser_error(parser, "dedicated-hourly requires exactly one hourly price")
@@ -903,9 +1164,29 @@ def _cost_model(parser: argparse.ArgumentParser, args: argparse.Namespace) -> Co
             _parser_error(
                 parser, "dedicated-hourly cannot include another billing model"
             )
+        alias = getattr(args, "hourly_price_flag", None)
+        if (
+            args.total_hourly_price is not None
+            and alias in ("--gpu-hourly-rate", "--gpu-rate-per-hour")
+            and args.gpus > 1
+        ):
+            _parser_error(
+                parser,
+                f"{alias} with --gpus {args.gpus} is ambiguous: is ${args.total_hourly_price:g} "
+                "per GPU or for all of them? Use --per-gpu-hourly-price "
+                f"{args.total_hourly_price:g} --gpus {args.gpus} (per GPU) or "
+                f"--total-hourly-price {args.total_hourly_price:g} --gpus {args.gpus} (all GPUs)",
+            )
         total = args.total_hourly_price
         if total is None:
             total = float(args.per_gpu_hourly_price) * args.gpus
+            basis = f"${float(args.per_gpu_hourly_price):g}/hr per GPU x {args.gpus}"
+        else:
+            basis = "total for all GPUs"
+        print(
+            f"Hourly price used: ${total:.2f}/hr for {args.gpus} GPU(s) ({basis}) [ASSUMED]",
+            file=sys.stderr,
+        )
         return CostModel(kind=kind, total_hourly_rate=total, gpu_count=args.gpus)
     if kind == "serverless_active_seconds":
         if args.active_second_price is None or args.max_active_workers is None:
@@ -948,13 +1229,57 @@ def _engine_flags(
     return tuple(parsed)
 
 
-def _resolve_key(parser: argparse.ArgumentParser, env_name: str) -> str:
+def _endpoint_is_loopback(url: str) -> bool:
+    from urllib.parse import urlsplit
+
+    from .benchmark import _is_loopback_host
+
+    try:
+        host = urlsplit(url.strip()).hostname
+    except ValueError:
+        return False
+    return bool(host) and _is_loopback_host(str(host))
+
+
+def _key_status(args: argparse.Namespace, url: str) -> tuple[str, str]:
+    """Return (status, message) for the bearer key a traffic run would use.
+
+    status is "set", "none_local" (no key will be sent to a local endpoint),
+    or "missing" (a traffic run would refuse).
+    """
+
+    env_name = args.api_key_env
+    if os.environ.get(env_name):
+        return "set", f"API key: read from {env_name}"
+    explicit = bool(getattr(args, "api_key_env_explicit", False))
+    native = getattr(args, "backend", "native") == "native"
+    if not explicit and native and _endpoint_is_loopback(url):
+        return (
+            "none_local",
+            f"API key: none sent ({env_name} is not set and the endpoint is local; "
+            "pass --api-key-env NAME to send one)",
+        )
+    hint = (
+        "set it or pass --api-key-env NAME"
+        if explicit or not native
+        else "set it, pass --api-key-env NAME, or use a localhost endpoint that needs no key"
+    )
+    return "missing", f"{env_name} is not set or is empty ({hint})"
+
+
+def _resolve_key(
+    parser: argparse.ArgumentParser, args: argparse.Namespace, url: str
+) -> str:
+    env_name = args.api_key_env
     if not ENV_NAME_PATTERN.fullmatch(env_name):
         _parser_error(parser, "--api-key-env must be a valid environment variable name")
-    key = os.environ.get(env_name)
-    if not key:
-        _parser_error(parser, "API key environment variable is missing or empty")
-    return key
+    status, message = _key_status(args, url)
+    if status == "missing":
+        _parser_error(parser, f"API key environment variable is missing or empty: {message}")
+    if status == "none_local":
+        print(message, file=sys.stderr)
+        return ""
+    return os.environ[env_name]
 
 
 def _run_mode(args: argparse.Namespace) -> str:
@@ -1038,7 +1363,7 @@ def _build_config(
         max_response_bytes=args.max_response_bytes,
         max_estimated_spend=args.max_estimated_spend,
     )
-    api_key = _resolve_key(parser, args.api_key_env) if resolve_key else ""
+    api_key = _resolve_key(parser, args, args.url) if resolve_key else ""
     config = RunConfig(
         mode=mode,
         backend=args.backend,
@@ -1253,7 +1578,10 @@ def _atomic_write_guarded(
 
 
 def _print_plan(
-    plan: Mapping[str, Any], *, guidellm_prompt_tokens: int | None = None
+    plan: Mapping[str, Any],
+    *,
+    guidellm_prompt_tokens: int | None = None,
+    runtime_declared: bool = True,
 ) -> None:
     print(f"Throttle plan — {str(plan['mode']).upper()} (zero traffic sent)")
     count = plan["request_count"]
@@ -1272,12 +1600,17 @@ def _print_plan(
         if estimate is None
         else f"Estimated cost upper bound: ${estimate:.6f} USD"
     )
-    print(f"Max estimated spend: ${plan['limits']['max_estimated_spend']:.6f} USD")
+    print(
+        f"Spend ceiling: ${plan['limits']['max_estimated_spend']:.2f} USD "
+        "(--max-estimated-spend; a limit, not an estimate: runs whose upper bound "
+        "exceeds it are refused)"
+    )
     print(f"Destination: {plan['destination']['normalized_url']}")
     runtime = plan["runtime"]
+    backend = runtime["accelerator_backend"] if runtime_declared else "unknown (not declared)"
     print(
         "Runtime: "
-        f"{runtime['accelerator_backend']} / {runtime['accelerator']} / "
+        f"{backend} / {runtime['accelerator']} / "
         f"{runtime['accelerator_runtime_version']}"
     )
     runtime_reasons = plan["runtime_provenance_reasons"]
@@ -1292,7 +1625,12 @@ def _print_plan(
             "requires a POSIX platform"
         )
     elif plan["traffic_preflight"]["requires_unknown_cost_acknowledgement"]:
-        print("Traffic preflight: blocked until --allow-unknown-cost is supplied")
+        print(
+            "Traffic preflight: blocked until a price or --allow-unknown-cost is supplied.\n"
+            "  For a $/M figure, give your hourly price: --gpu-hourly-rate 1.50 "
+            "(= --cost-model dedicated-hourly --total-hourly-price 1.50)\n"
+            "  Or pass --allow-unknown-cost to run with no dollar figure."
+        )
     elif plan["traffic_preflight"]["estimated_cost_exceeds_limit"]:
         print(
             "Traffic preflight: blocked because the estimated ceiling exceeds the spend limit"
@@ -1914,7 +2252,7 @@ def _handle_experimental_tuning(
     except (ValueError, RuntimeError) as exc:
         _parser_error(parser, str(exc))
 
-    api_key = _resolve_key(parser, args.api_key_env)
+    api_key = _resolve_key(parser, args, config.endpoint.url)
     config = replace(
         config,
         endpoint=EndpointConfig(url=config.endpoint.url, api_key=api_key),
@@ -2340,7 +2678,7 @@ def _handle_golden(parser: argparse.ArgumentParser, args: argparse.Namespace) ->
     # Resolve only the credential after the operator approves the plan. Reuse the
     # exact preflighted config and immutable prompt tuples so a file change cannot
     # swap the measured workload between plan and traffic.
-    api_key = _resolve_key(parser, args.api_key_env)
+    api_key = _resolve_key(parser, args, base.endpoint.url)
     base = replace(
         base,
         endpoint=EndpointConfig(url=base.endpoint.url, api_key=api_key),
@@ -2609,6 +2947,8 @@ def _handle_demo(args: argparse.Namespace) -> int:
         gpu_hourly_rate_dollars=gpu_rate,
     )
 
+    print(f"Assumed GPU rate: ${gpu_rate:.2f}/hr [SIMULATED; every $ figure below uses it]")
+    print()
     print("Configuration being compared:")
     print(f"  Parameter: max_num_seqs")
     print(f"  Baseline: 128 concurrent sequences")
@@ -2681,9 +3021,18 @@ def _handle_demo(args: argparse.Namespace) -> int:
     print("-" * 80)
     print(f"{'Wall clock time (seconds)':<40} {baseline_wall_clock:>12.2f} {tuned_wall_clock:>12.2f} {wall_clock_delta:>12.2f}")
     print(f"{'GPU hours':<40} {baseline_cost.gpu_hours:>12.6f} {tuned_cost.gpu_hours:>12.6f} {gpu_hours_delta:>12.6f}")
+    all_tokens = total_input + total_output
+    baseline_blended = baseline_cost.total_dollars / all_tokens * 1_000_000
+    tuned_blended = tuned_cost.total_dollars / all_tokens * 1_000_000
+    print(f"{'Blended cost ($/M tokens, in + out)':<40} {baseline_blended:>12.2f} {tuned_blended:>12.2f} {tuned_blended - baseline_blended:>12.2f}")
     print(f"{'Input cost ($/M tokens)':<40} {baseline_cost.dollars_per_million_input_tokens:>12.2f} {tuned_cost.dollars_per_million_input_tokens:>12.2f} {input_cost_delta:>12.2f}")
     print(f"{'Output cost ($/M tokens)':<40} {baseline_cost.dollars_per_million_output_tokens:>12.2f} {tuned_cost.dollars_per_million_output_tokens:>12.2f} {output_cost_delta:>12.2f}")
     print(f"{'Total cost ($)':<40} {baseline_cost.total_dollars:>12.4f} {tuned_cost.total_dollars:>12.4f} {total_cost_delta:>12.4f}")
+    print()
+    print("Note: input and output $/M each charge the whole run to one token type,")
+    print(f"so they are not additive. This workload has {total_input:,} input and {total_output:,}")
+    print("output tokens; the type with fewer tokens shows the higher $/M.")
+    print("Compare the blended figure with a per-token bill.")
     print()
 
     # Confidence intervals and significance check
@@ -2705,7 +3054,8 @@ def _handle_demo(args: argparse.Namespace) -> int:
         print("the assumed parameters (prefill throughput, decode throughput, etc.)")
         print("have enough uncertainty that we cannot conclude which config is cheaper.")
         print()
-        print("Run 'throttle cost' against a real endpoint to get measured results.")
+        print("Measure a real endpoint instead (your URL, model and hourly rate):")
+        print(f"  {DEMO_COST_HINT}")
     else:
         if total_cost_delta < 0:
             print("RESULT: Tuned configuration is cheaper")
@@ -2721,7 +3071,8 @@ def _handle_demo(args: argparse.Namespace) -> int:
         print("under lighter traffic where neither configuration saturates.")
         print()
         print("All estimates depend on ASSUMED throughput parameters.")
-        print("Run 'throttle cost' against a real endpoint for measured costs.")
+        print("Measure a real endpoint instead (your URL, model and hourly rate):")
+        print(f"  {DEMO_COST_HINT}")
     print()
 
     # Sensitivity analysis
@@ -2815,10 +3166,21 @@ def _handle_cost(args: argparse.Namespace) -> int:
 
     api_key = _get_api_key(args)
     headers = _build_headers(api_key)
+    chat_url = _chat_completions_url(args.endpoint_url)
 
-    print(f"Measuring cost against {args.endpoint_url}")
-    print(f"GPU hourly rate: ${args.gpu_hourly_rate:.2f}/hour")
+    print(f"Measuring cost against {chat_url}")
+    print(f"GPU hourly rate: ${args.gpu_hourly_rate:.2f}/hour [ASSUMED: you supplied it]")
     print(f"Test requests: {args.num_requests}")
+    try:
+        with httpx.Client(timeout=10.0) as probe:
+            model = _resolve_model(probe, chat_url, args.model, headers)
+    except httpx.RequestError as e:
+        print(f"Error: Failed to connect to endpoint: {e}")
+        print("Make sure the inference server is running and the URL is correct.")
+        return EXIT_FAILED
+    if model is None:
+        return EXIT_USAGE
+    args.model = model
     print()
 
     # Generate test workload
@@ -2845,7 +3207,7 @@ def _handle_cost(args: argparse.Namespace) -> int:
 
                 req_start = time.time()
                 response = client.post(
-                    f"{args.endpoint_url}/chat/completions",
+                    chat_url,
                     headers=headers,
                     json={
                         "model": args.model,
@@ -2856,7 +3218,11 @@ def _handle_cost(args: argparse.Namespace) -> int:
                 req_end = time.time()
 
                 if response.status_code != 200:
-                    print(f"Error: Request {i+1} failed with status {response.status_code}")
+                    print(f"Request {i+1} failed.")
+                    _print_endpoint_failure(
+                        client, chat_url, response.status_code, args.model,
+                        headers, response.text,
+                    )
                     return EXIT_FAILED
 
                 data = response.json()
@@ -2883,6 +3249,11 @@ def _handle_cost(args: argparse.Namespace) -> int:
     print("Measurement Results")
     print("=" * 60)
     print()
+
+    if total_input_tokens <= 0 or total_output_tokens <= 0:
+        print("Error: the endpoint did not report token usage (usage.prompt_tokens /")
+        print("usage.completion_tokens), so no $/M figure can be computed without guessing.")
+        return EXIT_FAILED
 
     # Calculate cost
     cost_result = calculate_cost(
@@ -2913,11 +3284,33 @@ def _handle_cost(args: argparse.Namespace) -> int:
     print(f"  Average request time: {statistics.mean(request_times):.3f}s (95% CI: [{ci_lower:.3f}, {ci_upper:.3f}])")
     print()
 
-    print(f"Measured Cost:")
+    total_tokens = total_input_tokens + total_output_tokens
+    blended = cost_result.total_dollars / total_tokens * 1_000_000
+
+    print(f"Measured Cost [MEASURED time x ASSUMED ${args.gpu_hourly_rate:.2f}/hr]:")
     print(f"  GPU hours: {cost_result.gpu_hours:.6f}")
     print(f"  Total cost: ${cost_result.total_dollars:.4f}")
+    print(f"  Blended cost: ${blended:.2f} per million tokens (input + output, {total_tokens:,} tokens)")
     print(f"  Input cost: ${cost_result.dollars_per_million_input_tokens:.2f} per million tokens")
     print(f"  Output cost: ${cost_result.dollars_per_million_output_tokens:.2f} per million tokens")
+    print("  Note: input and output $/M each charge the whole run to one token type;")
+    print("  they are not additive. Compare the blended figure with a per-token bill.")
+    print()
+    print(f"Workload: {args.num_requests} requests sent one at a time (concurrency 1),")
+    print("  synthetic 'Test Test ...' prompts (mean ~100 words), max_tokens mean ~50.")
+    print("  Your $/M under real traffic depends on concurrency and prompt mix.")
+    print()
+    print("Next step: record this config with `throttle check`, then run it again after each")
+    print("serving-config change. Each check is compared with the previous one (95% CI across")
+    print("blocks; overlapping intervals are reported as NO WINNER):")
+    print(
+        f"  throttle check --url {args.endpoint_url} --model {args.model} "
+        f"--gpu-hourly-rate {args.gpu_hourly_rate:g} --label before"
+    )
+    print("  After you change the server, rerun it with a new --label (e.g. --label after)")
+    print("  and --config KEY=VALUE for the setting you changed.")
+    print("  check sends its own fixed workload (built-in prompts, concurrency 2, 5 blocks),")
+    print("  so its $/M will not match the figure above. Compare check with check, not with cost.")
     print()
 
     return EXIT_OK
@@ -3338,17 +3731,22 @@ def _handle_measure(args: argparse.Namespace) -> int:
 
     api_key = _get_api_key(args)
     headers = _build_headers(api_key)
+    chat_url = _chat_completions_url(args.endpoint_url)
 
     print(f"Throttle Measure - {args.label}")
     print("=" * 60)
     print()
 
     # Test endpoint connectivity first
-    print(f"Testing connection to {args.endpoint_url}...")
+    print(f"Testing connection to {chat_url}...")
     try:
         with httpx.Client(timeout=10.0) as client:
+            model = _resolve_model(client, chat_url, args.model, headers)
+            if model is None:
+                return EXIT_USAGE
+            args.model = model
             response = client.post(
-                f"{args.endpoint_url}/v1/chat/completions",
+                chat_url,
                 headers=headers,
                 json={
                     "model": args.model,
@@ -3357,7 +3755,10 @@ def _handle_measure(args: argparse.Namespace) -> int:
                 },
             )
             if response.status_code != 200:
-                print(f"Error: Endpoint returned status {response.status_code}")
+                _print_endpoint_failure(
+                    client, chat_url, response.status_code, args.model,
+                    headers, response.text,
+                )
                 return EXIT_FAILED
     except httpx.RequestError as e:
         print(f"Error: Cannot connect to endpoint: {e}")
@@ -3424,7 +3825,7 @@ def _handle_measure(args: argparse.Namespace) -> int:
                 async with httpx.AsyncClient(timeout=120.0) as client:
                     try:
                         response = await client.post(
-                            f"{args.endpoint_url}/v1/chat/completions",
+                            chat_url,
                             headers=headers,
                             json={
                                 "model": args.model,
@@ -3566,6 +3967,9 @@ def _handle_measure(args: argparse.Namespace) -> int:
         json.dump(output, f, indent=2)
 
     print(f"Results written to: {output_file}")
+    print()
+    print("Next step: change one server setting, measure again with a new --label, then:")
+    print(f"  throttle compare {output_file} <other-label>.json")
     print()
 
     return EXIT_OK
@@ -3901,6 +4305,8 @@ def _handle_proxy(args: argparse.Namespace) -> int:
     elif args.enable_embeddings:
         enable_embeddings_resolved = True
 
+    # The proxy appends /v1/chat/completions itself; accept a /v1 base too.
+    args.backend_url = _server_root_url(args.backend_url)
     print(f"Starting Throttle proxy server on {args.host}:{args.port}")
     print(f"Backend: {args.backend_url}")
     print(f"Backend timeout: {args.backend_timeout_seconds}s")
@@ -4044,13 +4450,33 @@ def main(argv: Sequence[str] | None = None) -> int:
     config = load_config()
     apply_config_defaults(parser, config)
 
-    args = parser.parse_args(argv)
+    raw_argv = list(sys.argv[1:] if argv is None else argv)
+    if not raw_argv:
+        print(f"throttle {__version__}: {parser.description}")
+        print()
+        print(GETTING_STARTED, end="")
+        return EXIT_OK
+
+    args = parser.parse_args(raw_argv)
+    parser._throttle_active_command = args.command  # type: ignore[attr-defined]
     if args.command in {"plan", "smoke", "benchmark"}:
         _warn_if_exploratory_sweep(args)
     if args.command == "plan":
         config, prompts, warmup_prompts = _build_config(parser, args, resolve_key=False)
         plan = build_plan(config, prompts, warmup_prompts)
-        _print_plan(plan, guidellm_prompt_tokens=args.guidellm_prompt_tokens)
+        _print_plan(
+            plan,
+            guidellm_prompt_tokens=args.guidellm_prompt_tokens,
+            runtime_declared=any(
+                token == "--accelerator-backend" or token.startswith("--accelerator-backend=")
+                for token in raw_argv
+            ),
+        )
+        key_state, key_message = _key_status(args, args.url)
+        if key_state == "missing":
+            print(f"API key: {key_message}; smoke/benchmark will refuse to send traffic")
+        else:
+            print(key_message)
         return EXIT_OK
     if args.command in {"smoke", "benchmark"}:
         return _handle_run(parser, args)
@@ -4118,6 +4544,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         return _handle_proxy(args)
     if args.command == "watch":
         return _handle_watch(args)
+    if args.command == "check":
+        return handle_check(args)
     if args.command == "sessions":
         from .sessions_cli import handle_sessions_command
         return handle_sessions_command(args)
