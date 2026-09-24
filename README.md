@@ -60,14 +60,9 @@ limitations.
 
 ## Quick demo (2 minutes, no GPU)
 
-Install from source. The PyPI release (`throttle-pro` 0.3.0) predates the
-agent session profiler.
-
 ```sh
-git clone https://github.com/KushagraKanaujia/throttle.git
-cd throttle
-python3 -m venv .venv && . .venv/bin/activate
-pip install -e '.[embeddings]'
+pipx install 'throttle-pro[embeddings]'
+throttle --version   # 0.4.0
 ```
 
 **1. The simulator (no server, no network, about 1 second):**
@@ -263,12 +258,7 @@ when the question is whether one verified server configuration beat another.
 
 Throttle requires Python 3.11+.
 
-> **Note:** the PyPI release (`throttle-pro` 0.3.0) predates the agent session
-> profiler: it has no `throttle sessions` command and no
-> `throttle proxy --enable-session-tracking`. To use those, follow
-> [Install from source](#install-from-source) below.
-
-The PyPI release installs with pipx (recommended for CLI tools):
+Throttle is on PyPI as `throttle-pro`. Install it with pipx (recommended for CLI tools):
 
 ```sh
 pipx install throttle-pro
