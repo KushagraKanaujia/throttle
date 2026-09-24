@@ -142,7 +142,20 @@ MAX_INFO_LABELS = 64
 _INFO_LINE = re.compile(r"^(vllm:[A-Za-z0-9_:]*_info)\{(.*)\}\s+\S+")
 _LABEL = re.compile(r'([A-Za-z_][A-Za-z0-9_]*)="((?:[^"\\]|\\.)*)"')
 _CONFIG_KEY = re.compile(r"^[A-Za-z0-9_.\-]+$")
-_SECRET_KEY_MARKERS = ("key", "token", "secret", "password", "credential")
+# A config key is refused when one of its words (split on '.', '_', '-' and
+# camelCase) is one of these. Matching whole words, not substrings, keeps real
+# serving settings such as max_num_batched_tokens or tokenizer_mode usable
+# while still refusing api_key, HF_TOKEN, apiKey or db_password.
+_SECRET_KEY_WORDS = frozenset({
+    "key", "apikey", "token", "secret", "password", "passwd", "pwd",
+    "credential", "credentials", "auth", "bearer",
+})
+
+
+def _looks_like_secret(key: str) -> bool:
+    spaced = re.sub(r"([a-z0-9])([A-Z])", r"\1 \2", key)
+    words = re.split(r"[\s._-]+", spaced.lower())
+    return any(w in _SECRET_KEY_WORDS for w in words)
 
 # Test seam: tests install an httpx.MockTransport here. Production leaves it
 # as None so real network transport is used.
@@ -169,7 +182,7 @@ def _config_pair(value: str) -> tuple[str, str]:
         raise argparse.ArgumentTypeError(
             f"config key {key!r} must use letters, digits, '.', '_' or '-'"
         )
-    if any(marker in key.lower() for marker in _SECRET_KEY_MARKERS):
+    if _looks_like_secret(key):
         raise argparse.ArgumentTypeError(
             f"config key {key!r} looks like a secret; checks are stored in "
             "plain text, so it is refused"

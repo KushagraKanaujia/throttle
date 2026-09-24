@@ -320,6 +320,29 @@ def test_secret_looking_config_keys_are_refused(history, capsys):
     assert "looks like a secret" in capsys.readouterr().err
 
 
+@pytest.mark.parametrize("key", [
+    "api_key", "HF_TOKEN", "OPENAI_API_KEY", "apiKey", "db_password",
+    "hf-token", "client.secret", "auth",
+])
+def test_secret_config_keys_are_refused_by_word(history, capsys, key):
+    with pytest.raises(SystemExit) as excinfo:
+        main(["check", "--config", f"{key}=x"])
+    assert excinfo.value.code == 2
+    assert "looks like a secret" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("key", [
+    "max_num_batched_tokens", "max-num-batched-tokens", "max_tokens",
+    "tokenizer_mode", "kv_cache_dtype", "keep_alive", "monkey_patch",
+])
+def test_serving_config_keys_with_token_or_key_inside_are_accepted(key, capsys):
+    # Real vLLM/SGLang settings must not be mistaken for secrets.
+    with pytest.raises(SystemExit) as excinfo:
+        main(["check", "--config", f"{key}=4096", "--help"])
+    assert excinfo.value.code == 0
+    assert "looks like a secret" not in capsys.readouterr().err
+
+
 # --------------------------------------------------------------------------
 # The dollar math itself, against hand-computed figures
 # --------------------------------------------------------------------------
