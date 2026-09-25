@@ -1,0 +1,296 @@
+name: Action self-test
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: action-selftest-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  PIP_DISABLE_PIP_VERSION_CHECK: "1"
+  PYTHONDONTWRITEBYTECODE: "1"
+
+jobs:
+  selftest:
+    name: Throttle cost check action against a mock endpoint
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    env:
+      MOCK_URL: http://127.0.0.1:18765
+      # Not a real secret: proves the key reaches Throttle through env only
+      # and never lands in the job summary.
+      SELFTEST_API_KEY: selftest-key-7f3a9c
+    steps:
+      - name: Check out source
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: "3.12"
+
+      - name: Start the mock OpenAI-compatible server
+        run: |
+          cat > "$RUNNER_TEMP/mock_openai.py" <<'PY'
+          """Minimal OpenAI-compatible server: fixed token counts, adjustable latency.
+
+          The latency is read from MOCK_DELAY_FILE on every request, so the same
+          endpoint can be made slower between checks without restarting it.
+          """
+          import json
+          import os
+          import sys
+          import time
+          from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+          DELAY_FILE = os.environ["MOCK_DELAY_FILE"]
+          API_KEY = os.environ.get("MOCK_API_KEY", "")
+
+
+          class Handler(BaseHTTPRequestHandler):
+              def _json(self, status, body):
+                  data = json.dumps(body).encode()
+                  self.send_response(status)
+                  self.send_header("Content-Type", "application/json")
+                  self.send_header("Content-Length", str(len(data)))
+                  self.end_headers()
+                  self.wfile.write(data)
+
+              def _authorized(self):
+                  if API_KEY and self.headers.get("Authorization") != f"Bearer {API_KEY}":
+                      self._json(401, {"error": "bad or missing bearer key"})
+                      return False
+                  return True
+
+              def do_GET(self):
+                  if self.path == "/v1/models" and self._authorized():
+                      self._json(200, {"object": "list", "data": [{"id": "mock-model", "object": "model"}]})
+                  elif self.path != "/v1/models":
+                      self._json(404, {"error": "not found"})
+
+              def do_POST(self):
+                  length = int(self.headers.get("Content-Length") or 0)
+                  body = json.loads(self.rfile.read(length) or b"{}")
+                  if self.path != "/v1/chat/completions":
+                      self._json(404, {"error": "not found"})
+                      return
+                  if not self._authorized():
+                      return
+                  with open(DELAY_FILE, encoding="utf-8") as handle:
+                      time.sleep(float(handle.read().strip()))
+                  completion = min(int(body.get("max_tokens") or 32), 32)
+                  self._json(200, {
+                      "id": "chatcmpl-mock",
+                      "object": "chat.completion",
+                      "model": body.get("model", "mock-model"),
+                      "choices": [{"index": 0, "finish_reason": "length",
+                                   "message": {"role": "assistant", "content": "ok " * completion}}],
+                      "usage": {"prompt_tokens": 20, "completion_tokens": completion,
+                                "total_tokens": 20 + completion},
+                  })
+
+              def log_message(self, *args):
+                  pass
+
+
+          if __name__ == "__main__":
+              server = ThreadingHTTPServer(("127.0.0.1", int(sys.argv[1])), Handler)
+              server.daemon_threads = True
+              try:
+                  server.serve_forever()
+              finally:
+                  server.server_close()
+          PY
+          echo 0.05 > "$RUNNER_TEMP/mock_delay"
+          MOCK_DELAY_FILE="$RUNNER_TEMP/mock_delay" MOCK_API_KEY="$SELFTEST_API_KEY" \
+            nohup python "$RUNNER_TEMP/mock_openai.py" 18765 > "$RUNNER_TEMP/mock.log" 2>&1 &
+          for _ in $(seq 50); do
+            if curl -fsS -H "Authorization: Bearer $SELFTEST_API_KEY" "$MOCK_URL/v1/models" > /dev/null; then
+              exit 0
+            fi
+            sleep 0.2
+          done
+          cat "$RUNNER_TEMP/mock.log"
+          exit 1
+
+      # Runs 1 to 3: the same config three times. Run 1 has no baseline;
+      # runs 2 and 3 have 0 and 1 degrees of freedom of run-to-run noise, so
+      # all three are NOT CALIBRATED by design.
+      - name: Run 1 (first check, not-calibrated warn)
+        id: run1
+        uses: ./
+        env:
+          SELFTEST_KEY_VAR: ${{ env.SELFTEST_API_KEY }}
+          THROTTLE_ACTION_SUMMARY_COPY: ${{ runner.temp }}/summaries.md
+        with:
+          url: ${{ env.MOCK_URL }}
+          model: mock-model
+          gpu-hourly-rate: "2.00"
+          label: selftest
+          config: |
+            gpu=mock
+            engine=stdlib-http
+          fail-if-costlier: "5"
+          not-calibrated: warn
+          blocks: "5"
+          requests-per-block: "4"
+          concurrency: "2"
+          max-tokens: "32"
+          api-key-env: SELFTEST_KEY_VAR
+          throttle-version: ${{ github.workspace }}
+          history-key: selftest-${{ github.run_id }}-${{ github.run_attempt }}
+
+      - name: Run 2 (same config, not-calibrated warn)
+        id: run2
+        uses: ./
+        env:
+          SELFTEST_KEY_VAR: ${{ env.SELFTEST_API_KEY }}
+          THROTTLE_ACTION_SUMMARY_COPY: ${{ runner.temp }}/summaries.md
+        with:
+          url: ${{ env.MOCK_URL }}
+          model: mock-model
+          gpu-hourly-rate: "2.00"
+          label: selftest
+          config: |
+            gpu=mock
+            engine=stdlib-http
+          fail-if-costlier: "5"
+          not-calibrated: warn
+          blocks: "5"
+          requests-per-block: "4"
+          concurrency: "2"
+          max-tokens: "32"
+          api-key-env: SELFTEST_KEY_VAR
+          throttle-version: ${{ github.workspace }}
+          history-key: selftest-${{ github.run_id }}-${{ github.run_attempt }}
+
+      - name: Run 3 (same config, not-calibrated fail)
+        id: run3
+        continue-on-error: true
+        uses: ./
+        env:
+          SELFTEST_KEY_VAR: ${{ env.SELFTEST_API_KEY }}
+          THROTTLE_ACTION_SUMMARY_COPY: ${{ runner.temp }}/summaries.md
+        with:
+          url: ${{ env.MOCK_URL }}
+          model: mock-model
+          gpu-hourly-rate: "2.00"
+          label: selftest
+          config: |
+            gpu=mock
+            engine=stdlib-http
+          fail-if-costlier: "5"
+          not-calibrated: fail
+          blocks: "5"
+          requests-per-block: "4"
+          concurrency: "2"
+          max-tokens: "32"
+          api-key-env: SELFTEST_KEY_VAR
+          throttle-version: ${{ github.workspace }}
+          history-key: selftest-${{ github.run_id }}-${{ github.run_attempt }}
+
+      - name: Make the mock endpoint 3x slower
+        run: echo 0.15 > "$RUNNER_TEMP/mock_delay"
+
+      # Run 4: calibrated by runs 1 to 3 (2 df), and 3x slower per token,
+      # so a calibrated MORE EXPENSIVE past the 5% gate: exit 4, step fails.
+      # The 'upstream' setting puts the endpoint into "What changed", so the
+      # summary's URL/host scrubbing is exercised, not just assumed.
+      - name: Run 4 (slower endpoint, gate trips)
+        id: run4
+        continue-on-error: true
+        uses: ./
+        env:
+          SELFTEST_KEY_VAR: ${{ env.SELFTEST_API_KEY }}
+          THROTTLE_ACTION_SUMMARY_COPY: ${{ runner.temp }}/summaries.md
+        with:
+          url: ${{ env.MOCK_URL }}
+          model: mock-model
+          gpu-hourly-rate: "2.00"
+          label: selftest
+          config: |
+            gpu=mock
+            engine=stdlib-http
+            mock_delay=slow
+            upstream=http://127.0.0.1:18765/v1
+          fail-if-costlier: "5"
+          not-calibrated: warn
+          blocks: "5"
+          requests-per-block: "4"
+          concurrency: "2"
+          max-tokens: "32"
+          api-key-env: SELFTEST_KEY_VAR
+          throttle-version: ${{ github.workspace }}
+          history-key: selftest-${{ github.run_id }}-${{ github.run_attempt }}
+
+      - name: Assert verdicts, exit codes and outcomes
+        env:
+          R1_VERDICT: ${{ steps.run1.outputs.verdict }}
+          R1_EXIT: ${{ steps.run1.outputs.exit-code }}
+          R1_OUTCOME: ${{ steps.run1.outcome }}
+          R1_COST: ${{ steps.run1.outputs.cost-per-million }}
+          R2_VERDICT: ${{ steps.run2.outputs.verdict }}
+          R2_EXIT: ${{ steps.run2.outputs.exit-code }}
+          R2_OUTCOME: ${{ steps.run2.outcome }}
+          R3_VERDICT: ${{ steps.run3.outputs.verdict }}
+          R3_EXIT: ${{ steps.run3.outputs.exit-code }}
+          R3_OUTCOME: ${{ steps.run3.outcome }}
+          R4_VERDICT: ${{ steps.run4.outputs.verdict }}
+          R4_EXIT: ${{ steps.run4.outputs.exit-code }}
+          R4_OUTCOME: ${{ steps.run4.outcome }}
+          R4_CHANGE: ${{ steps.run4.outputs.change-percent }}
+        run: |
+          failures=0
+          expect() {
+            if [ "$2" = "$3" ]; then
+              echo "ok   $1 = $3"
+            else
+              echo "FAIL $1: expected '$3', got '$2'"
+              failures=$((failures + 1))
+            fi
+          }
+          expect "run1 verdict" "$R1_VERDICT" "NOT CALIBRATED"
+          expect "run1 exit-code" "$R1_EXIT" "0"
+          expect "run1 outcome" "$R1_OUTCOME" "success"
+          expect "run2 verdict" "$R2_VERDICT" "NOT CALIBRATED"
+          expect "run2 exit-code" "$R2_EXIT" "5"
+          expect "run2 outcome (warn)" "$R2_OUTCOME" "success"
+          expect "run3 verdict" "$R3_VERDICT" "NOT CALIBRATED"
+          expect "run3 exit-code" "$R3_EXIT" "5"
+          expect "run3 outcome (fail)" "$R3_OUTCOME" "failure"
+          expect "run4 verdict" "$R4_VERDICT" "MORE EXPENSIVE"
+          expect "run4 exit-code" "$R4_EXIT" "4"
+          expect "run4 outcome" "$R4_OUTCOME" "failure"
+          if python -c 'import sys; sys.exit(0 if float(sys.argv[1]) > 0 else 1)' "$R1_COST"; then
+            echo "ok   run1 cost-per-million = $R1_COST"
+          else
+            echo "FAIL run1 cost-per-million: '$R1_COST'"
+            failures=$((failures + 1))
+          fi
+          if python -c 'import sys; sys.exit(0 if float(sys.argv[1]) >= 5 else 1)' "$R4_CHANGE"; then
+            echo "ok   run4 change-percent = $R4_CHANGE (>= 5)"
+          else
+            echo "FAIL run4 change-percent: '$R4_CHANGE'"
+            failures=$((failures + 1))
+          fi
+          exit "$failures"
+
+      - name: Assert the job summaries carry no endpoint or key
+        run: |
+          copy="$RUNNER_TEMP/summaries.md"
+          count="$(grep -c '^### Throttle cost check: ' "$copy" || true)"
+          if [ "$count" != 4 ]; then
+            echo "FAIL: expected 4 job summaries in $copy, found $count"
+            exit 1
+          fi
+          if grep -n -E '127\.0\.0\.1|18765|https?://|selftest-key-7f3a9c' "$copy"; then
+            echo "FAIL: a job summary contains the endpoint, a URL or the API key"
+            exit 1
+          fi
+          grep '^### Throttle cost check: ' "$copy"
+          echo "ok   4 summaries, none mentions the endpoint, a URL or the key"

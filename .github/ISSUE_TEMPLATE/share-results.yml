@@ -1,0 +1,70 @@
+name: Share your results
+description: Share a `throttle check` result (made with `throttle check --share`)
+title: "[Results]: "
+labels: ["results"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for sharing! `throttle check --share` fills this form for you.
+        It leaves out URLs, hostnames, IPs and keys and masks config values that
+        look like secrets, but please read the summary once before you submit:
+        this issue is public.
+
+  - type: input
+    id: engine
+    attributes:
+      label: Engine
+      description: Inference engine and version, e.g. vLLM 0.11.0, SGLang 0.5, Ollama 0.12
+      placeholder: vLLM 0.11.0
+    validations:
+      required: true
+
+  - type: input
+    id: gpu
+    attributes:
+      label: GPU
+      description: GPU type and count behind the endpoint, e.g. 1x H100 80GB
+      placeholder: 1x H100 80GB
+    validations:
+      required: false
+
+  - type: input
+    id: model
+    attributes:
+      label: Model
+      placeholder: meta-llama/Llama-3.1-8B-Instruct
+    validations:
+      required: true
+
+  - type: input
+    id: verdict
+    attributes:
+      label: Verdict
+      description: CHEAPER, MORE EXPENSIVE, NO WINNER, NOT CALIBRATED, or first check
+    validations:
+      required: true
+
+  - type: textarea
+    id: summary
+    attributes:
+      label: Summary (markdown from `throttle check --share`)
+      description: Paste or keep the summary Throttle printed. Remove anything you do not want to be public.
+    validations:
+      required: true
+
+  - type: textarea
+    id: notes
+    attributes:
+      label: Anything else?
+      description: What you changed and why, surprises, or questions.
+    validations:
+      required: false
+
+  - type: checkboxes
+    id: case_study
+    attributes:
+      label: Case study
+      options:
+        - label: Yes, you may feature this result as a case study (we will ask before naming you or your company).
+          required: false

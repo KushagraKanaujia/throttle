@@ -2,6 +2,69 @@
 
 All notable changes to Throttle will be documented in this file.
 
+## [0.4.1] - 2026-09-24
+
+### Changed
+- `throttle check` is cold-cache by default. It used to resend identical
+  prompts every block and every run, so a server with prefix caching (vLLM V1
+  `--enable-prefix-caching`, on by default; SGLang RadixAttention; Ollama KV
+  reuse) served warm prefixes and $/M looked cheaper than real traffic. Now
+  the first user message of every measured (and warm-up) request starts with
+  a unique tag, `[run <id> req <n>] `, from a random per-check run id stored
+  in the record with the tag format and a sha256 of the exact prompts sent.
+  `--warm-cache` resends identical prompts on purpose. The header prints the
+  mode. The run id is 6 decimal digits, so the tag costs the same number of
+  prompt tokens in every run (9 with `llama3.2:3b`), and those tokens are not
+  counted: a cold check sends each distinct base prompt once untagged
+  (unmeasured, 1 output token) and input and total $/M use those token
+  counts. Blocks record the tag tokens left out (`tag_input_tokens`).
+- The prompt cache mode is part of a check's workload identity: a cold and a
+  warm check are NO WINNER ("the prompt cache mode changed") and never share
+  a calibration group. Checks recorded by 0.4.0 count as warm, so the first
+  0.4.1 check against them is NO WINNER; record three cold checks of the
+  unchanged config to recalibrate. `prompts_sha256` is still the canonical
+  hash of the prompt file, the same hash `smoke`, `benchmark` and `golden`
+  record.
+- `cost` and `measure` tag their prompts the same way by default and accept
+  `--warm-cache`. `measure` records `prompt_cache_mode` and the run id in its
+  JSON, and `throttle compare` refuses to rank measure files with different
+  modes (files without the field count as warm).
+- `smoke`, `benchmark` and `golden` traffic is unchanged: they resend a fixed
+  prompt set whose sha256 their reports and golden decisions are built on.
+  `--cache-policy` help now says so and explains which value to declare.
+- A comparison of different workloads now prints the baseline's age, and
+  "What changed in the config" lists the workload fields that differ (e.g.
+  `workload.prompt_cache_mode: cold -> warm`), as the `--share` summary does.
+- With `--fail-if-costlier`, a check whose baseline ran a different workload
+  (NO WINNER, "the workload differs") now exits 5 with a warning instead of 0:
+  the gate judged nothing. **Upgrade note:** the first 0.4.1 check against a
+  0.4.0 history is such a check (0.4.0 checks count as warm-cache, 0.4.1 is
+  cold by default), so a CI gate reports 5 until three cold checks of the
+  unchanged config rebuild the baseline. The GitHub Action applies its
+  `not-calibrated` policy (warn by default) to it.
+- `throttle compare` checks the cache mode of every measure file, not of
+  every label, so two files that share a label are still refused when one is
+  cold and the other warm.
+
+### Added
+- `throttle check --share`: prints a sanitized markdown summary (engine,
+  model, GPU, ASSUMED GPU rate, workload and cache mode, $/M before and after
+  with CIs, verdict, noise-floor status, Throttle version, what changed) with
+  no URLs, hostnames, IPs, local paths or keys, and config values that look
+  like secrets masked (also removed: `user:password@host` in any form,
+  IPv4-mapped IPv6 addresses, dotted hostnames with any suffix, `host:port`
+  with a 2 to 5 digit port, and `token=...`-style pairs or payment-style
+  tokens inside labels and values). It also prints a link to a pre-filled GitHub issue
+  (kept under 7,000 characters; a longer summary is cut with a note). Nothing
+  is uploaded. `--history --share` shares the latest recorded check and
+  `--share-id ID` a chosen one, without sending traffic. Checks now record
+  the id of the baseline they were compared with, so a shared check is judged
+  against the same baseline.
+- `.github/ISSUE_TEMPLATE/share-results.yml`: a "Share your results" issue
+  form (engine, GPU, model, verdict, summary, optional case-study consent),
+  labelled `results`. The label must exist in the repository (GitHub drops
+  unknown labels silently), and the form only works from the default branch.
+
 ## [0.4.0] - 2026-09-23
 
 ### Added

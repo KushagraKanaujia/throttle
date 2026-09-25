@@ -52,6 +52,7 @@ class FakeServer:
         self.include_usage = include_usage
         self.max_model_len = max_model_len
         self.chat_requests = 0
+        self.probe_requests = 0
 
     async def handle(self, request: httpx.Request) -> httpx.Response:
         path = request.url.path
@@ -78,10 +79,17 @@ class FakeServer:
                 200, text=self.metrics_body, headers={"content-type": "text/plain"}
             )
         if path == "/v1/chat/completions":
-            index = self.chat_requests
-            self.chat_requests += 1
             body = json.loads(request.content)
             prompt = " ".join(m["content"] for m in body["messages"])
+            # A cold check's untagged tag-cost probes (1 output token) run
+            # between the warm-up and block 1; they are not part of a block.
+            probe = body.get("max_tokens") == check_module.TAG_PROBE_MAX_TOKENS
+            if probe:
+                self.probe_requests += 1
+                index = -1
+            else:
+                index = self.chat_requests
+            self.chat_requests += 0 if probe else 1
             if index >= WARMUP:
                 block = (index - WARMUP) // REQUESTS_PER_BLOCK
                 await asyncio.sleep(self.delay_for_block(block))
@@ -222,8 +230,16 @@ def test_different_workload_is_never_a_winner(history, monkeypatch, capsys):
         monkeypatch, capsys, FakeServer(constant(0.08)),
         "--max-tokens", "32", "--fail-if-costlier", "0",
     )
-    assert code == 0, out
     assert "Verdict: NO WINNER, the workload differs (max_tokens)" in out
+    # The terminal lists the workload difference with the config changes.
+    assert "  What changed in the config:\n    workload.max_tokens: 64 -> 32\n" in out
+    assert "nothing Throttle can see" not in out
+    # Not comparable means the gate judged nothing: exit 5, not a silent pass.
+    assert code == check_module.EXIT_NOT_CALIBRATED == 5, out
+    assert (
+        "WARNING: the baseline ran a different workload (max_tokens), so "
+        "--fail-if-costlier could not judge this change." in out
+    )
 
 
 def test_server_reported_config_is_fingerprinted_and_diffed(history, monkeypatch, capsys):
