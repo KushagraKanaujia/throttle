@@ -2,7 +2,9 @@
 
 All notable changes to Throttle will be documented in this file.
 
-## [Unreleased]
+## [0.4.2] - 2026-09-25
+
+0.4.1 was never published to PyPI; 0.4.2 is the first release that ships everything listed under 0.4.1 below, plus these fixes.
 
 ### Fixed
 - A request rejected because its prompt plus `max_tokens` exceeds the
