@@ -2,6 +2,21 @@
 
 All notable changes to Throttle will be documented in this file.
 
+## [Unreleased]
+
+### Fixed
+- A request rejected because its prompt plus `max_tokens` exceeds the
+  model's context window (vLLM's HTTP 400 when `--max-model-len` is too
+  small) now stops `validate-sim`, `measure`, `cost` and `check` with an
+  error that names the limit, the request and its size, quotes the server,
+  and says how to fit it, instead of "Request 86 failed with status 400"
+  (#22). vLLM, SGLang, TGI, llama.cpp and OpenAI wordings are recognised.
+- When one request fails, `validate-sim`, `measure` and `check` stop sending
+  and let requests already in flight finish. They used to leave those
+  requests running, and `asyncio.run` cancelled them mid-connect at shutdown,
+  which printed an anyio traceback ("ValueError: second argument (exceptions)
+  must be a non-empty sequence") or leaked sockets (#22).
+
 ## [0.4.1] - 2026-09-24
 
 ### Changed
