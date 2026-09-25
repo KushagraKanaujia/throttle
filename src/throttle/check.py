@@ -87,6 +87,7 @@ from .benchmark import (
 )
 from .cost_model import calculate_cost
 from .models import SafetyLimits
+from .request_errors import context_overflow_limit, describe_http_failure, gather_or_drain
 from .statistics import (
     _t_critical_975,
     intervals_overlap,
@@ -897,6 +898,18 @@ async def _send(
     except httpx.HTTPError as exc:
         raise CheckError(f"could not reach the endpoint: {type(exc).__name__}: {exc}") from None
     if response.status_code != 200:
+        if context_overflow_limit(response.status_code, response.text)[0]:
+            raise CheckError(describe_http_failure(
+                what="a request",
+                url=chat_url,
+                status=response.status_code,
+                body=response.text,
+                max_tokens=max_tokens,
+                remedy=(
+                    f"lower --max-tokens (now {max_tokens}) or pass --prompts with "
+                    "shorter prompts, or start the server with a larger --max-model-len."
+                ),
+            ))
         snippet = response.text[:200].replace("\n", " ")
         raise CheckError(f"endpoint returned HTTP {response.status_code}: {snippet}")
     try:
@@ -929,15 +942,24 @@ async def _run_block(
     max_tokens: int,
 ) -> tuple[int, int, float]:
     semaphore = asyncio.Semaphore(concurrency)
+    stop = asyncio.Event()
 
     async def one(index: int) -> tuple[int, int]:
         async with semaphore:
-            return await _send(
-                client, chat_url, headers, model, prompts[index % len(prompts)], max_tokens
-            )
+            if stop.is_set():  # an earlier request failed; send nothing more
+                return 0, 0
+            try:
+                return await _send(
+                    client, chat_url, headers, model, prompts[index % len(prompts)], max_tokens
+                )
+            except Exception:
+                stop.set()  # before the semaphore wakes the next request
+                raise
 
     started = time.perf_counter()
-    results = await asyncio.gather(*(one(index) for index in range(requests)))
+    # After a failure, stop sending and let in-flight requests finish, so none
+    # outlives the client or is cancelled mid-connect (#22).
+    results = await gather_or_drain((one(index) for index in range(requests)), stop)
     wall = time.perf_counter() - started
     return sum(r[0] for r in results), sum(r[1] for r in results), wall
 

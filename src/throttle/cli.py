@@ -70,6 +70,13 @@ from .check import (
     new_run_id,
 )
 from .provenance import ACCELERATOR_BACKENDS
+from .request_errors import (
+    RequestFailed,
+    context_overflow_limit,
+    describe_http_failure,
+    gather_or_drain,
+    wait_or_stop,
+)
 from .result_store import (
     Provenance,
     ResultStoreError,
@@ -526,6 +533,20 @@ def _resolve_model(
     listed = ", ".join(models) if models else "(none)"
     print(f"Error: --model is required; this server lists: {listed}")
     return None
+
+
+def _synthetic_overflow_remedy(command: str, workload: Sequence[tuple[float, int, int]]) -> str:
+    """How to make a fixed synthetic workload fit a server's context window."""
+
+    words, max_tokens = max(((p, m) for _, p, m in workload), key=sum)
+    # Words over-count "Test " tokens; 64 covers the chat template and prompt tag.
+    fits = 1 << (words + max_tokens + 64 - 1).bit_length()
+    return (
+        f"{command} sends a fixed synthetic workload; its longest request is a "
+        f"{words}-word prompt with max_tokens {max_tokens}. Start the server with a "
+        f"larger --max-model-len ({fits} should fit it), or measure a shorter workload "
+        "with `throttle check --prompts FILE --max-tokens N`."
+    )
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -3269,6 +3290,17 @@ def _handle_cost(args: argparse.Namespace) -> int:
                 req_end = time.time()
 
                 if response.status_code != 200:
+                    if context_overflow_limit(response.status_code, response.text)[0]:
+                        print("Error: " + describe_http_failure(
+                            what=f"Request {i + 1}",
+                            url=chat_url,
+                            status=response.status_code,
+                            body=response.text,
+                            max_tokens=max_tokens,
+                            prompt_words=prompt_tokens,
+                            remedy=_synthetic_overflow_remedy("cost", workload),
+                        ))
+                        return EXIT_FAILED
                     print(f"Request {i+1} failed.")
                     _print_endpoint_failure(
                         client, chat_url, response.status_code, args.model,
@@ -3888,13 +3920,14 @@ def _handle_measure(args: argparse.Namespace) -> int:
             peak_concurrent = 0
             current_in_flight = 0
             lock = threading.Lock()
+            stop = asyncio.Event()
 
             async def send_request(arrival_time, prompt_tokens, max_tokens, request_idx):
                 nonlocal real_total_input, real_total_output, peak_concurrent, current_in_flight
 
-                # Wait until scheduled arrival time
-                if arrival_time > 0:
-                    await asyncio.sleep(arrival_time)
+                # Wait until scheduled arrival time; send nothing once a request failed
+                if await wait_or_stop(stop, arrival_time):
+                    return None
 
                 # Track in-flight requests
                 with lock:
@@ -3922,7 +3955,15 @@ def _handle_measure(args: argparse.Namespace) -> int:
                         req_end = time.perf_counter_ns()
 
                         if response.status_code != 200:
-                            raise Exception(f"Request {request_idx+1} failed with status {response.status_code}")
+                            raise RequestFailed(describe_http_failure(
+                                what=f"Trial {run_idx + 1} request {request_idx + 1}",
+                                url=str(response.request.url),
+                                status=response.status_code,
+                                body=response.text,
+                                max_tokens=max_tokens,
+                                prompt_words=prompt_tokens,
+                                remedy=overflow_remedy,
+                            ))
 
                         data = response.json()
                         usage = data.get("usage", {})
@@ -3943,6 +3984,7 @@ def _handle_measure(args: argparse.Namespace) -> int:
 
                         return result
                     except Exception as e:
+                        stop.set()
                         with lock:
                             current_in_flight -= 1
                         raise
@@ -3954,15 +3996,22 @@ def _handle_measure(args: argparse.Namespace) -> int:
             ]
 
             overall_start = time.perf_counter_ns()
-            measured_requests = await asyncio.gather(*tasks)
+            # After a failure, stop sending and let in-flight requests finish, so
+            # none is left for asyncio.run to cancel mid-connect at shutdown (#22).
+            measured_requests = await gather_or_drain(tasks, stop)
             overall_end = time.perf_counter_ns()
             real_wall_clock = (overall_end - overall_start) / 1e9
 
             return measured_requests, real_total_input, real_total_output, real_wall_clock, peak_concurrent
 
+        overflow_remedy = _synthetic_overflow_remedy("measure", workload)
         try:
             import asyncio
             measured_requests, real_total_input, real_total_output, real_wall_clock, peak_concurrent = asyncio.run(run_concurrent_workload())
+        except RequestFailed as e:
+            print("FAILED")
+            print(f"Error: {e}")
+            return EXIT_FAILED
         except Exception as e:
             print(f"FAILED: {e}")
             return EXIT_FAILED
@@ -4171,18 +4220,24 @@ def _handle_validate_sim(args: argparse.Namespace) -> int:
     }
 
     workload_gen = WorkloadGenerator(seed=42)
-
-    for scenario in test_scenarios:
-        print(f"Running {scenario['name']} ({scenario['arrival_rate']:.0f} req/sec, {scenario['num_requests']} requests)...")
-        print()
-
-        # Generate workload
-        workload = workload_gen.generate_chat_workload(
+    # Generated up front, in the same order as before, so a context-window
+    # failure can name the longest request of the whole run.
+    workloads = [
+        workload_gen.generate_chat_workload(
             num_requests=scenario['num_requests'],
             arrival_rate_requests_per_sec=scenario['arrival_rate'],
             mean_prompt_tokens=200,
             mean_output_tokens=150,
         )
+        for scenario in test_scenarios
+    ]
+    overflow_remedy = _synthetic_overflow_remedy(
+        "validate-sim", [request for workload in workloads for request in workload]
+    )
+
+    for scenario, workload in zip(test_scenarios, workloads):
+        print(f"Running {scenario['name']} ({scenario['arrival_rate']:.0f} req/sec, {scenario['num_requests']} requests)...")
+        print()
 
         # Run simulator
         sim = VLLMSimulator(sim_config)
@@ -4211,13 +4266,14 @@ def _handle_validate_sim(args: argparse.Namespace) -> int:
             peak_concurrent = 0
             current_in_flight = 0
             lock = threading.Lock()
+            stop = asyncio.Event()
 
             async def send_request(arrival_time, prompt_tokens, max_tokens, request_idx):
                 nonlocal real_total_input, real_total_output, peak_concurrent, current_in_flight
 
-                # Wait until scheduled arrival time
-                if arrival_time > 0:
-                    await asyncio.sleep(arrival_time)
+                # Wait until scheduled arrival time; send nothing once a request failed
+                if await wait_or_stop(stop, arrival_time):
+                    return None
 
                 # Track in-flight requests
                 with lock:
@@ -4242,7 +4298,15 @@ def _handle_validate_sim(args: argparse.Namespace) -> int:
                         req_end = time.perf_counter_ns()
 
                         if response.status_code != 200:
-                            raise Exception(f"Request {request_idx+1} failed with status {response.status_code}")
+                            raise RequestFailed(describe_http_failure(
+                                what=f"{scenario['name']} request {request_idx + 1}",
+                                url=str(response.request.url),
+                                status=response.status_code,
+                                body=response.text,
+                                max_tokens=max_tokens,
+                                prompt_words=prompt_tokens,
+                                remedy=overflow_remedy,
+                            ))
 
                         data = response.json()
                         usage = data.get("usage", {})
@@ -4269,6 +4333,7 @@ def _handle_validate_sim(args: argparse.Namespace) -> int:
 
                         return result
                     except Exception as e:
+                        stop.set()
                         with lock:
                             current_in_flight -= 1
                         raise
@@ -4280,7 +4345,9 @@ def _handle_validate_sim(args: argparse.Namespace) -> int:
             ]
 
             overall_start = time.perf_counter_ns()
-            measured_requests = await asyncio.gather(*tasks)
+            # After a failure, stop sending and let in-flight requests finish, so
+            # none is left for asyncio.run to cancel mid-connect at shutdown (#22).
+            measured_requests = await gather_or_drain(tasks, stop)
             overall_end = time.perf_counter_ns()
             real_wall_clock = (overall_end - overall_start) / 1e9
 
@@ -4288,6 +4355,9 @@ def _handle_validate_sim(args: argparse.Namespace) -> int:
 
         try:
             measured_requests, real_total_input, real_total_output, first_token_times, real_wall_clock, peak_concurrent = asyncio.run(run_concurrent_workload())
+        except RequestFailed as e:
+            print(f"Error: {e}")
+            return EXIT_FAILED
         except Exception as e:
             print(f"Error: Request failed: {e}")
             return EXIT_FAILED
