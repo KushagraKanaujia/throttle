@@ -15,7 +15,7 @@ about five minutes. You don't need a GPU.
 
 ```bash
 pipx install throttle-pro
-throttle --version   # 0.4.0
+throttle --version   # 0.4.1
 ```
 
 No pipx? `python3 -m pip install --user pipx && python3 -m pipx ensurepath`,
@@ -210,7 +210,7 @@ check as a CI gate; its exit code tells the pipeline what happened:
 | `1` | Measurement failed; nothing recorded |
 | `2` | Usage error |
 | `4` | Calibrated MORE EXPENSIVE by at least the `--fail-if-costlier` percentage (measured change, at the baseline's GPU rate) |
-| `5` | `--fail-if-costlier` given and the verdict is NOT CALIBRATED (a warning or a failure, your choice) |
+| `5` | `--fail-if-costlier` given and the change could not be judged: NOT CALIBRATED, or the baseline ran a different workload (e.g. another prompt cache mode) (a warning or a failure, your choice) |
 
 The recorded checks above ran without `--fail-if-costlier`, so they exited
 with 0; with it, the NOT CALIBRATED ones would exit with 5. Until an
@@ -218,6 +218,41 @@ unchanged config has 3 recent checks, the gate can only return 5, never 4.
 
 `check` uses its own fixed workload, so its $/M is not comparable with the
 `throttle cost` figure from step 2. Compare checks with checks.
+
+### Cold vs warm cache
+
+Ollama, vLLM and SGLang can reuse the work for a prompt prefix they have seen
+before. So by default every request `check` measures starts with a unique tag
+like `[run 482915 req 0012] ` (the header says `cache COLD`), and a repeat run
+cannot be served from cache. Add `--warm-cache` to resend identical prompts
+when your real traffic repeats prefixes. A cold check and a warm check are
+never compared with each other (NO WINNER). `cost` and `measure` tag their
+prompts the same way and take `--warm-cache` too.
+
+On the laptop above, short built-in prompts showed a small, unstable
+difference (one pair of runs overlapped, another had warm about 8% cheaper,
+partly because untagged prompts are about 10 tokens shorter). One
+~2,100-token prompt repeated with `--warm-cache` ran about 25x faster once
+cached, while Ollama still reported every prompt token, so $/M looked about
+25x cheaper than fresh traffic.
+
+After upgrading from 0.4.0, your first check is NO WINNER against the old
+ones (they were warm). Record three cold checks of the unchanged config
+again to recalibrate.
+
+### Share your results
+
+```bash
+throttle check --history --share
+```
+
+prints a markdown summary of your latest check (engine, model, GPU rate,
+workload, $/M before and after with CIs, verdict, what changed) with no URLs,
+hostnames, IPs or keys, plus a link to a pre-filled GitHub issue. Nothing is
+uploaded; you read it and submit it yourself. Add `--share` to a measuring
+check, or use `--share-id CHECK_ID` for an older one. Add `--config gpu=H100`
+(or your GPU) to your checks so the summary can say what hardware it ran on.
+We read every one, and they tell us where Throttle helps and where it does not.
 
 ## 4. Optional: a caching proxy in front of Ollama
 

@@ -1,0 +1,225 @@
+name: Throttle cost check
+description: >-
+  Measure what an OpenAI-compatible endpoint (vLLM, SGLang, TGI, Ollama) costs
+  per million tokens on every deploy, compare it with the previous deploy, and
+  fail the job when a calibrated check shows it got more expensive.
+author: Throttle
+branding:
+  icon: dollar-sign
+  color: green
+
+inputs:
+  url:
+    description: >-
+      OpenAI-compatible base URL, e.g. https://vllm.internal:8000 or .../v1.
+      Masked in logs and never written to the job summary.
+    required: true
+  model:
+    description: Model name to send requests to (default, the only model the server lists).
+    required: false
+    default: ""
+  gpu-hourly-rate:
+    description: What the GPU(s) behind the endpoint cost you per hour, in dollars (ASSUMED; include every GPU the model uses).
+    required: true
+  label:
+    description: Short name for this config (default, the short commit SHA). Part of the config fingerprint.
+    required: false
+    default: ""
+  config:
+    description: >-
+      Serving settings the endpoint cannot report itself, one KEY=VALUE per
+      line (e.g. gpu=H100, quantization=fp8). Blank lines and lines starting
+      with # are ignored. Never put secrets here: values appear in the summary.
+    required: false
+    default: ""
+  fail-if-costlier:
+    description: >-
+      Percent. When set, the job fails (exit 4) if the check is a calibrated
+      MORE EXPENSIVE by at least this much. Empty means report only.
+    required: false
+    default: ""
+  not-calibrated:
+    description: >-
+      With fail-if-costlier set, what a NOT CALIBRATED verdict does: warn
+      (::warning::, job passes) or fail (job fails with exit 5).
+    required: false
+    default: warn
+  blocks:
+    description: Independent measurement blocks (Throttle default 5, minimum 3). Keep identical between runs.
+    required: false
+    default: ""
+  requests-per-block:
+    description: Requests per block (Throttle default 4). Keep identical between runs.
+    required: false
+    default: ""
+  concurrency:
+    description: Requests in flight at once (Throttle default 2). Match production load; keep identical between runs.
+    required: false
+    default: ""
+  max-tokens:
+    description: Max output tokens per request (Throttle default 64). Keep identical between runs.
+    required: false
+    default: ""
+  api-key-env:
+    description: >-
+      Name of the environment variable holding the bearer key (set it on the
+      step with env from a secret). The key itself is never an input.
+    required: false
+    default: ""
+  extra-args:
+    description: Extra 'throttle check' arguments, shell-quoted (e.g. --max-estimated-spend 5 --monthly-tokens 500M).
+    required: false
+    default: ""
+  throttle-version:
+    description: >-
+      throttle-pro to install: auto (the release matching this action's tag,
+      else latest), latest, a version like 0.4.1, or a local path.
+    required: false
+    default: auto
+  history-key:
+    description: >-
+      Cache key for the check history (letters, digits, . _ -). Default, a
+      hash of url and model, so each endpoint keeps its own history.
+    required: false
+    default: ""
+
+outputs:
+  verdict:
+    description: CHEAPER, MORE EXPENSIVE, NO WINNER, NOT CALIBRATED (includes the first check), or ERROR.
+    value: ${{ steps.summary.outputs.verdict }}
+  cost-per-million:
+    description: Measured dollars per million tokens (headline metric, output tokens by default), unrounded.
+    value: ${{ steps.summary.outputs.cost-per-million }}
+  change-percent:
+    description: Measured change vs the baseline in percent, at the baseline's GPU rate (empty with no comparable baseline).
+    value: ${{ steps.summary.outputs.change-percent }}
+  exit-code:
+    description: The raw exit code of 'throttle check' (0, 1, 2, 4 or 5).
+    value: ${{ steps.check.outputs.exit-code }}
+  check-id:
+    description: Id of this check in the history.
+    value: ${{ steps.summary.outputs.check-id }}
+
+runs:
+  using: composite
+  steps:
+    - name: Resolve inputs
+      id: resolve
+      shell: bash
+      env:
+        INPUT_URL: ${{ inputs.url }}
+        INPUT_MODEL: ${{ inputs.model }}
+        INPUT_GPU_HOURLY_RATE: ${{ inputs.gpu-hourly-rate }}
+        INPUT_FAIL_IF_COSTLIER: ${{ inputs.fail-if-costlier }}
+        INPUT_NOT_CALIBRATED: ${{ inputs.not-calibrated }}
+        INPUT_EXTRA_ARGS: ${{ inputs.extra-args }}
+        INPUT_THROTTLE_VERSION: ${{ inputs.throttle-version }}
+        INPUT_HISTORY_KEY: ${{ inputs.history-key }}
+        ACTION_REF: ${{ github.action_ref }}
+      run: |
+        py="$(command -v python3 || command -v python)"
+        "$py" "$GITHUB_ACTION_PATH/scripts/action_summary.py" resolve
+
+    - name: Install throttle-pro
+      shell: bash
+      env:
+        PIP_SPEC: ${{ steps.resolve.outputs.pip-spec }}
+        VENV: ${{ steps.resolve.outputs.venv }}
+        PIP_DISABLE_PIP_VERSION_CHECK: "1"
+      run: |
+        if [ -f "$VENV/.throttle-spec" ] && [ "$(cat "$VENV/.throttle-spec")" = "$PIP_SPEC" ]; then
+          echo "Reusing the throttle-pro install from an earlier step in this job"
+        else
+          py="$(command -v python3 || command -v python)"
+          rm -rf "$VENV"
+          "$py" -m venv "$VENV"
+          "$VENV/bin/python" -m pip install --quiet "$PIP_SPEC"
+          printf '%s' "$PIP_SPEC" > "$VENV/.throttle-spec"
+        fi
+        "$VENV/bin/throttle" --version || true
+
+    - name: Clear the history cache path
+      shell: bash
+      run: rm -rf "$HOME/.cache/throttle-check-action"
+
+    - name: Restore check history
+      uses: actions/cache/restore@1bd1e32a3bdc45362d1e726936510720a7c30a57 # v4.2.0
+      with:
+        path: ~/.cache/throttle-check-action
+        key: ${{ steps.resolve.outputs.cache-key }}
+        restore-keys: ${{ steps.resolve.outputs.cache-prefix }}
+
+    - name: Merge restored history
+      shell: bash
+      env:
+        HISTORY_DIR: ${{ steps.resolve.outputs.history-dir }}
+      run: |
+        py="$(command -v python3 || command -v python)"
+        "$py" "$GITHUB_ACTION_PATH/scripts/action_summary.py" \
+          merge-history "$HOME/.cache/throttle-check-action" "$HISTORY_DIR"
+
+    - name: Run throttle check
+      id: check
+      shell: bash
+      env:
+        INPUT_URL: ${{ inputs.url }}
+        INPUT_MODEL: ${{ inputs.model }}
+        INPUT_GPU_HOURLY_RATE: ${{ inputs.gpu-hourly-rate }}
+        INPUT_LABEL: ${{ inputs.label }}
+        INPUT_CONFIG: ${{ inputs.config }}
+        INPUT_FAIL_IF_COSTLIER: ${{ inputs.fail-if-costlier }}
+        INPUT_BLOCKS: ${{ inputs.blocks }}
+        INPUT_REQUESTS_PER_BLOCK: ${{ inputs.requests-per-block }}
+        INPUT_CONCURRENCY: ${{ inputs.concurrency }}
+        INPUT_MAX_TOKENS: ${{ inputs.max-tokens }}
+        INPUT_API_KEY_ENV: ${{ inputs.api-key-env }}
+        INPUT_EXTRA_ARGS: ${{ inputs.extra-args }}
+        VENV: ${{ steps.resolve.outputs.venv }}
+        HISTORY_DIR: ${{ steps.resolve.outputs.history-dir }}
+        JSON_PATH: ${{ steps.resolve.outputs.json-path }}
+      run: |
+        "$VENV/bin/python" "$GITHUB_ACTION_PATH/scripts/action_summary.py" \
+          run "$VENV" "$HISTORY_DIR" "$JSON_PATH"
+
+    - name: Write job summary and outputs
+      id: summary
+      if: always() && steps.check.outputs.exit-code != ''
+      shell: bash
+      env:
+        INPUT_URL: ${{ inputs.url }}
+        INPUT_FAIL_IF_COSTLIER: ${{ inputs.fail-if-costlier }}
+        THROTTLE_EXIT_CODE: ${{ steps.check.outputs.exit-code }}
+        HISTORY_DIR: ${{ steps.resolve.outputs.history-dir }}
+        JSON_PATH: ${{ steps.resolve.outputs.json-path }}
+      run: |
+        py="$(command -v python3 || command -v python)"
+        "$py" "$GITHUB_ACTION_PATH/scripts/action_summary.py" summarize "$JSON_PATH"
+
+    - name: Stage check history for the cache
+      if: always() && steps.check.outputs.exit-code != ''
+      shell: bash
+      env:
+        HISTORY_DIR: ${{ steps.resolve.outputs.history-dir }}
+      run: |
+        py="$(command -v python3 || command -v python)"
+        "$py" "$GITHUB_ACTION_PATH/scripts/action_summary.py" \
+          stage-history "$HISTORY_DIR" "$HOME/.cache/throttle-check-action"
+
+    - name: Save check history
+      if: always() && steps.check.outputs.exit-code != ''
+      uses: actions/cache/save@1bd1e32a3bdc45362d1e726936510720a7c30a57 # v4.2.0
+      with:
+        path: ~/.cache/throttle-check-action
+        key: ${{ steps.resolve.outputs.cache-key }}
+
+    - name: Apply exit policy
+      if: always() && steps.check.outputs.exit-code != ''
+      shell: bash
+      env:
+        THROTTLE_EXIT_CODE: ${{ steps.check.outputs.exit-code }}
+        VERDICT: ${{ steps.summary.outputs.verdict }}
+        INPUT_FAIL_IF_COSTLIER: ${{ inputs.fail-if-costlier }}
+        INPUT_NOT_CALIBRATED: ${{ inputs.not-calibrated }}
+      run: |
+        py="$(command -v python3 || command -v python)"
+        "$py" "$GITHUB_ACTION_PATH/scripts/action_summary.py" gate

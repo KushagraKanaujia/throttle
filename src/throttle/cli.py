@@ -61,7 +61,14 @@ from .golden import (
     validate_golden_sequence,
 )
 from .models import CostModel, EndpointConfig, LoadCondition, RunConfig, SafetyLimits
-from .check import CHECK_DESCRIPTION, CHECK_EPILOG, add_check_arguments, handle_check
+from .check import (
+    CHECK_DESCRIPTION,
+    CHECK_EPILOG,
+    NONCE_FORMAT,
+    add_check_arguments,
+    handle_check,
+    new_run_id,
+)
 from .provenance import ACCELERATOR_BACKENDS
 from .result_store import (
     Provenance,
@@ -305,6 +312,17 @@ def _add_manifest_options(parser: argparse.ArgumentParser) -> None:
         "--cache-policy",
         choices=("unknown", "disabled", "cold", "warm", "representative"),
         default="unknown",
+        help=(
+            "declare the server's prefix-cache state for the report (default: "
+            "unknown; golden requires an explicit value). This flag does not "
+            "change the traffic: smoke, benchmark and golden resend the same "
+            "measured prompts in every block and position (that fixed set is "
+            "what the recorded workload sha256 covers), so a server with "
+            "prefix caching on (vLLM V1 by default, SGLang, Ollama) serves "
+            "repeats warm. Use 'disabled' only if caching is off on the "
+            "server, 'warm' if it is on. 'throttle check' sends unique "
+            "prompts by default (see its --warm-cache)"
+        ),
     )
     parser.add_argument("--model-revision", default="unknown")
     parser.add_argument("--image-digest", default="unknown")
@@ -835,6 +853,16 @@ def build_parser() -> argparse.ArgumentParser:
         "--api-key",
         help="API key for authentication (also reads OPENAI_API_KEY env var)",
     )
+    cost.add_argument(
+        "--warm-cache",
+        action="store_true",
+        help=(
+            "send the synthetic prompts unchanged (they share long prefixes, so "
+            "a prefix cache serves them warm). By default each prompt starts "
+            "with a unique tag such as '[run 482915 req 0012] ' so a prefix "
+            "cache cannot serve it"
+        ),
+    )
 
 
     validate_sim = subparsers.add_parser(
@@ -930,6 +958,16 @@ def build_parser() -> argparse.ArgumentParser:
     measure.add_argument(
         "--note",
         help="optional note about server configuration",
+    )
+    measure.add_argument(
+        "--warm-cache",
+        action="store_true",
+        help=(
+            "resend identical prompts in every trial (a prefix cache serves them "
+            "warm). By default each prompt starts with a unique tag such as "
+            "'[run 482915 req 0012] ', so trials measure uncached prefill. "
+            "'throttle compare' will not rank cold against warm files"
+        ),
     )
     measure.add_argument(
         "--api-key",
@@ -3195,6 +3233,17 @@ def _handle_cost(args: argparse.Namespace) -> int:
     total_input_tokens = 0
     total_output_tokens = 0
     request_times = []
+    run_id = None if args.warm_cache else new_run_id()
+    if run_id:
+        print(
+            "Prompt cache: COLD (default): each prompt starts with a unique tag, e.g. "
+            f"'{NONCE_FORMAT.format(run_id=run_id, index=0)}', so a prefix cache cannot serve it"
+        )
+    else:
+        print(
+            "Prompt cache: WARM (--warm-cache): prompts are sent unchanged and share "
+            "long prefixes, so a server with prefix caching serves them warm"
+        )
 
     print("Sending requests...")
     overall_start = time.time()
@@ -3204,6 +3253,8 @@ def _handle_cost(args: argparse.Namespace) -> int:
             for i, (_, prompt_tokens, max_tokens) in enumerate(workload):
                 # Create a simple prompt
                 prompt = "Test " * prompt_tokens
+                if run_id:
+                    prompt = NONCE_FORMAT.format(run_id=run_id, index=i) + prompt
 
                 req_start = time.time()
                 response = client.post(
@@ -3297,7 +3348,11 @@ def _handle_cost(args: argparse.Namespace) -> int:
     print("  they are not additive. Compare the blended figure with a per-token bill.")
     print()
     print(f"Workload: {args.num_requests} requests sent one at a time (concurrency 1),")
-    print("  synthetic 'Test Test ...' prompts (mean ~100 words), max_tokens mean ~50.")
+    print("  synthetic 'Test Test ...' prompts (mean ~100 words), max_tokens mean ~50,")
+    print(
+        "  prompt cache "
+        + ("WARM (identical prefixes resent)." if args.warm_cache else "COLD (unique tag per prompt).")
+    )
     print("  Your $/M under real traffic depends on concurrency and prompt mix.")
     print()
     print("Next step: record this config with `throttle check`, then run it again after each")
@@ -3358,6 +3413,25 @@ def _handle_compare_measure(report_paths: list[str]) -> int:
             "input_costs": input_costs,
             "output_costs": output_costs,
         })
+
+    # Measure files from before 0.4.1 resent identical prompts (warm cache).
+    # One entry per file, not per label: two files may share a label, and a
+    # dict keyed by label would hide the mismatch.
+    modes = [
+        (path, m["label"], (m.get("workload") or {}).get("prompt_cache_mode") or "warm")
+        for path, m in zip(report_paths, measures)
+    ]
+    if len({mode for _path, _label, mode in modes}) > 1:
+        print("NO WINNER: these measurements used different prompt cache modes:")
+        for path, label, mode in modes:
+            print(f"  {path} (label {label}): {mode}")
+        print(
+            "A cold run sends a unique prompt per request; a warm run repeats "
+            "identical prompts that a prefix cache can serve. Their $/M measure "
+            "different traffic, so they are not ranked. Re-measure with the same "
+            "mode (add or drop --warm-cache). Files from before 0.4.1 count as warm."
+        )
+        return EXIT_OK
 
     # Check for overlaps between all pairs
     overlaps = []
@@ -3778,6 +3852,15 @@ def _handle_measure(args: argparse.Namespace) -> int:
     print(f"  Mean prompt tokens: {mean_prompt_tokens}")
     print(f"  Mean output tokens: {mean_output_tokens}")
     print(f"  Fixed seed: trials measure server variance, not workload variance")
+    run_id = None if args.warm_cache else new_run_id()
+    cache_mode = "warm" if args.warm_cache else "cold"
+    if run_id:
+        print(
+            f"  Prompt cache: COLD (default): every prompt starts with a unique tag, "
+            f"e.g. '{NONCE_FORMAT.format(run_id=run_id, index=0)}'"
+        )
+    else:
+        print("  Prompt cache: WARM (--warm-cache): identical prompts every trial")
     print()
 
     workload_gen = WorkloadGenerator(seed=42)
@@ -3820,6 +3903,9 @@ def _handle_measure(args: argparse.Namespace) -> int:
                         peak_concurrent = current_in_flight
 
                 prompt = "Test " * prompt_tokens
+                if run_id:
+                    tag_index = run_idx * num_requests + request_idx
+                    prompt = NONCE_FORMAT.format(run_id=run_id, index=tag_index) + prompt
                 req_start = time.perf_counter_ns()
 
                 async with httpx.AsyncClient(timeout=120.0) as client:
@@ -3951,6 +4037,12 @@ def _handle_measure(args: argparse.Namespace) -> int:
             "mean_prompt_tokens": mean_prompt_tokens,
             "mean_output_tokens": mean_output_tokens,
             "fixed_seed_explanation": "trials measure server variance, not workload variance",
+            "prompt_cache_mode": cache_mode,
+            "prompt_nonce": (
+                {"run_id": run_id, "format": NONCE_FORMAT,
+                 "index": "trial x requests-per-trial + request number, from 0"}
+                if run_id else None
+            ),
         },
         "num_trials": args.repeat,
         "median_dollars_per_million_input": median_input,

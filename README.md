@@ -69,7 +69,7 @@ Throttle needs Python 3.11+. Install it from PyPI with pipx:
 
 ```sh
 pipx install throttle-pro
-throttle --version   # 0.4.0
+throttle --version   # 0.4.1
 ```
 
 Add the `embeddings` extra (`pipx install 'throttle-pro[embeddings]'`) only if
@@ -307,7 +307,7 @@ estimates a **run-to-run noise bound** from its own recent history:
 - A *same-config group* is every stored check with the same endpoint, the
   same config fingerprint (model, `--label`, GPU rate, server-reported
   settings, `--config` pairs), the same workload (prompts, requests per block,
-  concurrency, max tokens) and the same Throttle version.
+  concurrency, max tokens, prompt cache mode) and the same Throttle version.
 - Only two groups count: the baseline's config and this check's config (one
   group if they are the same). The check being judged is never part of its own
   noise estimate, and only checks created within 24 hours of it count.
@@ -382,7 +382,7 @@ verdicts, the CI gate's exit 4, and the cases above.
 | `1` | Measurement failed; nothing recorded |
 | `2` | Usage error |
 | `4` | `--fail-if-costlier PCT` tripped: a calibrated MORE EXPENSIVE whose measured change (at the baseline's GPU rate) is at least PCT percent |
-| `5` | `--fail-if-costlier` given and the verdict is NOT CALIBRATED; treat it as a warning or a failure |
+| `5` | `--fail-if-costlier` given and the change could not be judged: NOT CALIBRATED, or the baseline ran a different workload (NO WINNER, e.g. a cold check against a 0.4.0 or `--warm-cache` baseline); treat it as a warning or a failure |
 
 Other options:
 
@@ -406,6 +406,91 @@ output tokens per request, 2,000,000 requested output tokens, concurrency 64,
 300 seconds, and a worst-case GPU time (rate x time ceiling) of $3.00; each
 has a `--max-*` flag to raise it. `check` is still not a controlled
 experiment; for a decision-grade answer use the golden protocol below.
+
+### Cold vs warm cache
+
+Servers with prefix caching (vLLM V1, where `--enable-prefix-caching` is on
+by default; SGLang RadixAttention; Ollama's KV-cache reuse) skip the prefill
+of a prompt prefix they have seen before. A benchmark that resends the same
+prompts every block and every run is then served warm, and its $/M looks
+cheaper than traffic whose prompts differ.
+
+Since 0.4.1, `throttle check` is **cold by default**: the first user message
+of every measured request starts with a unique tag such as
+`[run 482915 req 0012] `, so no two requests share a prefix beyond the chat
+template (and any system message you put in front, as real traffic would).
+The run id is 6 random decimal digits per check, stored in the record
+(`workload.prompt_nonce`) with a sha256 of the exact prompts sent, so the
+traffic can be rebuilt and audited. Digits tokenize the same way every run,
+so the tag costs a constant number of prompt tokens (9 with `llama3.2:3b`),
+and those tokens are not counted: a cold check also sends each distinct base
+prompt once untagged (unmeasured, 1 output token), and input and total $/M
+use those untagged prompt token counts. The block lines show the tag tokens
+left out (`110 in (+36 tag, not counted)`), and the record keeps them
+(`blocks[].tag_input_tokens`, `workload.prompt_nonce.untagged_prompt_tokens`). `--warm-cache` resends identical prompts
+on purpose, to measure cache-friendly traffic. The header prints which mode
+ran, and the mode is part of the workload: a cold and a warm check are never
+compared (NO WINNER, "the prompt cache mode changed"). Checks from 0.4.0 and
+earlier count as warm, because that is what they sent.
+
+What it looked like on a MacBook (Apple M3 Pro, Ollama 0.32.5,
+`llama3.2:3b`, GPU rate ASSUMED at $1.50/hr). With the default workload
+(short built-in prompts, 64 output tokens) the difference is small and not
+stable: one pair of runs gave $8.55/M output tokens cold (95% CI $8.40 to
+$8.70) vs $8.61/M warm (95% CI $8.30 to $8.92), another gave $9.09/M cold
+($8.84 to $9.35) vs $8.39/M warm ($8.07 to $8.71). (Those runs predate netting out
+the tag, which then added 10 to 12 prompt tokens per request and made cold
+input $/M look cheaper; output $/M, shown here, was not affected.) With one long prompt (~2,100 tokens, 2 requests
+per block, 8 output tokens, `--metric input`) the cache was obvious:
+
+```text
+cold   block 2/3: 4226 in / 8 out tokens in 6.04s -> $0.5955/M input tokens
+cold   block 3/3: 4226 in / 8 out tokens in 5.98s -> $0.5900/M input tokens
+warm   block 1/3: 4204 in / 4 out tokens in 3.05s -> $0.3024/M input tokens
+warm   block 2/3: 4204 in / 4 out tokens in 0.22s -> $0.0213/M input tokens
+warm   block 3/3: 4204 in / 4 out tokens in 0.23s -> $0.0230/M input tokens
+```
+
+Ollama reported the full prompt token count even when it served the prompt
+from cache, so once the prefix was cached the warm run looked about 25x
+cheaper per input token. Use cold (the default) unless your production
+traffic really repeats prefixes.
+
+`cost` and `measure` tag their prompts the same way by default and take
+`--warm-cache` too; `measure` records the mode in its JSON and `throttle
+compare` does not rank a cold file against a warm one. `smoke`, `benchmark`
+and `golden` still resend their fixed prompt set, because the recorded
+workload sha256 (and a golden decision's comparability) is defined over those
+exact prompts; declare what the server does with `--cache-policy` (`warm` if
+prefix caching is on, `disabled` only if it is off). `check` keeps recording
+the same `prompts_sha256` of the prompt file, so it still matches the hash
+those reports record.
+
+### Share your results
+
+```sh
+throttle check ... --share             # measure, then print a shareable summary
+throttle check --history --share       # share the latest recorded check, no traffic
+throttle check --share-id CHECK_ID     # share a chosen check, no traffic
+```
+
+`--share` prints a markdown summary: engine, model, GPU (from `--config
+gpu=...`), the GPU hourly rate (ASSUMED), the workload and cache mode, $/M
+before and after with their CIs, the verdict and noise-floor status, the
+Throttle version, and what changed in the config. It leaves out the endpoint
+URL, hostnames, IPs, local paths and keys, and masks config values that look
+like secrets (`sk-...`, `hf_...`, long random tokens). It also prints a
+link to a pre-filled GitHub issue (the "Share your results" form). Nothing is
+uploaded: you open the link, read it, and submit it yourself. Links are kept
+under 7,000 characters; a longer summary is cut with a note, and the full
+text is in your terminal to paste.
+
+## Run it in CI
+
+`throttle check --fail-if-costlier PCT` exits 4 on a calibrated MORE
+EXPENSIVE and 5 on NOT CALIBRATED, so it can gate a serving-config change.
+See [docs/github-action.md](docs/github-action.md) for a GitHub Actions
+setup.
 
 ## Caching proxy
 
