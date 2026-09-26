@@ -7,6 +7,29 @@ SGLang, Ollama, LMDeploy and similar servers. It is for teams that self-host
 models, pay for GPU time, and want to know their real $/M tokens instead of
 guessing.
 
+**No GPU?** `pipx install throttle-pro && throttle demo` runs a simulated
+comparison in about a second, no server needed.
+
+## Results
+
+Real runs, real numbers. Every row is either a saved artifact in this repo or
+a recorded run.
+
+| Change | Setup | Before → after ($/M output tokens) | Verdict |
+| --- | --- | --- | --- |
+| **Nothing** (same server, four checks in a row) | Local Ollama `llama3.2:3b` on a MacBook, \$1.50/hr GPU rate ASSUMED | \$8.77 → \$8.86 → \$11.26 → \$10.02 (swings of **+27.1%** and **−11.0%**) | **NO WINNER**: the −11.0% is inside the measured noise bound (89.1%) |
+| **One vLLM flag**: `max_num_seqs` 1 → 8 | A100 PCIe 80GB, vLLM 0.16.0, Qwen2.5-0.5B-Instruct, \$1.39/hr (RunPod rate) | **\$0.746 → \$0.234 (−68.6%)**, mean of 3 baseline vs 3 candidate positions | **Decision-eligible** six-position counterbalanced protocol. [Artifacts](https://github.com/KushagraKanaujia/throttle/tree/main/validation/golden-live-20260817) |
+
+The first row is why Throttle exists: with nothing changed, a single
+before/after comparison would have reported a 27% regression and then an 11%
+saving. The second row is a deliberately bad baseline (one sequence at a
+time) on a small model; it shows the measurement, not a saving you should
+expect. Your numbers will differ, so measure them.
+
+**Share yours.** Run `throttle check ... --share` and submit the pre-filled
+issue it links to ([Share your results](#share-your-results)). We're
+building an open set of what serving changes actually cost, and yours helps.
+
 ```text
 change a serving setting ──► throttle check ──► $/M tokens (95% CI) + what changed + verdict
         ▲                                                                   │
@@ -24,8 +47,8 @@ change a serving setting ──► throttle check ──► $/M tokens (95% CI) 
   bill.
 - **Noise looks like a win.** Two measurements taken at different times differ
   from machine load alone. On a MacBook, five checks of the same unchanged
-  local Ollama server, all started within three minutes, measured between $8.26
-  and $8.59 per million output tokens: a 4.0% spread, although a single check's
+  local Ollama server, all started within three minutes, measured between \$8.26
+  and \$8.59 per million output tokens: a 4.0% spread, although a single check's
   95% interval was as narrow as about ±1%. A tool that calls the lowest one "4% cheaper"
   is reporting noise.
 
@@ -69,7 +92,7 @@ Throttle needs Python 3.11+. Install it from PyPI with pipx:
 
 ```sh
 pipx install throttle-pro
-throttle --version   # 0.4.1
+throttle --version   # 0.4.2
 ```
 
 Add the `embeddings` extra (`pipx install 'throttle-pro[embeddings]'`) only if
