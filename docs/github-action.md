@@ -55,7 +55,7 @@ jobs:
 
       - name: Throttle cost check
         id: cost
-        uses: KushagraKanaujia/throttle@v0.4.1
+        uses: KushagraKanaujia/throttle@v0.4.2
         env:
           VLLM_API_KEY: ${{ secrets.VLLM_API_KEY }}
         with:
@@ -81,7 +81,7 @@ jobs:
 ```
 
 Pin the action to a release tag (as above) or a full commit SHA. With a
-release tag like `v0.4.1` the action installs the matching `throttle-pro==0.4.1`
+release tag like `v0.4.2` the action installs the matching `throttle-pro==0.4.2`
 from PyPI. For any other ref it installs the latest release, unless you set
 `throttle-version`.
 
@@ -132,7 +132,7 @@ jobs:
     steps:
       - uses: actions/setup-python@v5
         with: { python-version: "3.12" }
-      - uses: KushagraKanaujia/throttle@v0.4.1
+      - uses: KushagraKanaujia/throttle@v0.4.2
         env:
           VLLM_API_KEY: ${{ secrets.VLLM_API_KEY }}
         with:
