@@ -179,10 +179,14 @@ def _doc_titles() -> dict[str, str]:
 
 
 def _doc_path(slug: str) -> Path:
-    if not SLUG_PATTERN.fullmatch(slug):
+    if len(slug) > 120 or not SLUG_PATTERN.fullmatch(slug):
         raise HTTPException(status_code=404, detail="no such page")
-    path = (DOCS_DIR / f"{slug}.md").resolve()
-    if DOCS_DIR.resolve() not in path.parents or not path.is_file():
+    try:
+        path = (DOCS_DIR / f"{slug}.md").resolve()
+        found = DOCS_DIR.resolve() in path.parents and path.is_file()
+    except OSError:
+        found = False
+    if not found:
         raise HTTPException(status_code=404, detail="no such page")
     return path
 
