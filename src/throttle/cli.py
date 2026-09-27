@@ -1004,6 +1004,25 @@ def build_parser() -> argparse.ArgumentParser:
     )
     add_check_arguments(check)
 
+    ui = subparsers.add_parser(
+        "ui",
+        help="open the Throttle Console: your check history, verdicts and docs in a local web UI",
+        description=(
+            "Serves the Throttle Console on 127.0.0.1: every `throttle check` you have run, "
+            "with its $/M tokens, 95% CI and verdict, side-by-side comparisons, endpoint "
+            "trends, CI setup and the docs. Reads the local check history only; sends no "
+            "traffic to any endpoint and loads nothing from the internet."
+        ),
+    )
+    ui.add_argument("--port", type=int, default=8787, metavar="PORT",
+                    help="port to serve on (default: 8787)")
+    ui.add_argument("--host", default="127.0.0.1", metavar="HOST",
+                    help="address to bind (default: 127.0.0.1; anything else exposes your history)")
+    ui.add_argument("--history-dir", metavar="PATH",
+                    help="check history directory (default: $THROTTLE_CHECK_HISTORY_DIR or ~/.throttle/checks)")
+    ui.add_argument("--no-open", action="store_true",
+                    help="don't open a browser window")
+
     watch = subparsers.add_parser(
         "watch",
         help="read vLLM /metrics and report cost per million tokens (no requests sent)",
@@ -4708,6 +4727,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         return _handle_watch(args)
     if args.command == "check":
         return handle_check(args)
+    if args.command == "ui":
+        from .check import history_dir as check_history_dir
+        from .console import run_ui
+        return run_ui(check_history_dir(args), host=args.host, port=args.port, open_browser=not args.no_open)
     if args.command == "sessions":
         from .sessions_cli import handle_sessions_command
         return handle_sessions_command(args)

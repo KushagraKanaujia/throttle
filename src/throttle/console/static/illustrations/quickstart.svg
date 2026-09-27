@@ -1,0 +1,18 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 300" width="640" height="300" role="img" aria-label="quickstart">
+  <defs>
+    <pattern id="g" width="16" height="16" patternUnits="userSpaceOnUse"><path d="M16 0H0V16" fill="none" stroke="#C6FF34" stroke-opacity=".07" stroke-width="1"/></pattern>
+    <radialGradient id="glow" cx="50%" cy="50%" r="55%"><stop offset="0" stop-color="#C6FF34" stop-opacity=".10"/><stop offset="1" stop-color="#C6FF34" stop-opacity="0"/></radialGradient>
+    <linearGradient id="fill" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#C6FF34" stop-opacity=".16"/><stop offset="1" stop-color="#C6FF34" stop-opacity=".03"/></linearGradient>
+  </defs>
+  <rect width="640" height="300" rx="18" fill="#0C0F0B"/>
+  <rect width="640" height="300" rx="18" fill="url(#g)"/>
+  <rect width="640" height="300" rx="18" fill="url(#glow)"/>
+  <g fill="none" stroke="#C6FF34" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M240 190a80 80 0 0 1 160 0" />
+    <path d="M232 190h176" stroke-opacity=".5"/>
+    <path d="M320 190l46-50" stroke-width="3"/>
+    <circle cx="320" cy="190" r="7" fill="url(#fill)"/>
+    <path d="M254 158l10 6M286 124l6 10M320 110v12M354 124l-6 10M386 158l-10 6" stroke-opacity=".7"/>
+    <path d="M272 214h96" stroke-opacity=".35"/>
+  </g>
+</svg>

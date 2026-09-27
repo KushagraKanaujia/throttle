@@ -1,31 +1,26 @@
 # Changelog
 
-All notable changes to Throttle will be documented in this file.
+*Every Throttle release, newest first.*
 
-## [Unreleased]
+Install the latest with `pipx install throttle-pro` or upgrade with `pipx upgrade throttle-pro`.
 
-### Added
+## Unreleased (on main, not yet on PyPI)
+
+#### Added
 - `notebooks/throttle-quickstart.ipynb`: measure $/M tokens on a free Colab or
   Kaggle T4 (Ollama or vLLM), change one setting and get a verdict.
 - README "Try it in 2 minutes" section (Colab, local Ollama, `throttle demo`).
 - `throttle check` prints the `--share-id` command for the check it just saved.
-- `throttle ui`: the Throttle Console, a local web app over your check history
-  (quickstart progress, checks with 95% CI bars and verdicts, compare with the
-  noise band, endpoint trends, CI setup, share commands, bundled docs and
-  search). Binds 127.0.0.1, refuses non-loopback Host headers, strict CSP, no
-  network requests. Verdicts reuse `throttle check`'s comparison code.
-- `throttle.check.judge_recorded()`: re-judges a recorded check the way it was
-  judged when it ran (shared by `--share-id` and the console).
 
-### Changed
+#### Changed
 - GitHub Action renamed to "Throttle LLM cost check" with a Marketplace-length
   description. Inputs, outputs and behavior are unchanged.
 
-## [0.4.2] - 2026-09-25
+## 0.4.2 (2026-09-25)
 
 0.4.1 was never published to PyPI; 0.4.2 is the first release that ships everything listed under 0.4.1 below, plus these fixes.
 
-### Fixed
+#### Fixed
 - A request rejected because its prompt plus `max_tokens` exceeds the
   model's context window (vLLM's HTTP 400 when `--max-model-len` is too
   small) now stops `validate-sim`, `measure`, `cost` and `check` with an
@@ -38,9 +33,9 @@ All notable changes to Throttle will be documented in this file.
   which printed an anyio traceback ("ValueError: second argument (exceptions)
   must be a non-empty sequence") or leaked sockets (#22).
 
-## [0.4.1] - 2026-09-24
+## 0.4.1 (2026-09-24)
 
-### Changed
+#### Changed
 - `throttle check` is cold-cache by default. It used to resend identical
   prompts every block and every run, so a server with prefix caching (vLLM V1
   `--enable-prefix-caching`, on by default; SGLang RadixAttention; Ollama KV
@@ -82,7 +77,7 @@ All notable changes to Throttle will be documented in this file.
   every label, so two files that share a label are still refused when one is
   cold and the other warm.
 
-### Added
+#### Added
 - `throttle check --share`: prints a sanitized markdown summary (engine,
   model, GPU, ASSUMED GPU rate, workload and cache mode, $/M before and after
   with CIs, verdict, noise-floor status, Throttle version, what changed) with
@@ -101,9 +96,9 @@ All notable changes to Throttle will be documented in this file.
   labelled `results`. The label must exist in the repository (GitHub drops
   unknown labels silently), and the form only works from the default branch.
 
-## [0.4.0] - 2026-09-23
+## 0.4.0 (2026-09-23)
 
-### Added
+#### Added
 - `throttle check`: measures $/M tokens against a live endpoint in repeated
   blocks (95% Student-t CI across blocks), fingerprints the serving config
   (`/v1/models`, vLLM `/metrics` `*_info` labels, `--label`, `--config
@@ -144,7 +139,7 @@ All notable changes to Throttle will be documented in this file.
   a session id, shows a per-session breakdown of where wall-clock time went
   plus rule-based findings with suggested configuration changes.
 
-### Changed
+#### Changed
 - `--url` and `--endpoint-url` are accepted interchangeably, and
   `http://host:port`, `.../v1` or the full chat-completions route all work in
   `cost`, `measure`, `check`, `plan`, `smoke` and `benchmark`; `proxy` accepts
@@ -172,7 +167,7 @@ All notable changes to Throttle will be documented in this file.
   the repository root into `docs/internal/`. The proxy guide now lives at
   `docs/PROXY_DEMO.md`.
 
-### Fixed
+#### Fixed
 - README commands that did not run as written: the `diagnose` example had no
   price and exited with a usage error, and the similarity-cache example used
   `https://...` placeholders (now a local `smoke` run). The agent-profiler
@@ -182,15 +177,15 @@ All notable changes to Throttle will be documented in this file.
   dangerous to use eval in Python?") with a 0.9804 score that belongs to a
   different pair; the recorded score is 0.9874 (`data/negation_pairs.json`).
 
-## [0.3.0] - 2026-08-22
+## 0.3.0 (2026-08-22)
 
-### Removed
+#### Removed
 - Claude Code cost proxy extracted to separate repository: https://github.com/KushagraKanaujia/claude-cost-proxy
   - Removed `throttle-proxy`, `throttle-setup`, `throttle-summary` commands
   - Removed `aiohttp` dependency
   - Main throttle repo now focuses exclusively on vLLM optimization
 
-### Added
+#### Added
 - One-command, operator-mediated `throttle golden` orchestration for the
   B1/C1/B2/C2/B3/C3 counterbalanced protocol, including a zero-traffic dry run
   and sanitized partial-session evidence
@@ -221,7 +216,7 @@ All notable changes to Throttle will be documented in this file.
   validation and saved-run comparison. Thread-safe implementation uses Jaccard
   similarity on tokenized prompts.
 
-### Changed
+#### Changed
 - Golden now accepts any two canonical positive, distinct `max_num_seqs`
   values, preserves one declared closed-loop load at or above the larger value,
   and infers the treatment independently from all six saved reports. Historical
@@ -237,7 +232,7 @@ All notable changes to Throttle will be documented in this file.
   validation; Golden run fingerprints cover only validated evidence consumed by
   the decision gate
 
-### Security
+#### Security
 - Runtime and engine metadata reject normalized Unicode lookalikes,
   credential/userinfo shapes, URLs, absolute or traversal paths, and unsafe
   control characters without reflecting rejected values
@@ -245,22 +240,22 @@ All notable changes to Throttle will be documented in this file.
   non-JSON containers, cycles, and over-limit trees before comparison or Golden
   aggregation
 
-## [0.2.1] - 2026-08-18
+## 0.2.1 (2026-08-18)
 
-### Added
+#### Added
 - Platform-aware accelerator provenance for CUDA, Metal, ROCm, and CPU runs
 - Immutable software-environment pins for decision-grade direct-host benchmarks
 - `--accelerator` and `--accelerator-fingerprint` aliases for existing GPU fields
 
-### Changed
+#### Changed
 - Runtime manifest 1.1 supports non-CUDA comparisons while preserving manifest
   1.0 CUDA report compatibility and CUDA's existing image/driver requirements
 - Generated and loaded runtime metadata now share one fail-closed sanitizer;
   manifest 1.1 legacy GPU aliases must reconcile with accelerator fields
 
-## [0.2.0] - 2026-08-17
+## 0.2.0 (2026-08-17)
 
-### Added
+#### Added
 - Four explicit modes: plan, smoke, benchmark, and compare
 - Decision-grade benchmark validation with strict statistical criteria
 - Golden protocol for counterbalanced six-position testing
@@ -274,23 +269,23 @@ All notable changes to Throttle will be documented in this file.
 - Saved-run comparison with matched repeated blocks
 - Privacy-first sanitized reports (no URLs, keys, or raw responses)
 
-### Security
+#### Security
 - Loopback-only plain HTTP, HTTPS required for non-loopback
 - No proxy variable inheritance in native mode
 - Isolated GuideLLM subprocess with cleaned environment
 - Response byte size limits and completion validation
 - Explicit acknowledgements for unknown cost and GuideLLM gaps
 
-### Documentation
+#### Documentation
 - Complete README with installation and usage examples
 - Golden protocol specification
 - Known gaps and validation documentation
 - Operator pilot walkthrough
 - User testing guide
 
-## [0.1.0] - 2026-08-01
+## 0.1.0 (2026-08-01)
 
-### Added
+#### Added
 - Initial proof-of-concept release
 - Basic smoke testing functionality
 - Local validation artifacts

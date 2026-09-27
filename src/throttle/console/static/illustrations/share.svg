@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 300" width="640" height="300" role="img" aria-label="share">
+  <defs>
+    <pattern id="g" width="16" height="16" patternUnits="userSpaceOnUse"><path d="M16 0H0V16" fill="none" stroke="#C6FF34" stroke-opacity=".07" stroke-width="1"/></pattern>
+    <radialGradient id="glow" cx="50%" cy="50%" r="55%"><stop offset="0" stop-color="#C6FF34" stop-opacity=".10"/><stop offset="1" stop-color="#C6FF34" stop-opacity="0"/></radialGradient>
+    <linearGradient id="fill" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#C6FF34" stop-opacity=".16"/><stop offset="1" stop-color="#C6FF34" stop-opacity=".03"/></linearGradient>
+  </defs>
+  <rect width="640" height="300" rx="18" fill="#0C0F0B"/>
+  <rect width="640" height="300" rx="18" fill="url(#g)"/>
+  <rect width="640" height="300" rx="18" fill="url(#glow)"/>
+  <g fill="none" stroke="#C6FF34" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+    <rect x="248" y="108" width="104" height="96" rx="10" fill="url(#fill)"/>
+    <path d="M266 132h60M266 152h68M266 172h44" stroke-opacity=".6"/>
+    <path d="M360 124l40-24M400 100h-20M400 100v20"/>
+    <path d="M352 150h14a28 28 0 0 1 28 28v14" stroke-opacity=".5"/>
+  </g>
+</svg>

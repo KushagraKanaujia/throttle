@@ -1888,10 +1888,23 @@ def _share_recorded(directory: Path, endpoint_filter: str | None, check_id: str 
             return EXIT_USAGE
     index = indexes[-1]
     record = records[index]
+    _baseline, comparison = judge_recorded(records, index)
+    _print_share(record, comparison)
+    return EXIT_OK
+
+
+def judge_recorded(
+    records: Sequence[Mapping[str, Any]], index: int
+) -> tuple[Mapping[str, Any] | None, dict[str, Any] | None]:
+    """Re-judge ``records[index]`` as it was judged when it ran.
+
+    Against the baseline it was compared with (recorded since 0.4.1), else the
+    previous check of its endpoint, using only the history that existed then.
+    Returns (baseline, comparison); both None for an endpoint's first check.
+    """
+
+    record = records[index]
     earlier = records[:index]
-    # Re-judge it as it was judged when it ran: against the baseline it was
-    # compared with (recorded since 0.4.1), else the previous check of its
-    # endpoint, using only the history that existed then.
     baseline = None
     wanted = record.get("baseline_id")
     if isinstance(wanted, str):
@@ -1900,8 +1913,7 @@ def _share_recorded(directory: Path, endpoint_filter: str | None, check_id: str 
         same = [r for r in earlier if r.get("endpoint") == record.get("endpoint")]
         baseline = same[-1] if same else None
     comparison = compare_checks(baseline, record, earlier) if baseline else None
-    _print_share(record, comparison)
-    return EXIT_OK
+    return baseline, comparison
 
 
 # --------------------------------------------------------------------------
