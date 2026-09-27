@@ -7,8 +7,27 @@ SGLang, Ollama, LMDeploy and similar servers. It is for teams that self-host
 models, pay for GPU time, and want to know their real $/M tokens instead of
 guessing.
 
-**No GPU?** `pipx install throttle-pro && throttle demo` runs a simulated
-comparison in about a second, no server needed.
+## Try it in 2 minutes
+
+**On a free GPU, in your browser:**
+[![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/KushagraKanaujia/throttle/blob/main/notebooks/throttle-quickstart.ipynb)
+or [open it on Kaggle](https://kaggle.com/kernels/welcome?src=https://github.com/KushagraKanaujia/throttle/blob/main/notebooks/throttle-quickstart.ipynb).
+The notebook serves a small model on a free T4, measures its cost per million
+tokens, changes one setting and prints the verdict (about 5–10 minutes,
+mostly the model download).
+
+**On your own machine, with [Ollama](https://ollama.com):**
+
+```sh
+ollama pull llama3.2:3b && pipx install throttle-pro
+throttle check --url http://localhost:11434 --model llama3.2:3b --gpu-hourly-rate 1.50
+```
+
+Your laptop has no real GPU price, so the \$1.50/hr is an assumed rate; use
+what your GPUs actually cost when you point it at a real server.
+
+**No GPU at all:** `pipx install throttle-pro && throttle demo` runs a
+simulated comparison in about a second (every number is labelled SIMULATED).
 
 ## Results
 

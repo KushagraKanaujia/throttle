@@ -2410,6 +2410,8 @@ def handle_check(args: argparse.Namespace) -> int:
             print(f"Error: could not save the check to {directory}: {exc}", file=sys.stderr)
             return EXIT_FAILED
         print(f"Saved as check {record['id']} in {path}")
+        if not args.share:
+            print(f"Share this result (no traffic): throttle check --share-id {record['id']}")
     if args.json_output:
         try:
             args.json_output.write_text(json.dumps(record, indent=2, sort_keys=True) + "\n")

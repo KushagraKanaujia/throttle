@@ -170,6 +170,16 @@ def test_first_check_labels_inputs_and_is_saved(history, monkeypatch, capsys):
     lines = (history / "checks.ndjson").read_text().splitlines()
     assert len(lines) == 1
     assert "Saved as check " + json.loads(lines[0])["id"] in out
+    assert "Share this result (no traffic): throttle check --share-id " + json.loads(lines[0])["id"] in out
+
+
+def test_share_hint_is_not_printed_with_share_or_no_save(history, monkeypatch, capsys):
+    code, out = run_check(monkeypatch, capsys, FakeServer(constant(0.01)), "--share")
+    assert code == 0, out
+    assert "Share this result (no traffic)" not in out
+    code, out = run_check(monkeypatch, capsys, FakeServer(constant(0.01)), "--no-save")
+    assert code == 0, out
+    assert "Share this result (no traffic)" not in out
 
 
 def test_costlier_config_shows_change_dollar_delta_and_fails_ci(history, monkeypatch, capsys):
