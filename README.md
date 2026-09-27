@@ -128,7 +128,7 @@ Throttle needs Python 3.11+. Install it from PyPI with pipx:
 
 ```sh
 pipx install throttle-pro
-throttle --version   # 0.4.2
+throttle --version   # 0.5.0
 ```
 
 Add the `embeddings` extra (`pipx install 'throttle-pro[embeddings]'`) only if

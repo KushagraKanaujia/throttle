@@ -4,6 +4,8 @@ All notable changes to Throttle will be documented in this file.
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-09-27
+
 ### Added
 - `notebooks/throttle-quickstart.ipynb`: measure $/M tokens on a free Colab or
   Kaggle T4 (Ollama or vLLM), change one setting and get a verdict.
