@@ -2,6 +2,18 @@
 
 All notable changes to Throttle will be documented in this file.
 
+## [Unreleased]
+
+### Added
+- `notebooks/throttle-quickstart.ipynb`: measure $/M tokens on a free Colab or
+  Kaggle T4 (Ollama or vLLM), change one setting and get a verdict.
+- README "Try it in 2 minutes" section (Colab, local Ollama, `throttle demo`).
+- `throttle check` prints the `--share-id` command for the check it just saved.
+
+### Changed
+- GitHub Action renamed to "Throttle LLM cost check" with a Marketplace-length
+  description. Inputs, outputs and behavior are unchanged.
+
 ## [0.4.2] - 2026-09-25
 
 0.4.1 was never published to PyPI; 0.4.2 is the first release that ships everything listed under 0.4.1 below, plus these fixes.

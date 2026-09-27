@@ -1,8 +1,6 @@
-name: Throttle cost check
+name: Throttle LLM cost check
 description: >-
-  Measure what an OpenAI-compatible endpoint (vLLM, SGLang, TGI, Ollama) costs
-  per million tokens on every deploy, compare it with the previous deploy, and
-  fail the job when a calibrated check shows it got more expensive.
+  Measure your LLM endpoint's $ per million tokens on every deploy and fail when a calibrated check shows it got costlier.
 author: Throttle
 branding:
   icon: dollar-sign

@@ -1,6 +1,6 @@
 # Throttle cost check in GitHub Actions
 
-The `Throttle cost check` action runs `throttle check` against your
+The `Throttle LLM cost check` action runs `throttle check` against your
 OpenAI-compatible endpoint (vLLM, SGLang, TGI, Ollama) on every deploy. It
 measures dollars per million tokens, compares the result with the previous
 check of the same endpoint, and writes the verdict to the job summary. It can
