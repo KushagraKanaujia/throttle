@@ -534,6 +534,7 @@ class ParserAndPlanTests(unittest.TestCase):
                 "check",
                 "report",
                 "sessions",
+                "ui",
             },
         )
 

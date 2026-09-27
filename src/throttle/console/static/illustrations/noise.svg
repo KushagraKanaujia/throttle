@@ -1,0 +1,18 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 300" width="640" height="300" role="img" aria-label="noise">
+  <defs>
+    <pattern id="g" width="16" height="16" patternUnits="userSpaceOnUse"><path d="M16 0H0V16" fill="none" stroke="#C6FF34" stroke-opacity=".07" stroke-width="1"/></pattern>
+    <radialGradient id="glow" cx="50%" cy="50%" r="55%"><stop offset="0" stop-color="#C6FF34" stop-opacity=".10"/><stop offset="1" stop-color="#C6FF34" stop-opacity="0"/></radialGradient>
+    <linearGradient id="fill" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#C6FF34" stop-opacity=".16"/><stop offset="1" stop-color="#C6FF34" stop-opacity=".03"/></linearGradient>
+  </defs>
+  <rect width="640" height="300" rx="18" fill="#0C0F0B"/>
+  <rect width="640" height="300" rx="18" fill="url(#g)"/>
+  <rect width="640" height="300" rx="18" fill="url(#glow)"/>
+  <g fill="none" stroke="#C6FF34" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M196 206h248" stroke-opacity=".45"/>
+    <path d="M200 204C250 204 262 96 320 96S390 204 440 204" />
+    <rect x="276" y="96" width="88" height="110" fill="url(#fill)" stroke="none"/>
+    <path d="M276 96v110M364 96v110" stroke-dasharray="5 6" stroke-opacity=".8"/>
+    <path d="M320 206v-110" stroke-opacity=".35"/>
+    <circle cx="336" cy="150" r="5" fill="#C6FF34"/>
+  </g>
+</svg>

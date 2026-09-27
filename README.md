@@ -29,6 +29,23 @@ what your GPUs actually cost when you point it at a real server.
 **No GPU at all:** `pipx install throttle-pro && throttle demo` runs a
 simulated comparison in about a second (every number is labelled SIMULATED).
 
+## Throttle Console (`throttle ui`)
+
+Every check you run is saved locally. `throttle ui` opens them in your browser:
+$/M tokens with 95% intervals and verdicts, side-by-side comparisons with the
+noise band, cost trends per endpoint, CI setup, and the full docs.
+
+```sh
+throttle ui          # opens http://127.0.0.1:8787
+```
+
+![Throttle Console: the Checks page](https://raw.githubusercontent.com/KushagraKanaujia/throttle/main/docs/assets/throttle-console.png)
+
+It runs on 127.0.0.1, reads your check history (`~/.throttle/checks`, or
+`--history-dir`), sends no traffic to any endpoint and loads nothing from the
+internet. Verdicts come from the same code as `throttle check`, so the two
+always agree.
+
 ## Results
 
 Real runs, real numbers. Every row is either a saved artifact in this repo or

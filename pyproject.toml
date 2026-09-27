@@ -26,7 +26,15 @@ package-dir = {"" = "src"}
 where = ["src"]
 
 [tool.setuptools.package-data]
-throttle = ["prompts.jsonl", "warmup_prompts.jsonl"]
+throttle = [
+    "prompts.jsonl",
+    "warmup_prompts.jsonl",
+    "console/static/*",
+    "console/static/vendor/*",
+    "console/static/illustrations/*",
+    "console/docs/*.md",
+    "console/docs/*/*.md",
+]
 
 [project.optional-dependencies]
 # GuideLLM stays out of process. Its current supported Python range ends at
