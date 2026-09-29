@@ -2424,6 +2424,18 @@ def handle_check(args: argparse.Namespace) -> int:
         print(f"Saved as check {record['id']} in {path}")
         if not args.share:
             print(f"Share this result (no traffic): throttle check --share-id {record['id']}")
+        if (
+            not args.share
+            and not args.json_output
+            and args.fail_if_costlier is None
+            and comparison is not None
+            and comparison["verdict"] in (VERDICT_CHEAPER, VERDICT_COSTLIER)
+        ):
+            from .upgrade import maybe_nudge
+
+            nudge = maybe_nudge(directory)
+            if nudge:
+                print(nudge)
     if args.json_output:
         try:
             args.json_output.write_text(json.dumps(record, indent=2, sort_keys=True) + "\n")

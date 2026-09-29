@@ -74,7 +74,8 @@
     wrench: '<path d="M14.7 6.3a4 4 0 0 0-5.4 5.2L3 17.8V21h3.2l6.3-6.3a4 4 0 0 0 5.2-5.4l-2.6 2.6-2.4-.6-.6-2.4z"/>',
     terminal: '<rect x="3" y="4" width="18" height="16" rx="2"/><path d="M7 9l3 3-3 3M12 15h5"/>',
     receipt: '<path d="M6 3h12v18l-3-2-3 2-3-2-3 2z"/><path d="M9 8h6M9 12h6"/>',
-    clock: '<circle cx="12" cy="12" r="8"/><path d="M12 8v4l3 2"/>'
+    clock: '<circle cx="12" cy="12" r="8"/><path d="M12 8v4l3 2"/>',
+    upgrade: '<path d="M12 3l2.6 5.3 5.9.9-4.3 4.1 1 5.8L12 16.4 6.8 19.1l1-5.8L3.5 9.2l5.9-.9z"/>'
   };
   function icon(name) {
     return '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' + (I[name] || "") + "</svg>";
@@ -82,7 +83,8 @@
 
   var CONSOLE = [
     ["quickstart", "Quickstart", "quickstart"], ["checks", "Checks", "checks"], ["compare", "Compare", "compare"],
-    ["endpoints", "Endpoints", "endpoints"], ["ci", "CI Gate", "ci"], ["share", "Share", "share"], ["settings", "Settings", "settings"]
+    ["endpoints", "Endpoints", "endpoints"], ["ci", "CI Gate", "ci"], ["share", "Share", "share"], ["settings", "Settings", "settings"],
+    ["upgrade", "Upgrade", "upgrade"]
   ];
   var LEARN = [
     ["docs/getting-started/quickstart", "Getting Started", "rocket"], ["docs/concepts/noise-and-calibration", "Concepts", "book"],
@@ -344,6 +346,21 @@
     }).catch(fail);
   }
 
+  function pUpgrade() {
+    api("/api/upgrade").then(function (plans) {
+      function plan(key) {
+        var p = plans[key];
+        return '<div class="panel pad plan"><div class="plan-head"><div><h2 class="m0">' + esc(p.title) + '</h2><p class="small muted m0">' + esc(p.tag) + '</p></div>' +
+          '<span class="badge cheaper">' + esc(p.price) + '</span></div><p class="small muted">' + esc(p.note) + '</p><ul class="plan-list">' +
+          p.items.map(function (i) { return "<li>" + esc(i) + "</li>"; }).join("") + '</ul><div class="plan-qr"><img src="/api/qr.svg?target=' + key +
+          '" width="168" height="168" alt="QR code for ' + esc(p.url) + '"><div><p class="small muted m0b10">Scan with your phone, or open:</p><p class="m0b10"><a href="' + esc(p.url) +
+          '" target="_blank" rel="noopener">' + esc(p.url) + "</a></p>" + cmd(p.command) + "</div></div></div>";
+      }
+      show('<p class="eyebrow">Console</p><h1>Upgrade</h1><p class="lede">The CLI and this console stay free and local. Pro is for what repeats; the Cost Audit is done with you. QR codes are generated on this machine.</p>' +
+        '<div class="plans">' + plan("pro") + plan("audit") + "</div>");
+    }).catch(fail);
+  }
+
   function pDoc(slug) {
     Promise.all([api("/api/docs/" + slug), getNav()]).then(function (res) {
       var d = res[0], flat = [];
@@ -430,6 +447,7 @@
     else if (p === "ci") pCI();
     else if (p === "share") pShare();
     else if (p === "settings") pSettings();
+    else if (p === "upgrade") pUpgrade();
     else if (p.indexOf("docs/") === 0) pDoc(p.slice(5));
     else pQuickstart();
   }
