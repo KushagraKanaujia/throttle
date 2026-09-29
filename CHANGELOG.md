@@ -4,6 +4,8 @@ All notable changes to Throttle will be documented in this file.
 
 ## [Unreleased]
 
+## [0.5.1] - 2026-09-29
+
 ### Added
 - `throttle upgrade` (and `--audit`): what Throttle Pro and the $500 Cost Audit
   include, the link, and a QR code drawn in the terminal. Generated offline with
