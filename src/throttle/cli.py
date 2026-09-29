@@ -1004,6 +1004,19 @@ def build_parser() -> argparse.ArgumentParser:
     )
     add_check_arguments(check)
 
+    upgrade = subparsers.add_parser(
+        "upgrade",
+        help="Throttle Pro and the Cost Audit: what you get, with a QR code to scan",
+        description=(
+            "Prints what Throttle Pro (or, with --audit, the $500 Cost Audit) includes, the "
+            "link to get it, and a QR code for your phone. Generated offline; nothing is sent."
+        ),
+    )
+    upgrade.add_argument("--audit", action="store_true",
+                         help="the $500 Cost Audit (done with you in 2 weeks) instead of Pro")
+    upgrade.add_argument("--url-only", action="store_true", help="print only the link")
+    upgrade.add_argument("--no-qr", action="store_true", help="don't draw the QR code")
+
     ui = subparsers.add_parser(
         "ui",
         help="open the Throttle Console: your check history, verdicts and docs in a local web UI",
@@ -4727,6 +4740,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         return _handle_watch(args)
     if args.command == "check":
         return handle_check(args)
+    if args.command == "upgrade":
+        from .upgrade import handle_upgrade
+        return handle_upgrade(args)
     if args.command == "ui":
         from .check import history_dir as check_history_dir
         from .console import run_ui

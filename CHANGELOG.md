@@ -4,6 +4,16 @@ All notable changes to Throttle will be documented in this file.
 
 ## [Unreleased]
 
+### Added
+- `throttle upgrade` (and `--audit`): what Throttle Pro and the $500 Cost Audit
+  include, the link, and a QR code drawn in the terminal. Generated offline with
+  the vendored qrcodegen library (MIT, `throttle/_vendor/`).
+- Console **Upgrade** page with the same plans and locally generated QR codes.
+- After a calibrated CHEAPER or MORE EXPENSIVE verdict, `throttle check` prints
+  one line suggesting `throttle upgrade`, at most once per 24 hours. Off with
+  `THROTTLE_NO_NUDGE=1`, in CI, and with `--json`, `--share` or
+  `--fail-if-costlier`. No telemetry.
+
 ## [0.5.0] - 2026-09-27
 
 ### Added

@@ -46,6 +46,17 @@ It runs on 127.0.0.1, reads your check history (`~/.throttle/checks`, or
 internet. Verdicts come from the same code as `throttle check`, so the two
 always agree.
 
+## Pro and the Cost Audit (`throttle upgrade`)
+
+```sh
+throttle upgrade          # Throttle Pro: what's in it, the link, and a QR code to scan
+throttle upgrade --audit  # the $500 Cost Audit, done with you in 2 weeks
+```
+
+The QR code is generated on your machine; `--url-only` prints just the link
+and `--no-qr` skips the drawing. The console has the same page under
+**Upgrade**.
+
 ## Results
 
 Real runs, real numbers. Every row is either a saved artifact in this repo or
@@ -1422,6 +1433,13 @@ enter a manifest; accelerator fingerprints are stored only as SHA-256.
 (`throttle check` history is different: it is a local file that keeps each
 check's endpoint URL so it can compare checks of the same endpoint. It holds
 no keys, prompts or responses.)
+
+**No telemetry.** Throttle never phones home: it only sends requests to the
+endpoint you point it at. After a calibrated CHEAPER or MORE EXPENSIVE verdict,
+`throttle check` may print one line suggesting `throttle upgrade`, at most once
+every 24 hours. The only state is a timestamp file (`.upgrade-nudge`) in the
+check history directory. It's skipped with `--json`, `--share` and
+`--fail-if-costlier`, when `CI` is set, and entirely with `THROTTLE_NO_NUDGE=1`.
 
 These exit codes are for plan/smoke/benchmark/compare/golden. `throttle check`
 has its own (0, 1, 2, 4, 5), listed under

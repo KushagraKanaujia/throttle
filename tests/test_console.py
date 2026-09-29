@@ -212,3 +212,16 @@ def test_ui_parser_defaults_to_loopback() -> None:
     assert args.host == "127.0.0.1"
     assert args.port == 8787
     assert args.no_open is False
+
+
+def test_upgrade_plans_and_offline_qr_codes(client: Client) -> None:
+    plans = client.get("/api/upgrade").json()
+    assert plans["pro"]["url"] == "https://throttle-pro.com/upgrade"
+    assert plans["audit"]["url"] == "https://throttle-pro.com/audit/book"
+    for target in ("pro", "audit"):
+        response = client.get("/api/qr.svg", params={"target": target})
+        assert response.status_code == 200
+        assert response.headers["content-type"].startswith("image/svg+xml")
+        assert response.text.startswith("<svg") and "h1v1h-1z" in response.text
+    # Only the two fixed plan URLs can be encoded.
+    assert client.get("/api/qr.svg", params={"target": "https://evil.example"}).status_code == 422

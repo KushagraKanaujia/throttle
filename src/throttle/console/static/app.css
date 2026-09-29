@@ -190,3 +190,14 @@ tbody.static tr { cursor: default; } tbody.static tr:hover td { background: none
 
 .page:focus { outline: none; }
 pre.code.wrap { white-space: pre-wrap; word-break: break-all; }
+
+/* upgrade */
+.plans { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 24px; }
+.plan { display: flex; flex-direction: column; gap: 10px; }
+.plan-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
+.plan-list { margin: 0; padding-left: 18px; color: #c9cdd3; display: grid; gap: 6px; }
+.plan-qr { display: flex; gap: 18px; align-items: center; margin-top: 8px; flex-wrap: wrap; }
+.plan-qr img { border-radius: 10px; background: #fff; flex: none; }
+.plan-qr > div { min-width: 0; flex: 1 1 200px; }
+.plan-qr a { color: var(--accent); word-break: break-all; }
+@media (max-width: 900px) { .plans { grid-template-columns: minmax(0, 1fr); } }

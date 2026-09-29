@@ -322,6 +322,17 @@ def create_app(history_dir: Path, *, cwd: Path | None = None, allow_any_host: bo
             })
         return list(groups.values())
 
+    @app.get("/api/upgrade")
+    def upgrade_plans() -> dict[str, Any]:
+        from ..upgrade import PLANS
+        return PLANS
+
+    @app.get("/api/qr.svg", include_in_schema=False)
+    def qr(target: str = Query(..., pattern="^(pro|audit)$")) -> Response:
+        # Only the two fixed plan URLs can be encoded; nothing user-supplied.
+        from ..upgrade import PLANS, qr_svg
+        return Response(qr_svg(PLANS[target]["url"]), media_type="image/svg+xml")
+
     @app.get("/api/quickstart-status")
     def quickstart() -> list[dict[str, Any]]:
         records, _ = history.load()

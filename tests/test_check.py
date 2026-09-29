@@ -860,3 +860,37 @@ def test_a_throttle_upgrade_is_listed_as_a_change(history, monkeypatch, capsys):
     assert code == 0, out
     assert "throttle_version (the measuring tool): 0.0.1 -> " in out
     assert "nothing Throttle can see" not in out
+
+
+def test_upgrade_nudge_follows_a_calibrated_verdict_once(history, monkeypatch, capsys):
+    monkeypatch.delenv("THROTTLE_NO_NUDGE", raising=False)
+    monkeypatch.delenv("CI", raising=False)
+    for _ in range(3):  # three repeats calibrate run-to-run noise (2 df)
+        code, out = run_check(monkeypatch, capsys, FakeServer(constant(0.08)), "--config", "quant=none")
+        assert "throttle upgrade" not in out  # first check / NOT CALIBRATED: no nudge
+    code, out = run_check(monkeypatch, capsys, FakeServer(constant(0.01)), "--config", "quant=fp8")
+    assert "Verdict: CHEAPER" in out
+    assert "Want this checked on every deploy? `throttle upgrade`" in out
+    code, out = run_check(monkeypatch, capsys, FakeServer(constant(0.08)), "--config", "quant=none")
+    assert "Verdict: MORE EXPENSIVE" in out
+    assert "throttle upgrade" not in out  # once per 24 hours
+
+
+def test_upgrade_nudge_suppressed_by_env_json_and_ci_gate(history, monkeypatch, capsys, tmp_path):
+    monkeypatch.delenv("CI", raising=False)
+    for _ in range(3):
+        run_check(monkeypatch, capsys, FakeServer(constant(0.08)), "--config", "quant=none")
+    monkeypatch.setenv("THROTTLE_NO_NUDGE", "1")
+    code, out = run_check(monkeypatch, capsys, FakeServer(constant(0.01)), "--config", "quant=fp8")
+    assert "Verdict: CHEAPER" in out and "throttle upgrade" not in out
+    monkeypatch.delenv("THROTTLE_NO_NUDGE")
+    code, out = run_check(
+        monkeypatch, capsys, FakeServer(constant(0.08)), "--config", "quant=none",
+        "--json", str(tmp_path / "out.json"),
+    )
+    assert "Verdict: MORE EXPENSIVE" in out and "throttle upgrade" not in out
+    code, out = run_check(
+        monkeypatch, capsys, FakeServer(constant(0.01)), "--config", "quant=fp8",
+        "--fail-if-costlier", "0",
+    )
+    assert "Verdict: CHEAPER" in out and "throttle upgrade" not in out
