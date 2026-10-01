@@ -991,3 +991,39 @@ def test_checks_without_hit_counts_still_compare_by_length():
     assert round(shift["length_percent"], 1) == 40.0
     assert check_module.output_shift(old, record(410, hits=0))["changed"] is False
     assert check_module.output_shift({"workload": {}}, old) is None
+
+
+# ---------------------------------------------------------------------------
+# GPU count is a real cost. Measured on 2x MI300X: Qwen2.5-72B on 2 GPUs was
+# 1.56x faster but 28% more per token ($2.14 vs $1.67/M); judging the 2-GPU
+# check at the 1-GPU rate called it 36% CHEAPER.
+# ---------------------------------------------------------------------------
+
+
+def test_more_gpus_that_cost_more_per_token_are_more_expensive(history, monkeypatch, capsys):
+    for wall in (10.02, 9.99, 10.0):
+        run_clocked(monkeypatch, capsys, wall, "--gpus", "1", rate="2.00")
+    # Twice the GPUs (twice the $/hr), 1.6x faster: each token costs 25% more.
+    # At the 1-GPU rate it would look 37.5% cheaper.
+    code, out = run_clocked(monkeypatch, capsys, 6.25, "--gpus", "2", rate="4.00")
+    assert code == 0, out
+    assert "Verdict: MORE EXPENSIVE" in out
+    assert "CHEAPER" not in out
+    assert "GPUs: 1 -> 2" in out
+
+
+def test_gpu_count_is_read_from_a_gpus_config_value(history, monkeypatch, capsys):
+    for wall in (10.02, 9.99, 10.0):
+        run_clocked(monkeypatch, capsys, wall, "--config", "gpus=1", rate="2.00")
+    code, out = run_clocked(monkeypatch, capsys, 6.25, "--config", "gpus=2", rate="4.00")
+    assert "Verdict: MORE EXPENSIVE" in out, out
+
+
+def test_a_per_gpu_price_change_is_still_normalized(history, monkeypatch, capsys):
+    # Same 2 GPUs, only the typed per-GPU price changes: the verdict still
+    # judges measured throughput alone (unchanged here).
+    for wall in (10.02, 9.99, 10.0):
+        run_clocked(monkeypatch, capsys, wall, "--gpus", "2", rate="4.00")
+    code, out = run_clocked(monkeypatch, capsys, 10.0, "--gpus", "2", rate="6.00")
+    assert "Verdict: NO WINNER" in out, out
+    assert "measured change at the baseline's GPU rate" in out
