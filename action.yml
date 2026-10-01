@@ -83,7 +83,7 @@ inputs:
 
 outputs:
   verdict:
-    description: CHEAPER, MORE EXPENSIVE, NO WINNER, NOT CALIBRATED (includes the first check), or ERROR.
+    description: CHEAPER, MORE EXPENSIVE, NO WINNER, NOT CALIBRATED (includes the first check), OUTPUT CHANGED, or ERROR.
     value: ${{ steps.summary.outputs.verdict }}
   cost-per-million:
     description: Measured dollars per million tokens (headline metric, output tokens by default), unrounded.
