@@ -223,6 +223,10 @@ starts with a unique tag ('[run 482915 req 0012] ', run id recorded) so a
 prefix cache cannot serve repeats; --warm-cache resends identical prompts.
 Cold and warm checks are never compared (NO WINNER).
 
+OUTPUT CHANGED: the same prompts at temperature 0 got answers of a
+different length (more than 10%), or many more answers stopped at
+--max-tokens. A $/M change is then not trusted: read a few answers first.
+
 Exit codes:
   0  check done (cheaper, no winner, first check, or not calibrated
      without --fail-if-costlier)
@@ -231,7 +235,7 @@ Exit codes:
   4  --fail-if-costlier tripped: calibrated MORE EXPENSIVE by >= PCT
      (measured change, at the baseline's GPU rate)
   5  --fail-if-costlier given but the verdict is NOT CALIBRATED (run-to-run
-     noise not measured yet); treat it as a warning or a failure
+     noise not measured yet) or OUTPUT CHANGED; treat it as a warning or a failure
 ```
 
 </details>

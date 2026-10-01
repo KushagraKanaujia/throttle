@@ -106,9 +106,9 @@ EXIT_FAILED = 1
 EXIT_USAGE = 2
 EXIT_COSTLIER = 4
 # Only with --fail-if-costlier: the comparison could not be judged, because
-# run-to-run noise has not been measured yet (NOT CALIBRATED) or because the
-# baseline ran a different workload (NO WINNER, not comparable). CI can treat
-# it as a warning.
+# run-to-run noise has not been measured yet (NOT CALIBRATED), because the
+# baseline ran a different workload (NO WINNER, not comparable), or because the
+# server's answers changed shape (OUTPUT CHANGED). CI can treat it as a warning.
 EXIT_NOT_CALIBRATED = 5
 
 # Run-to-run calibration. Degrees of freedom of the pooled run-to-run SD:
@@ -123,6 +123,18 @@ VERDICT_CHEAPER = "CHEAPER"
 VERDICT_COSTLIER = "MORE EXPENSIVE"
 VERDICT_NO_WINNER = "NO WINNER"
 VERDICT_NOT_CALIBRATED = "NOT CALIBRATED"
+# The server's answers changed shape, so a $/M difference may come from broken
+# or padded output rather than a faster server. Measured on a real MI300X:
+# vLLM's on-the-fly FP8 on Qwen2.5-32B looked 41% cheaper while one answer was
+# 256 tokens of "!!!!" and every request ran to max_tokens (8,192 output tokens
+# per block vs 6,883 for BF16). Pre-quantized FP8 checkpoints that answered
+# correctly moved output length by under 2%.
+VERDICT_OUTPUT_CHANGED = "OUTPUT CHANGED"
+# At temperature 0 with the same prompts, an unchanged server returns the same
+# answers, so output length per request moves only when the answers change.
+OUTPUT_SHIFT_PERCENT = 10.0
+# Share of requests that stopped at max_tokens (finish_reason "length").
+MAX_TOKENS_HIT_SHIFT_POINTS = 20.0
 
 NOT_CALIBRATED_MESSAGE = (
     "Verdict: NOT CALIBRATED \u2014 run-to-run noise unknown. Two checks at "
@@ -324,6 +336,10 @@ CHECK_EPILOG = (
     "prefix cache cannot serve repeats; --warm-cache resends identical prompts.\n"
     "Cold and warm checks are never compared (NO WINNER).\n"
     "\n"
+    "OUTPUT CHANGED: the same prompts at temperature 0 got answers of a\n"
+    "different length (more than 10%), or many more answers stopped at\n"
+    "--max-tokens. A $/M change is then not trusted: read a few answers first.\n"
+    "\n"
     "Exit codes:\n"
     "  0  check done (cheaper, no winner, first check, or not calibrated\n"
     "     without --fail-if-costlier)\n"
@@ -332,7 +348,7 @@ CHECK_EPILOG = (
     "  4  --fail-if-costlier tripped: calibrated MORE EXPENSIVE by >= PCT\n"
     "     (measured change, at the baseline's GPU rate)\n"
     "  5  --fail-if-costlier given but the verdict is NOT CALIBRATED (run-to-run\n"
-    "     noise not measured yet); treat it as a warning or a failure"
+    "     noise not measured yet) or OUTPUT CHANGED; treat it as a warning or a failure"
 )
 
 
@@ -880,7 +896,9 @@ async def _send(
     model: str,
     messages: Sequence[Mapping[str, Any]],
     max_tokens: int,
-) -> tuple[int, int]:
+) -> tuple[int, int, bool]:
+    """Send one request; return prompt tokens, completion tokens, and whether
+    the answer stopped at max_tokens (finish_reason "length")."""
     try:
         response = await client.post(
             chat_url,
@@ -913,7 +931,8 @@ async def _send(
         snippet = response.text[:200].replace("\n", " ")
         raise CheckError(f"endpoint returned HTTP {response.status_code}: {snippet}")
     try:
-        usage = response.json().get("usage")
+        body = response.json()
+        usage = body.get("usage")
     except (ValueError, AttributeError):
         raise CheckError("endpoint returned a response that is not JSON") from None
     if not isinstance(usage, dict):
@@ -928,7 +947,10 @@ async def _send(
                 f"endpoint usage.{name} is missing or invalid ({value!r}); "
                 "Throttle does not guess token counts"
             )
-    return prompt_tokens, completion_tokens
+    choices = body.get("choices")
+    first = choices[0] if isinstance(choices, list) and choices else None
+    hit_max_tokens = isinstance(first, dict) and first.get("finish_reason") == "length"
+    return prompt_tokens, completion_tokens, hit_max_tokens
 
 
 async def _run_block(
@@ -940,14 +962,14 @@ async def _run_block(
     requests: int,
     concurrency: int,
     max_tokens: int,
-) -> tuple[int, int, float]:
+) -> tuple[int, int, float, int]:
     semaphore = asyncio.Semaphore(concurrency)
     stop = asyncio.Event()
 
-    async def one(index: int) -> tuple[int, int]:
+    async def one(index: int) -> tuple[int, int, bool]:
         async with semaphore:
             if stop.is_set():  # an earlier request failed; send nothing more
-                return 0, 0
+                return 0, 0, False
             try:
                 return await _send(
                     client, chat_url, headers, model, prompts[index % len(prompts)], max_tokens
@@ -961,7 +983,12 @@ async def _run_block(
     # outlives the client or is cancelled mid-connect (#22).
     results = await gather_or_drain((one(index) for index in range(requests)), stop)
     wall = time.perf_counter() - started
-    return sum(r[0] for r in results), sum(r[1] for r in results), wall
+    return (
+        sum(r[0] for r in results),
+        sum(r[1] for r in results),
+        wall,
+        sum(1 for r in results if r[2]),
+    )
 
 
 def new_run_id() -> str:
@@ -1213,6 +1240,63 @@ def run_to_run_noise(
     }
 
 
+def output_shape(record: Mapping[str, Any]) -> dict[str, Any] | None:
+    """Mean output tokens per request, and the share of requests that stopped
+    at max_tokens (None for checks recorded before Throttle tracked it)."""
+
+    blocks = record.get("blocks")
+    per_block = workload_value(record, "requests_per_block")
+    if not isinstance(blocks, list) or not blocks or not _is_number(per_block) or per_block <= 0:
+        return None
+    if not all(isinstance(b, dict) and _is_number(b.get("output_tokens")) for b in blocks):
+        return None
+    requests = len(blocks) * per_block
+    hits = [b.get("max_tokens_hits") for b in blocks]
+    return {
+        "output_tokens_per_request": sum(b["output_tokens"] for b in blocks) / requests,
+        "max_tokens_hit_percent": (
+            100.0 * sum(hits) / requests if all(_is_number(h) for h in hits) else None
+        ),
+    }
+
+
+def output_shift(
+    previous: Mapping[str, Any], current: Mapping[str, Any]
+) -> dict[str, Any] | None:
+    """How much the answers' shape moved between two checks of one workload."""
+
+    before, after = output_shape(previous), output_shape(current)
+    if before is None or after is None:
+        return None
+    length_pct = relative_delta_percent(
+        after["output_tokens_per_request"], before["output_tokens_per_request"]
+    )
+    hit_points = None
+    if before["max_tokens_hit_percent"] is not None and after["max_tokens_hit_percent"] is not None:
+        hit_points = after["max_tokens_hit_percent"] - before["max_tokens_hit_percent"]
+    reasons = []
+    if length_pct is not None and abs(length_pct) > OUTPUT_SHIFT_PERCENT:
+        reasons.append(
+            f"output length per request moved {length_pct:+.1f}% "
+            f"({before['output_tokens_per_request']:.1f} -> "
+            f"{after['output_tokens_per_request']:.1f} tokens; more than "
+            f"{OUTPUT_SHIFT_PERCENT:g}%)"
+        )
+    if hit_points is not None and hit_points >= MAX_TOKENS_HIT_SHIFT_POINTS:
+        reasons.append(
+            f"requests stopping at max_tokens rose from "
+            f"{before['max_tokens_hit_percent']:.0f}% to {after['max_tokens_hit_percent']:.0f}%"
+        )
+    return {
+        "before": before,
+        "after": after,
+        "length_percent": length_pct,
+        "max_tokens_hit_points": hit_points,
+        "changed": bool(reasons),
+        "reasons": reasons,
+    }
+
+
 def compare_checks(
     previous: Mapping[str, Any],
     current: Mapping[str, Any],
@@ -1314,6 +1398,19 @@ def compare_checks(
     overlap = intervals_overlap(left, right)
     noise = run_to_run_noise(history, previous, current, metric)
     comparison["noise"] = noise
+    shift = output_shift(previous, current)
+    comparison["output_shift"] = shift
+    if shift is not None and shift["changed"]:
+        # Same prompts at temperature 0 should give the same answers. When
+        # they changed shape, $/M may be measuring broken or padded output.
+        comparison["verdict"] = VERDICT_OUTPUT_CHANGED
+        comparison["reason"] = (
+            "the server's answers changed: " + "; and ".join(shift["reasons"])
+            + ". At temperature 0 the same prompts should get the same answers, so "
+            "this $/M difference may come from broken or padded output, not a faster "
+            "server. Read a few answers from both configs before trusting it"
+        )
+        return comparison
     if age is None or abs(age) > CALIBRATION_WINDOW_HOURS * 3600:
         comparison["verdict"] = VERDICT_NOT_CALIBRATED
         age_text = _age_text(age) if age is not None else "of unknown age"
@@ -2140,7 +2237,7 @@ def handle_check(args: argparse.Namespace) -> int:
                 # (tagged) prompts than the tagged prompts share with each
                 # other: the system message and chat template only.
                 for index in range(probes):
-                    prompt_tokens, _ = await _send(
+                    prompt_tokens, _, _ = await _send(
                         client, chat_url, headers, args.model, prompts[index],
                         TAG_PROBE_MAX_TOKENS,
                     )
@@ -2153,7 +2250,7 @@ def handle_check(args: argparse.Namespace) -> int:
             tag_total = 0
             blocks: list[dict[str, Any]] = []
             for block_index in range(args.blocks):
-                sent_input, output_tokens, wall = await _run_block(
+                sent_input, output_tokens, wall, max_tokens_hits = await _run_block(
                     client, chat_url, headers, args.model, plan[block_index],
                     args.requests_per_block, args.concurrency, args.max_tokens,
                 )
@@ -2183,6 +2280,8 @@ def handle_check(args: argparse.Namespace) -> int:
                         "input_tokens": input_tokens,
                         "tag_input_tokens": tag_tokens,
                         "output_tokens": output_tokens,
+                        # Requests whose answer stopped at max_tokens.
+                        "max_tokens_hits": max_tokens_hits,
                         "wall_clock_seconds": wall,
                         "dollars_per_million": {k: costs[k] for k in METRIC_LABELS},
                         "gpu_dollars": costs["gpu_dollars"],
@@ -2394,6 +2493,11 @@ def handle_check(args: argparse.Namespace) -> int:
                     "  monthly not projected: with NO WINNER the difference is not "
                     "distinguishable from noise"
                 )
+            elif comparison["verdict"] == VERDICT_OUTPUT_CHANGED:
+                print(
+                    "  monthly not projected: the answers changed, so the $/M "
+                    "difference is not a verified saving"
+                )
             else:
                 monthly = delta * args.monthly_tokens / 1_000_000
                 rate_note = (
@@ -2474,6 +2578,18 @@ def handle_check(args: argparse.Namespace) -> int:
             + "), so --fail-if-costlier could not judge this change. Rerun with the "
             "baseline's workload options (or pass --against a check that used them). "
             f"Exit code {EXIT_NOT_CALIBRATED} (treat as a warning or a failure).",
+            file=sys.stderr,
+        )
+        return EXIT_NOT_CALIBRATED
+    if (
+        args.fail_if_costlier is not None
+        and comparison is not None
+        and comparison["verdict"] == VERDICT_OUTPUT_CHANGED
+    ):
+        print(
+            "WARNING: OUTPUT CHANGED, so --fail-if-costlier could not judge this "
+            "change: the server's answers changed shape. Check the output, then "
+            f"re-baseline. Exit code {EXIT_NOT_CALIBRATED} (treat as a warning or a failure).",
             file=sys.stderr,
         )
         return EXIT_NOT_CALIBRATED

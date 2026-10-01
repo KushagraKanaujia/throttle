@@ -207,7 +207,7 @@ above $36/hr, raise it with `extra-args: --max-estimated-spend 10`.
 
 | output | description |
 |---|---|
-| `verdict` | `CHEAPER`, `MORE EXPENSIVE`, `NO WINNER`, `NOT CALIBRATED` (includes the first check), or `ERROR` (Throttle wrote no result). |
+| `verdict` | `CHEAPER`, `MORE EXPENSIVE`, `NO WINNER`, `NOT CALIBRATED` (includes the first check), `OUTPUT CHANGED` (the answers changed shape; see the job summary), or `ERROR` (Throttle wrote no result). |
 | `cost-per-million` | Measured $ per million tokens of the headline metric (output tokens unless `--metric` is passed), unrounded. |
 | `change-percent` | Measured change vs the baseline, in percent, at the baseline's GPU rate (what the verdict judges). Empty when there is no comparable baseline. |
 | `exit-code` | Throttle's raw exit code: 0, 1, 2, 4 or 5. |

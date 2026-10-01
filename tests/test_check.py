@@ -44,7 +44,9 @@ class FakeServer:
         max_model_len: int = 4096,
         extra_models: tuple[str, ...] = (),
         fixed_usage: tuple[int, int] | None = None,
+        finish_reason: str | None = None,
     ) -> None:
+        self.finish_reason = finish_reason
         self.extra_models = extra_models
         self.fixed_usage = fixed_usage
         self.delay_for_block = delay_for_block
@@ -101,6 +103,8 @@ class FakeServer:
                     "completion_tokens": completion_tokens,
                     "total_tokens": prompt_tokens + completion_tokens,
                 }
+            if self.finish_reason is not None:
+                payload["choices"][0]["finish_reason"] = self.finish_reason
             if not self.include_usage:
                 payload.pop("usage")
             return httpx.Response(200, json=payload)
@@ -894,3 +898,96 @@ def test_upgrade_nudge_suppressed_by_env_json_and_ci_gate(history, monkeypatch, 
         "--fail-if-costlier", "0",
     )
     assert "Verdict: CHEAPER" in out and "throttle upgrade" not in out
+
+
+# ---------------------------------------------------------------------------
+# OUTPUT CHANGED: a cheaper $/M is not a saving when the answers changed shape.
+# Real case (MI300X, vLLM on-the-fly FP8, Qwen2.5-32B): 41% "cheaper" while
+# answers were "!!!!" and every request ran to max_tokens.
+# ---------------------------------------------------------------------------
+
+
+def _calibrate(monkeypatch, capsys, usage=(20, 100), finish_reason=None):
+    for _ in range(3):  # three repeats calibrate run-to-run noise (2 df)
+        code, out = run_check(
+            monkeypatch, capsys,
+            FakeServer(constant(0.08), fixed_usage=usage, finish_reason=finish_reason),
+            "--config", "quant=none",
+        )
+        assert code == 0, out
+
+
+def test_longer_answers_are_output_changed_not_cheaper(history, monkeypatch, capsys):
+    _calibrate(monkeypatch, capsys)
+    # Faster AND 30% more output per request: $/M drops a lot, but the answers changed.
+    code, out = run_check(
+        monkeypatch, capsys, FakeServer(constant(0.01), fixed_usage=(20, 130)),
+        "--config", "quant=fp8", "--monthly-tokens", "1B",
+    )
+    assert code == 0, out
+    assert "Verdict: OUTPUT CHANGED" in out
+    assert "Verdict: CHEAPER" not in out
+    assert "output length per request moved +30.0% (100.0 -> 130.0 tokens" in out
+    assert "monthly not projected: the answers changed" in out
+
+
+def test_requests_hitting_max_tokens_are_output_changed(history, monkeypatch, capsys):
+    _calibrate(monkeypatch, capsys, finish_reason="stop")
+    # Same length, but every answer now stops at max_tokens.
+    code, out = run_check(
+        monkeypatch, capsys,
+        FakeServer(constant(0.01), fixed_usage=(20, 100), finish_reason="length"),
+        "--config", "quant=fp8",
+    )
+    assert code == 0, out
+    assert "Verdict: OUTPUT CHANGED" in out
+    assert "requests stopping at max_tokens rose from 0% to 100%" in out
+
+
+def test_output_changed_does_not_pass_the_ci_gate(history, monkeypatch, capsys):
+    _calibrate(monkeypatch, capsys)
+    code, out = run_check(
+        monkeypatch, capsys, FakeServer(constant(0.01), fixed_usage=(20, 160)),
+        "--config", "quant=fp8", "--fail-if-costlier", "0",
+    )
+    assert code == check_module.EXIT_NOT_CALIBRATED, out
+    assert "WARNING: OUTPUT CHANGED" in out
+
+
+def test_same_answers_still_get_a_cheaper_verdict(history, monkeypatch, capsys):
+    _calibrate(monkeypatch, capsys, finish_reason="stop")
+    # 5% longer (under the 10% threshold) and no max_tokens stops: a real saving.
+    code, out = run_check(
+        monkeypatch, capsys,
+        FakeServer(constant(0.01), fixed_usage=(20, 105), finish_reason="stop"),
+        "--config", "quant=fp8",
+    )
+    assert code == 0, out
+    assert "Verdict: CHEAPER" in out
+    assert "OUTPUT CHANGED" not in out
+
+
+def test_max_tokens_hits_are_recorded_per_block(history, monkeypatch, capsys):
+    code, out = run_check(
+        monkeypatch, capsys,
+        FakeServer(constant(0.01), fixed_usage=(20, 100), finish_reason="length"),
+    )
+    assert code == 0, out
+    records, _ = check_module.load_history(history)
+    assert [b["max_tokens_hits"] for b in records[-1]["blocks"]] == [REQUESTS_PER_BLOCK] * 5
+
+
+def test_checks_without_hit_counts_still_compare_by_length():
+    def record(output_per_block, hits=None):
+        blocks = [{"output_tokens": output_per_block} for _ in range(5)]
+        if hits is not None:
+            for block in blocks:
+                block["max_tokens_hits"] = hits
+        return {"blocks": blocks, "workload": {"requests_per_block": 4}}
+
+    old = record(400)  # recorded before Throttle counted max_tokens stops
+    shift = check_module.output_shift(old, record(560, hits=4))
+    assert shift["changed"] and shift["max_tokens_hit_points"] is None
+    assert round(shift["length_percent"], 1) == 40.0
+    assert check_module.output_shift(old, record(410, hits=0))["changed"] is False
+    assert check_module.output_shift({"workload": {}}, old) is None
