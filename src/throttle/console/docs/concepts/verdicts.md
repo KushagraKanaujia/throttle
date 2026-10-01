@@ -15,6 +15,7 @@ Every `throttle check` after the first compares with a baseline (the latest chec
 ## Rules that keep it honest
 
 - **The GPU rate alone is never a verdict.** $/M scales with the assumed rate, so a check with a different rate is first put on the baseline's rate; the rate-driven part is reported separately.
+- **More GPUs are a real cost.** The per-GPU price is your assumption, but the GPU count (`--gpus N`, or a `gpus` `--config` value) is part of the config. Going from 1 GPU to 2 doubles the hourly cost for real, so the verdict counts it. Measured on 2x MI300X: Qwen2.5-72B on 2 GPUs was 1.56x faster but cost 28% more per token ($2.14 vs $1.67/M), a MORE EXPENSIVE verdict, not CHEAPER.
 - **Different workloads are never ranked.** Prompts, requests per block, concurrency, max tokens and prompt cache mode must match.
 - **The check being judged is never part of its own calibration.**
 - **A cheaper token is not a saving if the answers broke.** On an MI300X, vLLM's on-the-fly FP8 made Qwen2.5-32B look 41% cheaper while one answer was 256 tokens of "!!!!" and every request ran to max tokens (output per request +18%). Pre-quantized FP8 checkpoints that answered correctly moved output length by under 3%. That gap is what OUTPUT CHANGED catches. It does not judge answer quality itself, only that the answers changed.
