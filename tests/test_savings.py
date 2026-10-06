@@ -18,6 +18,14 @@ import throttle.savings as savings_module
 from throttle.cli import main
 
 T0 = datetime(2026, 10, 1, 12, 0, tzinfo=timezone.utc)
+
+
+def flat(out: str) -> str:
+    """The statement with panel borders removed and wrapped lines rejoined."""
+
+    return " ".join(
+        " ".join(line.strip().strip("│|").split()) for line in out.splitlines()
+    )
 METRICS_URL = "http://127.0.0.1:8000/metrics"
 
 
@@ -296,7 +304,7 @@ def test_data_parallel_engines_are_summed(history, tmp_path, monkeypatch, capsys
     )
     assert code == 0, err
     assert "500,000,000  [MEASURED]" in out
-    assert "summed over 2 series with model_name=qwen-32b" in out
+    assert "summed over 2 series with model_name=qwen-32b" in flat(out)
     assert "Verified savings (conservative): $190.00" in out
 
 
@@ -340,7 +348,7 @@ def test_new_series_counts_from_zero_and_is_noted(history, tmp_path, monkeypatch
     )
     assert code == 0, err
     assert "150,000,000  [MEASURED]" in out
-    assert "note: 1 series new since the snapshot, counted from 0" in out
+    assert "note: 1 series new since the snapshot, counted from 0" in flat(out)
 
 
 def test_other_models_series_are_not_counted(history, tmp_path, monkeypatch, capsys):
@@ -351,7 +359,7 @@ def test_other_models_series_are_not_counted(history, tmp_path, monkeypatch, cap
     )
     assert code == 0, err
     assert "40,000,000  [MEASURED]" in out
-    assert "summed over 1 series" in out
+    assert "summed over 1 series" in flat(out)
 
 
 def test_no_series_for_the_model_is_refused(history, tmp_path, monkeypatch, capsys):

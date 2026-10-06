@@ -1,0 +1,35 @@
+----- BEGIN THROTTLE RESULTS (markdown) -----
+## Throttle check: mock-model
+
+| | |
+|---|---|
+| Throttle version | <VERSION> |
+| Engine | vLLM (from /v1/models) |
+| GPU | not given (add --config gpu=NAME) |
+| Model | mock-model |
+| GPU hourly rate | $2.00/hr (ASSUMED, user-supplied) |
+| Workload | 5 blocks x 4 requests, concurrency 2, max 64 output tokens, temperature 0, 8 built-in prompts (sha256 787fc93d62e1) |
+| Prompt cache | cold (unique prompt per request) |
+| Label | after |
+| Check | 20261001T120300Z-37c78f81 (2026-10-01) |
+
+**Result:** $2.68 per million output tokens (95% CI $2.48 to $2.88, 5 blocks) [MEASURED]
+
+**Compared with** check 20261001T120200Z-e291136b:
+
+- before: $5.37/M output tokens (95% CI $4.87 to $5.87)
+- after: $2.68/M output tokens (95% CI $2.48 to $2.88)
+- change: -50.1%
+- noise floor: calibrated: bound 11.6% (t x sqrt(2) x 1.9% run-to-run SD, 2 df)
+- **Verdict: CHEAPER**, the -50.1% change is larger than the run-to-run noise bound (11.6% = t x sqrt(2) x 1.9% run-to-run SD, 2 df) and the 95% confidence intervals do not overlap
+
+**What changed in config:**
+
+- `config.quant`: none -> fp8
+- `label`: before -> after
+
+_Shared with `throttle check --share`. No URLs, hostnames, IPs or keys are included; config values that look like secrets are masked._
+----- END THROTTLE RESULTS -----
+
+Open a pre-filled GitHub issue (you review it and click Submit yourself):
+  https://github.com/KushagraKanaujia/throttle/issues/new?template=share-results.yml&title=%5BResults%5D%20mock-model%3A%20CHEAPER&engine=vLLM%20%28from%20%2Fv1%2Fmodels%29&gpu=not%20given%20%28add%20--config%20gpu%3DNAME%29&model=mock-model&verdict=CHEAPER&summary=%23%23%20Throttle%20check%3A%20mock-model%0A%0A%7C%20%7C%20%7C%0A%7C---%7C---%7C%0A%7C%20Throttle%20version%20%7C%20<VERSION>%20%7C%0A%7C%20Engine%20%7C%20vLLM%20%28from%20%2Fv1%2Fmodels%29%20%7C%0A%7C%20GPU%20%7C%20not%20given%20%28add%20--config%20gpu%3DNAME%29%20%7C%0A%7C%20Model%20%7C%20mock-model%20%7C%0A%7C%20GPU%20hourly%20rate%20%7C%20%242.00%2Fhr%20%28ASSUMED%2C%20user-supplied%29%20%7C%0A%7C%20Workload%20%7C%205%20blocks%20x%204%20requests%2C%20concurrency%202%2C%20max%2064%20output%20tokens%2C%20temperature%200%2C%208%20built-in%20prompts%20%28sha256%20787fc93d62e1%29%20%7C%0A%7C%20Prompt%20cache%20%7C%20cold%20%28unique%20prompt%20per%20request%29%20%7C%0A%7C%20Label%20%7C%20after%20%7C%0A%7C%20Check%20%7C%2020261001T120300Z-37c78f81%20%282026-10-01%29%20%7C%0A%0A%2A%2AResult%3A%2A%2A%20%242.68%20per%20million%20output%20tokens%20%2895%25%20CI%20%242.48%20to%20%242.88%2C%205%20blocks%29%20%5BMEASURED%5D%0A%0A%2A%2ACompared%20with%2A%2A%20check%2020261001T120200Z-e291136b%3A%0A%0A-%20before%3A%20%245.37%2FM%20output%20tokens%20%2895%25%20CI%20%244.87%20to%20%245.87%29%0A-%20after%3A%20%242.68%2FM%20output%20tokens%20%2895%25%20CI%20%242.48%20to%20%242.88%29%0A-%20change%3A%20-50.1%25%0A-%20noise%20floor%3A%20calibrated%3A%20bound%2011.6%25%20%28t%20x%20sqrt%282%29%20x%201.9%25%20run-to-run%20SD%2C%202%20df%29%0A-%20%2A%2AVerdict%3A%20CHEAPER%2A%2A%2C%20the%20-50.1%25%20change%20is%20larger%20than%20the%20run-to-run%20noise%20bound%20%2811.6%25%20%3D%20t%20x%20sqrt%282%29%20x%201.9%25%20run-to-run%20SD%2C%202%20df%29%20and%20the%2095%25%20confidence%20intervals%20do%20not%20overlap%0A%0A%2A%2AWhat%20changed%20in%20config%3A%2A%2A%0A%0A-%20%60config.quant%60%3A%20none%20-%3E%20fp8%0A-%20%60label%60%3A%20before%20-%3E%20after%0A%0A_Shared%20with%20%60throttle%20check%20--share%60.%20No%20URLs%2C%20hostnames%2C%20IPs%20or%20keys%20are%20included%3B%20config%20values%20that%20look%20like%20secrets%20are%20masked._

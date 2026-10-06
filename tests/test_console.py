@@ -8,6 +8,8 @@ NOT CALIBRATED, NO WINNER, CHEAPER (-35.9%), NOT CALIBRATED.
 
 from __future__ import annotations
 
+import json
+
 import shutil
 from pathlib import Path
 
@@ -216,12 +218,24 @@ def test_ui_parser_defaults_to_loopback() -> None:
 
 def test_upgrade_plans_and_offline_qr_codes(client: Client) -> None:
     plans = client.get("/api/upgrade").json()
-    assert plans["pro"]["url"] == "https://throttle-pro.com/upgrade"
-    assert plans["audit"]["url"] == "https://throttle-pro.com/audit/book"
-    for target in ("pro", "audit"):
+    assert list(plans) == ["pilot"]
+    pilot = plans["pilot"]
+    assert pilot["url"] == "https://throttle-pro.com"
+    assert pilot["email"] == "kushthrottle@gmail.com" and pilot["subject"] == "Throttle pilot"
+    assert pilot["price"] == "Free for 2 weeks"
+    assert "20% of verified monthly savings" in pilot["note"] and "$500/month floor" in pilot["note"]
+    assert "5 design partners" in pilot["note"]
+    text = json.dumps(plans)
+    for retired in ("$19", "Cost Audit", "early access", "No savings guarantee", "one-time"):
+        assert retired not in text
+    # "pro" and "audit" are old targets: still served, and they encode the pilot URL.
+    svgs = set()
+    for target in ("pilot", "pro", "audit"):
         response = client.get("/api/qr.svg", params={"target": target})
         assert response.status_code == 200
         assert response.headers["content-type"].startswith("image/svg+xml")
         assert response.text.startswith("<svg") and "h1v1h-1z" in response.text
-    # Only the two fixed plan URLs can be encoded.
+        svgs.add(response.text)
+    assert len(svgs) == 1
+    # Only the fixed pilot URL can be encoded.
     assert client.get("/api/qr.svg", params={"target": "https://evil.example"}).status_code == 422

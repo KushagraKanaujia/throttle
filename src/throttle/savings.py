@@ -31,6 +31,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Mapping
 
+from . import style as style_module
 from .check import (
     EXIT_FAILED,
     EXIT_OK,
@@ -449,42 +450,53 @@ def _dpm_text(dpm: Mapping[str, Any]) -> str:
             f"{_money(dpm['ci_high'])})")
 
 
-def format_statement(statement: Mapping[str, Any]) -> str:
+def format_statement(statement: Mapping[str, Any], st: "style_module.Style | None" = None) -> str:
+    """Human statement: the conservative $ figure as the headline, in a panel.
+
+    Every field of the statement is printed; the JSON form (--json) is separate
+    and never styled.
+    """
+
+    st = style_module.Style() if st is None else st
     base, cand = statement["baseline"], statement["candidate"]
     tokens, savings = statement["tokens"], statement["savings"]
-    lines = [
-        "Throttle verified-savings statement",
-        f"  period      {statement['period'] or '(not stated; pass --period-label)'}",
-        f"  model       {base['model']}",
-        f"  metric      {statement['metric_label']} (the primary metric of these checks)",
+    indent = " " * 12
+    rows: list[Any] = [
+        "Verified savings (conservative): "
+        + st.paint(_money(savings["conservative_usd"]), "1", "32"),
+        (f"= ({_money(base['dollars_per_million']['ci_low'])} baseline CI low - "
+         f"{_money(cand['dollars_per_million']['ci_high'])} candidate CI high) "
+         f"x {tokens['count']:,} / 1e6", ("2",), "  "),
+        (f"Point estimate (not the verified figure): {_money(savings['point_estimate_usd'])}", ("2",)),
+        "",
+        f"verdict     {st.verdict(statement['verdict'])} (re-judged)",
+        (f"{indent}{statement['verdict_reason']}", (), indent),
+        (f"period      {statement['period'] or '(not stated; pass --period-label)'}", ()),
+        (f"model       {base['model']}", ()),
+        (f"metric      {statement['metric_label']} (the primary metric of these checks)", (), indent),
         *(
-            [f"  workload    {_shape_text(statement['workload_shape'])}"]
+            [(f"workload    {_shape_text(statement['workload_shape'])}", (), indent)]
             if statement.get("workload_shape") else []
         ),
-        f"  baseline    {base['check_id']}  {base['gpu_count']} GPU(s)  {_config_text(base)}",
-        f"              {_dpm_text(base['dollars_per_million'])}  [MEASURED]",
-        f"  candidate   {cand['check_id']}  {cand['gpu_count']} GPU(s)  {_config_text(cand)}",
-        f"              {_dpm_text(cand['dollars_per_million'])}  [MEASURED]",
+        (f"baseline    {base['check_id']}  {base['gpu_count']} GPU(s)  {_config_text(base)}", (), indent),
+        (f"{indent}{_dpm_text(base['dollars_per_million'])}  [MEASURED]", (), indent),
+        (f"candidate   {cand['check_id']}  {cand['gpu_count']} GPU(s)  {_config_text(cand)}", (), indent),
+        (f"{indent}{_dpm_text(cand['dollars_per_million'])}  [MEASURED]", (), indent),
     ]
     if statement["rate_factor"] != 1.0:
-        lines.append(
-            f"              (recorded {_dpm_text(cand['dollars_per_million_recorded'])}; "
-            "shown at the baseline's per-GPU rate)"
-        )
-    lines += [
-        f"  verdict     {statement['verdict']} (re-judged): {statement['verdict_reason']}",
-        f"  tokens      {tokens['count']:,}  [{tokens['source']}]"
-        + (f"  {tokens['detail']}" if tokens.get("detail") else ""),
-        *([f"              note: {tokens['new_series_note']}"] if tokens.get("new_series_note") else []),
-        "",
-        f"  Verified savings (conservative): {_money(savings['conservative_usd'])}",
-        f"    = ({_money(base['dollars_per_million']['ci_low'])} baseline CI low - "
-        f"{_money(cand['dollars_per_million']['ci_high'])} candidate CI high) "
-        f"x {tokens['count']:,} / 1e6",
-        f"  Point estimate (not the verified figure): {_money(savings['point_estimate_usd'])}",
-        "",
-        "  Assumptions",
-        *(f"    - {item}" for item in statement["assumptions"]),
+        rows.append((
+            f"{indent}(recorded {_dpm_text(cand['dollars_per_million_recorded'])}; "
+            "shown at the baseline's per-GPU rate)", (), indent
+        ))
+    rows.append((f"tokens      {tokens['count']:,}  [{tokens['source']}]", ()))
+    if tokens.get("detail"):
+        rows.append((f"{indent}{tokens['detail']}", (), indent))
+    if tokens.get("new_series_note"):
+        rows.append((f"{indent}note: {tokens['new_series_note']}", (), indent))
+    lines = [
+        st.panel(rows, title="Verified savings"),
+        st.bold("Assumptions"),
+        *(f"  - {item}" for item in statement["assumptions"]),
     ]
     return "\n".join(lines)
 

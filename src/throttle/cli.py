@@ -1016,14 +1016,15 @@ def build_parser() -> argparse.ArgumentParser:
 
     upgrade = subparsers.add_parser(
         "upgrade",
-        help="Throttle Pro and the Cost Audit: what you get, with a QR code to scan",
+        help="the Throttle Pilot: we find and prove savings on your agent workload",
         description=(
-            "Prints what Throttle Pro (or, with --audit, the $500 Cost Audit) includes, the "
-            "link to get it, and a QR code for your phone. Generated offline; nothing is sent."
+            "Prints the Throttle Pilot terms (free for 2 weeks, then 20% of verified "
+            "monthly savings, $500/month floor), how to reach us, and a QR code for your "
+            "phone. Generated offline; nothing is sent."
         ),
     )
-    upgrade.add_argument("--audit", action="store_true",
-                         help="the $500 Cost Audit (done with you in 2 weeks) instead of Pro")
+    # Hidden alias so older docs keep working: prints the same pilot page.
+    upgrade.add_argument("--audit", action="store_true", help=argparse.SUPPRESS)
     upgrade.add_argument("--url-only", action="store_true", help="print only the link")
     upgrade.add_argument("--no-qr", action="store_true", help="don't draw the QR code")
 
@@ -4645,6 +4646,48 @@ def _render_watch_snap(snap) -> None:
     print()
 
 
+WELCOME_TAGLINE = "Find and prove inference savings on your own GPUs."
+WELCOME_STEPS = (
+    ("Install Ollama (ollama pull llama3.2:3b), or point at your", "vLLM / SGLang server's OpenAI-compatible URL.", ()),
+    ("Measure $/M tokens, with a 95% CI and a verdict:", None, (
+        "throttle check --url http://localhost:11434 \\",
+        "    --model llama3.2:3b --gpu-hourly-rate 1.50",
+    )),
+    ("For agent traffic (multi-turn sessions, tool results):", None, (
+        "throttle check --workload agent \\",
+        "    --url http://localhost:11434 \\",
+        "    --model llama3.2:3b --gpu-hourly-rate 1.50",
+    )),
+)
+
+
+def welcome_screen() -> str:
+    """`throttle` with no arguments: a short branded first-run screen."""
+
+    from . import style as style_module
+    from .upgrade import PILOT_TERMS
+
+    st = style_module.Style()
+    rows: list = [(WELCOME_TAGLINE, ("1",)), ""]
+    for number, (first, second, commands) in enumerate(WELCOME_STEPS, 1):
+        rows.append(f"{st.accent(f'{number}.')} {first}")
+        if second:
+            rows.append(f"   {second}")
+        rows.extend(f"   {st.paint(command, '36')}" for command in commands)
+    pilot = (
+        f"{st.accent('Throttle Pilot')}: we find and prove savings on your agent workload."
+    )
+    terms = (
+        f"{PILOT_TERMS[0]} Then 20% of verified savings, $500/month floor. "
+    )
+    return "\n".join([
+        st.panel(rows, title=f"Throttle {__version__}"),
+        pilot,
+        terms + st.bold("throttle upgrade"),
+        st.dim("No server yet? throttle demo (simulated). All commands: throttle --help"),
+    ])
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     from .config import load_config, apply_config_defaults
 
@@ -4656,9 +4699,7 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     raw_argv = list(sys.argv[1:] if argv is None else argv)
     if not raw_argv:
-        print(f"throttle {__version__}: {parser.description}")
-        print()
-        print(GETTING_STARTED, end="")
+        print(welcome_screen())
         return EXIT_OK
 
     args = parser.parse_args(raw_argv)
