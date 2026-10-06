@@ -1,11 +1,16 @@
 # Throttle
 
-**Know what your LLM inference costs in dollars per million tokens, and whether your last serving-config change made it cheaper or more expensive, with statistics that won't call a winner from overlapping or uncalibrated evidence.**
+**Find and prove inference savings for agent workloads on your own GPUs.** Throttle measures what your serving setup costs in dollars per million tokens, with a 95% confidence interval, tells you whether a config change really made it cheaper (and refuses to call a winner inside the noise or when the answers changed), and turns a verified win into a conservative dollar figure for the month.
 
 Throttle is an open-source CLI for any OpenAI-compatible endpoint: vLLM,
-SGLang, Ollama, LMDeploy and similar servers. It is for teams that self-host
-models, pay for GPU time, and want to know their real $/M tokens instead of
-guessing.
+SGLang, Ollama, LMDeploy and similar servers. It is built for teams running
+agents (multi-turn, tool-calling, RL rollouts) on GPUs they own or rent:
+`throttle check --workload agent` measures agent-shaped traffic, and
+`throttle savings` produces the verified-savings statement.
+
+Want us to do it with you? The **Throttle Pilot** finds and proves savings on
+your agent workload: free for 2 weeks, then 20% of verified savings. See
+[throttle-pro.com/pilot](https://throttle-pro.com/pilot) or run `throttle upgrade`.
 
 ## Try it in 2 minutes
 
@@ -110,8 +115,8 @@ change a serving setting ──► throttle check ──► $/M tokens (95% CI) 
 | --- | --- | --- |
 | **Price it** | `throttle cost`, `throttle watch` | Dollars per million tokens, measured against a live endpoint (`cost`) or read from vLLM `/metrics` (`watch`). The GPU $/hr is yours and always labelled ASSUMED; tokens and time are MEASURED. |
 | **Re-check it after every config change** | `throttle check` | $/M tokens with a 95% confidence interval, what changed in the config, and a verdict against the last check. CHEAPER or MORE EXPENSIVE only when the measured change is larger than a run-to-run noise bound estimated from at least 3 recent repeat checks **and** the intervals don't overlap. Otherwise NO WINNER, or NOT CALIBRATED when there is no recent noise measurement yet. `--fail-if-costlier` makes it a CI gate. |
+| **Prove the savings** | `throttle savings` | A conservative dollar figure for a verified CHEAPER change: (baseline CI low - candidate CI high) x your production tokens, refused unless the verdict is calibrated, on the same model and workload, with unchanged outputs. |
 | **Prove a config change** | `throttle plan` → `smoke` → `benchmark` → `golden` | Traffic that is planned and capped before any request goes out, repeated measurement blocks, 95% intervals, and a six-position counterbalanced protocol for a decision-grade baseline-vs-candidate answer. |
-| **Cache (one lever, off by default)** | `throttle proxy --enable-cache` | A proxy in front of your model server that answers exact and near-exact repeated prompts from memory. Semantic matching is a separate opt-in with a known false-match risk (see [Caching proxy](#caching-proxy)). |
 | **Profile agents** | `throttle proxy --enable-session-tracking` + `throttle sessions` | A per-session breakdown of time spent generating versus waiting, an estimate of redundant prefill, and suggested backend settings to check. |
 
 Throttle provisions nothing and never changes your server. It measures and

@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "throttle-pro"
 version = "0.6.0"
-description = "Measure LLM inference cost, cache repeated prompts, and profile agent sessions for any OpenAI-compatible endpoint"
+description = "Find and prove inference savings for agent workloads on your own GPUs: $/M tokens with 95% CIs, calibrated verdicts and verified-savings statements"
 readme = "README.md"
 license = "MIT"
 license-files = ["LICENSE"]
