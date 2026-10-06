@@ -13,6 +13,19 @@ All notable changes to Throttle will be documented in this file.
   or a vLLM generation-token counter delta since `throttle savings snapshot`
   (MEASURED; a counter reset is refused). `--json` emits a `savings_statement`
   record (version 1).
+- `throttle check --workload agent`: measures multi-turn agent traffic. Each
+  session is a seeded synthetic conversation: a shared system prompt and tool
+  schema, then sequential turns that resend the conversation plus a scripted
+  assistant turn and a synthetic tool result. The live reply is measured but
+  never fed back, so every run sends the same prompts. Sessions run
+  concurrently. Options: `--turns` (6), `--sessions-concurrency`
+  (`--concurrency`), `--system-prompt-tokens` (~1500), `--tool-output-tokens`
+  (~300), `--assistant-turn-tokens` (~150). A per-run tag in the system prompt
+  stops one run's prefix cache helping the next. The record adds
+  `workload.workload_shape` with the measured prompt and completion tokens per
+  turn, and the cached prompt tokens per turn when the server reports them. The shape is part of the workload identity, so
+  agent and default checks are never compared. Default checks and their
+  records are unchanged.
 
 ## [0.5.1] - 2026-09-29
 

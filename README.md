@@ -377,7 +377,7 @@ estimates a **run-to-run noise bound** from its own recent history:
 - A *same-config group* is every stored check with the same endpoint, the
   same config fingerprint (model, `--label`, GPU rate, server-reported
   settings, `--config` pairs), the same workload (prompts, requests per block,
-  concurrency, max tokens, prompt cache mode) and the same Throttle version.
+  concurrency, max tokens, prompt cache mode, agent workload shape) and the same Throttle version.
 - Only two groups count: the baseline's config and this check's config (one
   group if they are the same). The check being judged is never part of its own
   noise estimate, and only checks created within 24 hours of it count.
@@ -536,6 +536,59 @@ exact prompts; declare what the server does with `--cache-policy` (`warm` if
 prefix caching is on, `disabled` only if it is off). `check` keeps recording
 the same `prompts_sha256` of the prompt file, so it still matches the hash
 those reports record.
+
+### Agent workload (`--workload agent`)
+
+The default check sends unrelated single-turn prompts, so nothing is reused
+from a prefix cache. Agent traffic is different: one long system prompt plus
+tool schema, then turns that each resend the whole conversation so far.
+`--workload agent` measures that shape:
+
+```sh
+throttle check --url http://localhost:8000 --model my-model --gpu-hourly-rate 2.50 \
+    --workload agent --turns 6 --sessions-concurrency 4 \
+    --system-prompt-tokens 1500 --tool-output-tokens 300
+```
+
+- Each session is a deterministic, seeded synthetic conversation. It starts
+  with a system prompt and tool schema that every session shares (about
+  `--system-prompt-tokens`, default 1500). Each turn then appends a scripted
+  assistant turn (about `--assistant-turn-tokens`, default 150), a synthetic
+  tool result (about `--tool-output-tokens`, default 300) and a short
+  instruction. Turns within a session are sequential, so the prompt grows.
+  Sessions run concurrently.
+- The history is scripted. The model's live reply is requested, measured and
+  counted (tokens, time, OUTPUT CHANGED), but it is never fed back into the
+  conversation. So every run of one shape sends the same prompts, apart from
+  the run tag, and a reply that drifts can't change the later prompts of its
+  session.
+- A block is `--sessions-concurrency` concurrent sessions (default:
+  `--concurrency`) of `--turns` turns (default 6). The 95% CI, the noise
+  bound and $/M (ASSUMED rate x measured wall-clock / measured tokens) work
+  exactly as they do for the default workload.
+- Prefix reuse within a session is intended, because real agents get it. The
+  system prompt starts with a per-run tag (`[run 482915] `), so one run's
+  cache can't make the next run look cheaper.
+- The record gets `workload.workload_shape`: the profile, the shape options
+  (including `"history": "scripted"`), and the measured mean prompt and
+  completion tokens per turn (also by turn) from the server's usage. When the
+  server reports `usage.prompt_tokens_details.cached_tokens` (vLLM, SGLang),
+  the mean cached prompt tokens per turn are recorded too, as a measurement
+  only. The shape is part of the workload identity, so an
+  agent check is never compared with a default check, or with an agent check
+  of another shape (NO WINNER, "the workload profile changed").
+  `throttle savings` works on two agent checks, and its statement names the
+  profile.
+
+On agent traffic, prefill outweighs generation (on a local Ollama
+`qwen2.5:0.5b`, the default shape sent about 2,800 prompt tokens per turn
+against 55 completion tokens), so $/M output tokens moves with reply length.
+Because the history is scripted, repeat runs of one shape send the same prompt
+tokens per turn (1586, 2063, 2540, 3017, 3494, 3971 in every run), and a reply
+that drifts stays one reply. In three repeat runs of an unchanged config, mean
+output length moved -0.2% and +1.1%, well inside OUTPUT CHANGED's 10%. An
+earlier version that fed the live replies back moved 12% to 23% between runs,
+and tripped it every time.
 
 ### Share your results
 
