@@ -552,10 +552,16 @@ throttle check --url http://localhost:8000 --model my-model --gpu-hourly-rate 2.
 
 - Each session is a deterministic, seeded synthetic conversation. It starts
   with a system prompt and tool schema that every session shares (about
-  `--system-prompt-tokens`, default 1500). Each turn then appends the model's
-  previous reply, a synthetic tool result (about `--tool-output-tokens`,
-  default 300) and a short instruction. Turns within a session are
-  sequential, so the prompt grows. Sessions run concurrently.
+  `--system-prompt-tokens`, default 1500). Each turn then appends a scripted
+  assistant turn (about `--assistant-turn-tokens`, default 150), a synthetic
+  tool result (about `--tool-output-tokens`, default 300) and a short
+  instruction. Turns within a session are sequential, so the prompt grows.
+  Sessions run concurrently.
+- The history is scripted. The model's live reply is requested, measured and
+  counted (tokens, time, OUTPUT CHANGED), but it is never fed back into the
+  conversation. So every run of one shape sends the same prompts, apart from
+  the run tag, and a reply that drifts can't change the later prompts of its
+  session.
 - A block is `--sessions-concurrency` concurrent sessions (default:
   `--concurrency`) of `--turns` turns (default 6). The 95% CI, the noise
   bound and $/M (ASSUMED rate x measured wall-clock / measured tokens) work
@@ -563,19 +569,26 @@ throttle check --url http://localhost:8000 --model my-model --gpu-hourly-rate 2.
 - Prefix reuse within a session is intended, because real agents get it. The
   system prompt starts with a per-run tag (`[run 482915] `), so one run's
   cache can't make the next run look cheaper.
-- The record gets `workload.workload_shape`: the profile, the shape options,
-  and the measured mean prompt and completion tokens per turn (also by turn)
-  from the server's usage. The shape is part of the workload identity, so an
+- The record gets `workload.workload_shape`: the profile, the shape options
+  (including `"history": "scripted"`), and the measured mean prompt and
+  completion tokens per turn (also by turn) from the server's usage. When the
+  server reports `usage.prompt_tokens_details.cached_tokens` (vLLM, SGLang),
+  the mean cached prompt tokens per turn are recorded too, as a measurement
+  only. The shape is part of the workload identity, so an
   agent check is never compared with a default check, or with an agent check
   of another shape (NO WINNER, "the workload profile changed").
   `throttle savings` works on two agent checks, and its statement names the
   profile.
 
 On agent traffic, prefill outweighs generation (on a local Ollama
-`qwen2.5:0.5b`, about 2,450 prompt tokens per turn against 25 completion
-tokens), so $/M output tokens moves with reply length. If one session wanders
-into longer replies, the OUTPUT CHANGED guard can trip between two runs of an
-unchanged config. More sessions or blocks make the mean reply length steadier.
+`qwen2.5:0.5b`, the default shape sent about 2,800 prompt tokens per turn
+against 55 completion tokens), so $/M output tokens moves with reply length.
+Because the history is scripted, repeat runs of one shape send the same prompt
+tokens per turn (1586, 2063, 2540, 3017, 3494, 3971 in every run), and a reply
+that drifts stays one reply. In three repeat runs of an unchanged config, mean
+output length moved -0.2% and +1.1%, well inside OUTPUT CHANGED's 10%. An
+earlier version that fed the live replies back moved 12% to 23% between runs,
+and tripped it every time.
 
 ### Share your results
 

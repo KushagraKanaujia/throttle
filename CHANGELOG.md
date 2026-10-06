@@ -15,13 +15,15 @@ All notable changes to Throttle will be documented in this file.
   record (version 1).
 - `throttle check --workload agent`: measures multi-turn agent traffic. Each
   session is a seeded synthetic conversation: a shared system prompt and tool
-  schema, then sequential turns that resend the conversation plus the model's
-  reply and a synthetic tool result. Sessions run concurrently. Options:
-  `--turns` (6), `--sessions-concurrency` (`--concurrency`),
-  `--system-prompt-tokens` (~1500), `--tool-output-tokens` (~300). A per-run
-  tag in the system prompt stops one run's prefix cache helping the next.
-  The record adds `workload.workload_shape` with the measured prompt and
-  completion tokens per turn. The shape is part of the workload identity, so
+  schema, then sequential turns that resend the conversation plus a scripted
+  assistant turn and a synthetic tool result. The live reply is measured but
+  never fed back, so every run sends the same prompts. Sessions run
+  concurrently. Options: `--turns` (6), `--sessions-concurrency`
+  (`--concurrency`), `--system-prompt-tokens` (~1500), `--tool-output-tokens`
+  (~300), `--assistant-turn-tokens` (~150). A per-run tag in the system prompt
+  stops one run's prefix cache helping the next. The record adds
+  `workload.workload_shape` with the measured prompt and completion tokens per
+  turn, and the cached prompt tokens per turn when the server reports them. The shape is part of the workload identity, so
   agent and default checks are never compared. Default checks and their
   records are unchanged.
 

@@ -507,7 +507,7 @@ def add_check_arguments(parser: argparse.ArgumentParser) -> None:
         help="'default': single-turn prompts, each with a unique tag. 'agent': "
         "multi-turn synthetic agent sessions. Each session shares one system "
         "prompt plus tool schema, and every turn resends the conversation so far "
-        "plus the model's reply and a tool result, so a prefix cache can reuse it "
+        "plus a scripted assistant turn and a tool result, so a prefix cache can reuse it "
         "within the session (a per-run tag in the system prompt stops one run's "
         "cache helping the next). A block is --sessions-concurrency concurrent "
         "sessions of --turns sequential turns; --requests-per-block and --prompts "
@@ -531,6 +531,15 @@ def add_check_arguments(parser: argparse.ArgumentParser) -> None:
         metavar="T",
         help="agent: approximate size in tokens of the synthetic tool result "
         f"appended each turn (default: {agent_workload.DEFAULT_TOOL_OUTPUT_TOKENS})",
+    )
+    agent.add_argument(
+        "--assistant-turn-tokens",
+        type=_non_negative_int,
+        metavar="A",
+        help="agent: approximate size in tokens of the scripted assistant turn "
+        "appended to the history each turn. The live reply is measured but never "
+        "fed back, so every run sends the same prompts "
+        f"(default: {agent_workload.DEFAULT_ASSISTANT_TURN_TOKENS})",
     )
     agent.add_argument(
         "--system-prompt-tokens",
@@ -959,7 +968,7 @@ async def _send(
 ) -> tuple[int, int, bool]:
     """Send one request; return prompt tokens, completion tokens, and whether
     the answer stopped at max_tokens (finish_reason "length")."""
-    prompt_tokens, completion_tokens, hit_max_tokens, _ = await _send_with_reply(
+    prompt_tokens, completion_tokens, hit_max_tokens, _, _ = await _send_with_reply(
         client, chat_url, headers, model, messages, max_tokens
     )
     return prompt_tokens, completion_tokens, hit_max_tokens
@@ -972,9 +981,9 @@ async def _send_with_reply(
     model: str,
     messages: Sequence[Mapping[str, Any]],
     max_tokens: int,
-) -> tuple[int, int, bool, str]:
-    """``_send`` that also returns the answer's text (the agent workload
-    appends it to the next turn's prompt)."""
+) -> tuple[int, int, bool, str, int | None]:
+    """``_send`` that also returns the answer's text and, when the server
+    reports it, ``usage.prompt_tokens_details.cached_tokens`` (else None)."""
     try:
         response = await client.post(
             chat_url,
@@ -1029,7 +1038,11 @@ async def _send_with_reply(
     message = first.get("message") if isinstance(first, dict) else None
     content = message.get("content") if isinstance(message, dict) else None
     reply = content if isinstance(content, str) else ""
-    return prompt_tokens, completion_tokens, hit_max_tokens, reply
+    details = usage.get("prompt_tokens_details")
+    cached = details.get("cached_tokens") if isinstance(details, dict) else None
+    if not isinstance(cached, int) or isinstance(cached, bool) or cached < 0:
+        cached = None
+    return prompt_tokens, completion_tokens, hit_max_tokens, reply, cached
 
 
 async def _run_block(
@@ -1148,6 +1161,7 @@ def _agent_shape(
         "--sessions-concurrency": getattr(args, "sessions_concurrency", None),
         "--tool-output-tokens": getattr(args, "tool_output_tokens", None),
         "--system-prompt-tokens": getattr(args, "system_prompt_tokens", None),
+        "--assistant-turn-tokens": getattr(args, "assistant_turn_tokens", None),
     }
     if getattr(args, "workload", agent_workload.PROFILE_DEFAULT) != agent_workload.PROFILE_AGENT:
         given = [flag for flag, value in options.items() if value is not None]
@@ -1174,6 +1188,9 @@ def _agent_shape(
         tool_output_tokens=pick(
             args.tool_output_tokens, agent_workload.DEFAULT_TOOL_OUTPUT_TOKENS
         ),
+        assistant_turn_tokens=pick(
+            args.assistant_turn_tokens, agent_workload.DEFAULT_ASSISTANT_TURN_TOKENS
+        ),
     )
     args.requests_per_block = shape.sessions_concurrency * shape.turns
     args.concurrency = shape.sessions_concurrency
@@ -1187,7 +1204,7 @@ def _agent_workload_record(
 
     return {
         # Hash of the generator, its seed and the shape: equal hashes mean the
-        # same synthetic sessions (given the same model replies).
+        # same synthetic sessions (the history is scripted, not the replies).
         "prompts_sha256": canonical_workload_hash(shape.generator_spec()),  # type: ignore[arg-type]
         # Cold across runs (the run tag); prefix reuse within a run is intended.
         "prompt_cache_mode": CACHE_MODE_COLD,
@@ -1217,6 +1234,9 @@ def _agent_workload_record(
             "mean_prompt_tokens_per_turn": None,
             "mean_completion_tokens_per_turn": None,
             "mean_prompt_tokens_by_turn": None,
+            # MEASURED only when the server reports
+            # usage.prompt_tokens_details.cached_tokens; never part of the identity.
+            "mean_cached_prompt_tokens_per_turn": None,
         },
     }
 
@@ -1238,29 +1258,30 @@ async def _run_agent_block(
     system = agent_workload.system_message(shape, run_id)
 
     async def session(index: int) -> dict[str, Any]:
-        replies: list[str] = []
         sent: list[list[dict[str, str]]] = []
         prompt_by_turn: list[int] = []
+        cached: list[int | None] = []
         completion = hits = 0
-        for _turn in range(shape.turns):
+        for turn in range(shape.turns):
             if stop.is_set():  # another session failed; send nothing more
                 break
             messages = agent_workload.turn_messages(
-                shape, run_id, index, replies, system=system
+                shape, run_id, index, turn, system=system
             )
             try:
-                prompt_tokens, completion_tokens, hit, reply = await _send_with_reply(
+                # The live reply is measured, never appended to the history.
+                prompt_tokens, completion_tokens, hit, _reply, cached_tokens = await _send_with_reply(
                     client, chat_url, headers, model, messages, max_tokens
                 )
             except Exception:
                 stop.set()
                 raise
             sent.append(messages)
-            replies.append(reply)
             prompt_by_turn.append(prompt_tokens)
+            cached.append(cached_tokens)
             completion += completion_tokens
             hits += 1 if hit else 0
-        return {"sent": sent, "prompt_by_turn": prompt_by_turn,
+        return {"sent": sent, "prompt_by_turn": prompt_by_turn, "cached": cached,
                 "completion": completion, "hits": hits}
 
     started = time.perf_counter()
@@ -1305,6 +1326,7 @@ async def _measure_agent(
     all_sent: list[list[list[dict[str, str]]]] = []
     by_turn: list[list[int]] = [[] for _ in range(shape.turns)]
     completion_total = 0
+    cached_all: list[int | None] = []
     for block_index in range(args.blocks):
         measured = await _run_agent_block(
             client, chat_url, headers, args.model, shape, run_id,
@@ -1319,6 +1341,7 @@ async def _measure_agent(
             )
         for item in measured["sessions"]:
             all_sent.append(item["sent"])
+            cached_all.extend(item["cached"])
             for turn, tokens in enumerate(item["prompt_by_turn"]):
                 by_turn[turn].append(tokens)
         completion_total += output_tokens
@@ -1347,6 +1370,8 @@ async def _measure_agent(
     recorded["mean_prompt_tokens_by_turn"] = [
         statistics.fmean(tokens) if tokens else None for tokens in by_turn
     ]
+    if cached_all and all(tokens is not None for tokens in cached_all):
+        recorded["mean_cached_prompt_tokens_per_turn"] = sum(cached_all) / len(cached_all)  # type: ignore[arg-type]
     workload["sent_prompts_sha256"] = canonical_workload_hash(all_sent)  # type: ignore[arg-type]
     return blocks
 
@@ -1709,7 +1734,9 @@ def compare_checks(
                     f"{shape['profile']}: {shape['turns']} turns, "
                     f"{shape['sessions_concurrency']} sessions at once, "
                     f"{shape['system_prompt_tokens']}-token system prompt, "
-                    f"{shape['tool_output_tokens']}-token tool results"
+                    f"{shape['tool_output_tokens']}-token tool results, "
+                    f"{shape['assistant_turn_tokens']}-token {shape['history']} "
+                    "assistant turns"
                 )
             comparison["reason"] += (
                 f". The workload profile changed ({shape_text(previous)} -> "
@@ -1895,7 +1922,8 @@ def _shape_text(shape: Mapping[str, Any]) -> str:
         f"{shape.get('profile')}: {shape.get('turns')} turns x "
         f"{shape.get('sessions_concurrency')} concurrent sessions, system prompt "
         f"~{shape.get('system_prompt_tokens')} tokens, tool results "
-        f"~{shape.get('tool_output_tokens')} tokens"
+        f"~{shape.get('tool_output_tokens')} tokens, {shape.get('history')} assistant "
+        f"turns ~{shape.get('assistant_turn_tokens')} tokens"
     )
 
 
@@ -2569,8 +2597,9 @@ def handle_check(args: argparse.Namespace) -> int:
         print(
             f"             each session: shared system prompt + tool schema "
             f"(~{shape.system_prompt_tokens} tokens), then every turn resends the "
-            f"conversation plus the model's reply and a ~{shape.tool_output_tokens}-token "
-            "tool result"
+            f"conversation plus a scripted ~{shape.assistant_turn_tokens}-token assistant "
+            f"turn and a ~{shape.tool_output_tokens}-token tool result (the live reply "
+            "is measured, not fed back)"
         )
         print(
             f"  cache      prefix reuse within this run is expected (agent traffic); the "
@@ -2798,6 +2827,11 @@ def handle_check(args: argparse.Namespace) -> int:
             f"{recorded_shape['mean_completion_tokens_per_turn']:.0f} completion tokens "
             f"per turn [MEASURED]; prompt tokens by turn: {by_turn}"
         )
+        if recorded_shape.get("mean_cached_prompt_tokens_per_turn") is not None:
+            print(
+                f"          {recorded_shape['mean_cached_prompt_tokens_per_turn']:.0f} "
+                "prompt tokens per turn served from the prefix cache [MEASURED, server usage]"
+            )
     if args.monthly_tokens:
         volume = args.monthly_tokens / 1_000_000
         low = headline["ci_low"]

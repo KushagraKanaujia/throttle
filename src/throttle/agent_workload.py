@@ -11,11 +11,17 @@ instruction). This module builds that traffic, deterministically from a seed:
   then about ``system_prompt_tokens`` words of instructions and tool schema.
 * Session ``i``'s first user message is a task seeded by ``i``, so sessions
   share the system prefix and nothing after it.
-* Turn ``k`` sends turn ``k-1``'s messages plus the model's reply to turn
-  ``k-1`` and a user message carrying a synthetic tool result of about
-  ``tool_output_tokens`` words. Turn ``k``'s prompt therefore starts with
-  turn ``k-1``'s prompt, and a server's prefix cache can reuse it within the
-  session, as it would for a real agent.
+* Turn ``k`` sends turn ``k-1``'s messages plus a scripted assistant turn
+  (about ``assistant_turn_tokens`` words, seeded) and a user message carrying
+  a synthetic tool result of about ``tool_output_tokens`` words. Turn ``k``'s
+  prompt therefore starts with turn ``k-1``'s prompt, and a server's prefix
+  cache can reuse it within the session, as it would for a real agent.
+* The history is scripted, never the model's live reply: the live reply is
+  measured (tokens, time, OUTPUT CHANGED) but not appended. Otherwise one
+  reply that drifts at temperature 0 (batching nondeterminism) changes every
+  later prompt of its session, and two runs of an unchanged config measure
+  different traffic. With a scripted history every run of one shape sends
+  exactly the same prompts apart from the run tag.
 
 Sizes are estimates without a tokenizer: a plain common English word is about
 one token, and JSON schema text about one token per 4 characters. The tokens
@@ -27,7 +33,7 @@ from __future__ import annotations
 
 import random
 from dataclasses import dataclass
-from typing import Any, Sequence
+from typing import Any
 
 PROFILE_DEFAULT = "default"
 PROFILE_AGENT = "agent"
@@ -39,6 +45,8 @@ GENERATOR_VERSION = 1
 DEFAULT_SEED = 0
 DEFAULT_TURNS = 6
 DEFAULT_TOOL_OUTPUT_TOKENS = 300
+DEFAULT_ASSISTANT_TURN_TOKENS = 150
+HISTORY_SCRIPTED = "scripted"
 DEFAULT_SYSTEM_PROMPT_TOKENS = 1500
 
 NONCE_FORMAT = "[run {run_id}] "
@@ -51,6 +59,8 @@ SHAPE_IDENTITY_KEYS = (
     "sessions_concurrency",
     "system_prompt_tokens",
     "tool_output_tokens",
+    "assistant_turn_tokens",
+    "history",
 )
 
 _TOOLS = (
@@ -86,12 +96,13 @@ _VOCAB = (
 @dataclass(frozen=True)
 class AgentShape:
     """The parameters of one agent workload. Equal shapes send equal traffic
-    (given equal model replies)."""
+    (the history is scripted, so model replies do not change them)."""
 
     turns: int = DEFAULT_TURNS
     sessions_concurrency: int = 2
     system_prompt_tokens: int = DEFAULT_SYSTEM_PROMPT_TOKENS
     tool_output_tokens: int = DEFAULT_TOOL_OUTPUT_TOKENS
+    assistant_turn_tokens: int = DEFAULT_ASSISTANT_TURN_TOKENS
     seed: int = DEFAULT_SEED
 
     def identity(self) -> dict[str, Any]:
@@ -101,6 +112,8 @@ class AgentShape:
             "sessions_concurrency": self.sessions_concurrency,
             "system_prompt_tokens": self.system_prompt_tokens,
             "tool_output_tokens": self.tool_output_tokens,
+            "assistant_turn_tokens": self.assistant_turn_tokens,
+            "history": HISTORY_SCRIPTED,
         }
 
     def generator_spec(self) -> dict[str, Any]:
@@ -145,6 +158,18 @@ def session_task(shape: AgentShape, session_index: int) -> str:
     return f"Task {session_index}: {_words(rng, 40)}. Start with the first step."
 
 
+def assistant_message(shape: AgentShape, session_index: int, turn: int) -> str:
+    """The scripted assistant turn that stands in for the model's reply to
+    ``turn`` in later prompts (about ``assistant_turn_tokens`` words)."""
+
+    rng = random.Random(f"{shape.seed}:assistant:{session_index}:{turn}")
+    name, arg = _TOOLS[rng.randrange(len(_TOOLS))]
+    return (
+        f"Step {turn + 1}: {_words(rng, max(shape.assistant_turn_tokens - 6, 0))}. "
+        f"Calling {name}({arg})."
+    )
+
+
 def tool_message(shape: AgentShape, session_index: int, turn: int) -> str:
     """The user message appended after the model's reply to ``turn``."""
 
@@ -164,13 +189,12 @@ def turn_messages(
     shape: AgentShape,
     run_id: str,
     session_index: int,
-    replies: Sequence[str],
+    turn: int,
     *,
     system: dict[str, str] | None = None,
 ) -> list[dict[str, str]]:
-    """The messages of turn ``len(replies)`` of session ``session_index``.
+    """The messages of turn ``turn`` (from 0) of session ``session_index``.
 
-    ``replies`` are the model's answers to the earlier turns of this session.
     ``system`` may pass a prebuilt :func:`system_message` to avoid rebuilding it.
     """
 
@@ -178,9 +202,11 @@ def turn_messages(
         dict(system or system_message(shape, run_id)),
         {"role": "user", "content": session_task(shape, session_index)},
     ]
-    for turn, reply in enumerate(replies):
-        messages.append({"role": "assistant", "content": reply})
-        messages.append({"role": "user", "content": tool_message(shape, session_index, turn)})
+    for earlier in range(turn):
+        messages.append(
+            {"role": "assistant", "content": assistant_message(shape, session_index, earlier)}
+        )
+        messages.append({"role": "user", "content": tool_message(shape, session_index, earlier)})
     return messages
 
 

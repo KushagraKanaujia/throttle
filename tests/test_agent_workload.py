@@ -34,8 +34,12 @@ class AgentFakeServer:
     """Records every chat request; replies are a deterministic function of the
     prompt, so equal prompts get equal replies (temperature 0)."""
 
-    def __init__(self, delay: float = 0.005) -> None:
+    def __init__(
+        self, delay: float = 0.005, *, reply_salt: str = "", cached_fraction: float | None = None
+    ) -> None:
         self.delay = delay
+        self.reply_salt = reply_salt
+        self.cached_fraction = cached_fraction
         self.requests: list[list[dict[str, str]]] = []
         self.usage: list[tuple[int, int]] = []
 
@@ -52,16 +56,21 @@ class AgentFakeServer:
             self.requests.append(messages)
             await asyncio.sleep(self.delay)
             digest = hashlib.sha256(json.dumps(messages).encode()).hexdigest()[:8]
-            reply = f"I will call the next tool now ({digest})."
+            reply = f"I will call the next tool now ({digest}).{self.reply_salt}"
             prompt_tokens = sum(len(m["content"].split()) for m in messages)
             completion_tokens = len(reply.split())
             self.usage.append((prompt_tokens, completion_tokens))
+            usage = {"prompt_tokens": prompt_tokens, "completion_tokens": completion_tokens,
+                     "total_tokens": prompt_tokens + completion_tokens}
+            if self.cached_fraction is not None:
+                usage["prompt_tokens_details"] = {
+                    "cached_tokens": int(prompt_tokens * self.cached_fraction)
+                }
             return httpx.Response(200, json={
                 "id": "x", "object": "chat.completion", "model": "mock-model",
                 "choices": [{"index": 0, "finish_reason": "stop",
                              "message": {"role": "assistant", "content": reply}}],
-                "usage": {"prompt_tokens": prompt_tokens, "completion_tokens": completion_tokens,
-                          "total_tokens": prompt_tokens + completion_tokens},
+                "usage": usage,
             })
         return httpx.Response(404)
 
@@ -106,14 +115,11 @@ def by_session(requests: list[list[dict[str, str]]]) -> dict[str, list[list[dict
 
 
 def _simulate(shape: agent_workload.AgentShape, run_id: str) -> list[list[dict[str, str]]]:
-    sent = []
-    for session in range(3):
-        replies: list[str] = []
-        for _ in range(shape.turns):
-            messages = agent_workload.turn_messages(shape, run_id, session, replies)
-            sent.append(messages)
-            replies.append(f"reply {len(json.dumps(messages))}")
-    return sent
+    return [
+        agent_workload.turn_messages(shape, run_id, session, turn)
+        for session in range(3)
+        for turn in range(shape.turns)
+    ]
 
 
 def test_same_seed_gives_the_same_request_sequence():
@@ -161,6 +167,51 @@ def test_prefix_grows_within_each_session(history, monkeypatch, capsys):
     assert by_turn == sorted(by_turn) and by_turn[0] < by_turn[-1]
 
 
+def test_prompts_do_not_depend_on_the_model_replies(history, monkeypatch, capsys):
+    """Two runs whose server answers differently send identical prompts (apart
+    from the run tag): the history is scripted, so reply drift cannot compound."""
+
+    sent = []
+    usage = []
+    for salt in ("", " And a much longer, different answer this time around."):
+        server = AgentFakeServer(reply_salt=salt)
+        code, out = run_check(monkeypatch, capsys, server, *AGENT_ARGS)
+        assert code == 0, out
+        run_id = records(history)[-1]["workload"]["prompt_nonce"]["run_id"]
+        tag = f"[run {run_id}] "
+        sent.append([
+            [dict(m, content=m["content"].replace(tag, "")) for m in messages]
+            for messages in server.requests
+        ])
+        usage.append([u[0] for u in server.usage])
+    assert sent[0] == sent[1]
+    assert usage[0] == usage[1]  # identical prompt tokens per request
+    shapes = [r["workload"]["workload_shape"] for r in records(history)]
+    assert shapes[0]["mean_prompt_tokens_by_turn"] == shapes[1]["mean_prompt_tokens_by_turn"]
+    assert shapes[0]["mean_completion_tokens_per_turn"] < shapes[1]["mean_completion_tokens_per_turn"]
+    # The scripted assistant turns are what later prompts carry.
+    for messages in server.requests:
+        for message in messages:
+            if message["role"] == "assistant":
+                assert message["content"].startswith("Step ")
+
+
+def test_cached_prompt_tokens_are_recorded_when_reported(history, monkeypatch, capsys):
+    code, out = run_check(
+        monkeypatch, capsys, AgentFakeServer(cached_fraction=0.5), *AGENT_ARGS
+    )
+    assert code == 0, out
+    first = records(history)[-1]
+    shape = first["workload"]["workload_shape"]
+    assert shape["mean_cached_prompt_tokens_per_turn"] == pytest.approx(
+        shape["mean_prompt_tokens_per_turn"] * 0.5, rel=0.05
+    )
+    assert "served from the prefix cache [MEASURED" in out
+    # Measured only: a check whose server reports no cached tokens is the same workload.
+    code, out = run_check(monkeypatch, capsys, AgentFakeServer(), *AGENT_ARGS)
+    assert "the workload differs" not in out
+
+
 def test_run_tag_is_constant_within_a_run_and_differs_across_runs(history, monkeypatch, capsys):
     systems = []
     run_ids = []
@@ -192,7 +243,11 @@ def test_workload_shape_is_recorded(history, monkeypatch, capsys):
     assert {k: shape[k] for k in agent_workload.SHAPE_IDENTITY_KEYS} == {
         "profile": "agent", "turns": TURNS, "sessions_concurrency": SESSIONS,
         "system_prompt_tokens": 60, "tool_output_tokens": 20,
+        "assistant_turn_tokens": agent_workload.DEFAULT_ASSISTANT_TURN_TOKENS,
+        "history": "scripted",
     }
+    # The fake reports no cached tokens, so none are claimed.
+    assert shape["mean_cached_prompt_tokens_per_turn"] is None
     measured_usage = server.usage[1:]  # drop the warm-up
     assert shape["mean_prompt_tokens_per_turn"] == pytest.approx(
         sum(u[0] for u in measured_usage) / len(measured_usage)
