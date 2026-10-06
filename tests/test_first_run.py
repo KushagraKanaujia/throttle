@@ -405,8 +405,10 @@ def test_no_args_prints_three_command_start_and_exits_zero(capsys, monkeypatch):
     assert "1. Install Ollama" in out and "vLLM / SGLang" in out
     assert "2. Measure $/M tokens" in out and "throttle check --url http://localhost:11434" in out
     assert "3. For agent traffic" in out and "throttle check --workload agent" in out
-    assert "Throttle Pilot" in out and "Free for 2 weeks" in out
-    assert "20% of verified savings, $500/month floor" in out and "throttle upgrade" in out
+    assert "Throttle Pilot" in out and "Free for 3 months for a small group of teams." in out
+    assert "throttle upgrade" in out
+    for retired in ("2 weeks", "20%", "$500", "floor"):
+        assert retired not in out, retired
     assert "\x1b[" not in out
     # Every command it tells the user to run must parse.
     parser = build_parser()

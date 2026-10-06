@@ -1018,9 +1018,9 @@ def build_parser() -> argparse.ArgumentParser:
         "upgrade",
         help="the Throttle Pilot: we find and prove savings on your agent workload",
         description=(
-            "Prints the Throttle Pilot terms (free for 2 weeks, then 20% of verified "
-            "monthly savings, $500/month floor), how to reach us, and a QR code for your "
-            "phone. Generated offline; nothing is sent."
+            "Prints the Throttle Pilot terms (free for 3 months for a small group of "
+            "teams; after that, pricing based on the savings we verify together), how to "
+            "reach us, and a QR code for your phone. Generated offline; nothing is sent."
         ),
     )
     # Hidden alias so older docs keep working: prints the same pilot page.
@@ -4665,7 +4665,6 @@ def welcome_screen() -> str:
     """`throttle` with no arguments: a short branded first-run screen."""
 
     from . import style as style_module
-    from .upgrade import PILOT_TERMS
 
     st = style_module.Style()
     rows: list = [(WELCOME_TAGLINE, ("1",)), ""]
@@ -4678,7 +4677,7 @@ def welcome_screen() -> str:
         f"{st.accent('Throttle Pilot')}: we find and prove savings on your agent workload."
     )
     terms = (
-        f"{PILOT_TERMS[0]} Then 20% of verified savings, $500/month floor. "
+        "Free for 3 months for a small group of teams. "
     )
     return "\n".join([
         st.panel(rows, title=f"Throttle {__version__}"),

@@ -274,6 +274,10 @@ RETIRED_PATTERNS = {
     "early access": re.compile(r"early access", re.IGNORECASE),
     "no savings guarantee": re.compile(r"no savings guarantee", re.IGNORECASE),
     "formspree": re.compile(r"formspree", re.IGNORECASE),
+    # The 2-week pilot at 20% with a $500 floor (retired 2026-10-06).
+    "20% of verified": re.compile(r"20% of verified", re.IGNORECASE),
+    "$500/month": re.compile(r"\$500\s*/\s*month", re.IGNORECASE),
+    "2 weeks": re.compile(r"\b2 weeks\b", re.IGNORECASE),
 }
 
 
@@ -283,6 +287,8 @@ def test_no_retired_offer_strings_in_src_or_readme() -> None:
     for path in files:
         if not path.is_file() or "_vendor" in path.parts or path.suffix in (".pyc", ".png", ".ico", ".woff2"):
             continue
+        if path.name.lower() == "changelog.md":
+            continue  # release history may name the offers it retired
         try:
             text = path.read_text(encoding="utf-8")
         except UnicodeDecodeError:
