@@ -7,6 +7,12 @@ Install the latest with `pipx install throttle-pro` or upgrade with `pipx upgrad
 ## Unreleased (on main, not yet on PyPI)
 
 #### Added
+- `throttle check --gpus N`: the GPU count is judged as a real config cost.
+  The per-GPU price is still normalized as an assumption, but serving on 2
+  GPUs instead of 1 now counts the extra GPU-hours. A `gpus` `--config`
+  value is read the same way, also for checks already recorded. Before,
+  Qwen2.5-72B on 2x MI300X (1.56x faster, $2.14 vs $1.67/M, 28% more per
+  token) was judged at the 1-GPU rate and called 36% CHEAPER.
 - `throttle check` verdict **OUTPUT CHANGED**: when the same prompts at
   temperature 0 come back more than 10% longer or shorter per request, or 20+
   points more of them stop at `--max-tokens`, Throttle no longer reports

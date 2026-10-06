@@ -402,6 +402,14 @@ def add_check_arguments(parser: argparse.ArgumentParser) -> None:
         help="what the GPU(s) behind this endpoint cost you per hour, in dollars "
         "(recorded as ASSUMED; include every GPU the model uses)",
     )
+    parser.add_argument(
+        "--gpus",
+        type=_positive_int,
+        metavar="N",
+        help="how many GPUs serve this endpoint (default 1, or a 'gpus' --config "
+        "value). The per-GPU price stays ASSUMED, but a change in GPU count is a "
+        "real config change, so its cost counts in the verdict",
+    )
     cost.add_argument(
         "--metric",
         choices=tuple(METRIC_LABELS),
@@ -1130,6 +1138,24 @@ def rate_of(record: Mapping[str, Any]) -> float:
     return float(record["fingerprint"]["gpu_hourly_rate_usd"])
 
 
+def gpu_count(record: Mapping[str, Any]) -> int:
+    """GPUs behind the endpoint: --gpus, else a 'gpus' --config value, else 1."""
+
+    fingerprint = record.get("fingerprint") or {}
+    for value in (fingerprint.get("gpu_count"), (fingerprint.get("user_config") or {}).get("gpus")):
+        try:
+            count = int(str(value))
+        except (TypeError, ValueError):
+            continue
+        if count > 0:
+            return count
+    return 1
+
+
+def per_gpu_rate(record: Mapping[str, Any]) -> float:
+    return rate_of(record) / gpu_count(record)
+
+
 def run_to_run_noise(
     history: Sequence[Mapping[str, Any]],
     previous: Mapping[str, Any],
@@ -1382,10 +1408,19 @@ def compare_checks(
     comparison["delta_dollars_per_million"] = new["mean"] - old["mean"]
     comparison["delta_percent"] = relative_delta_percent(new["mean"], old["mean"])
     # The verdict judges only what was MEASURED (tokens per wall-clock
-    # second). $/M scales linearly with the ASSUMED GPU rate, so put the new
-    # check on the baseline's rate before judging it.
-    factor = rate_of(previous) / rate_of(current)
+    # second). $/M scales linearly with the ASSUMED per-GPU price, so put the
+    # new check on the baseline's per-GPU price before judging it. A change in
+    # GPU COUNT is a real config change, not an assumption: running a model on
+    # 2 GPUs instead of 1 really costs twice as much per hour, so that part of
+    # the rate stays in the verdict. (Measured on 2x MI300X: Qwen2.5-72B on 2
+    # GPUs was 1.56x faster but $2.14 vs $1.67/M, 28% more per token. Judging
+    # at the 1-GPU rate called it 36% CHEAPER.)
+    factor = per_gpu_rate(previous) / per_gpu_rate(current)
     comparison["rate_changed"] = factor != 1.0
+    comparison["rate_factor"] = factor
+    gpus_before, gpus_after = gpu_count(previous), gpu_count(current)
+    if gpus_before != gpus_after:
+        comparison["gpu_count_changed"] = {"previous": gpus_before, "current": gpus_after}
 
     def scaled(summary: Mapping[str, Any], key: str) -> float | None:
         value = summary.get(key)
@@ -1434,7 +1469,8 @@ def compare_checks(
         f"{floor:.1f}% = t x sqrt(2) x {noise['sd_percent']:.1f}% run-to-run SD, "
         f"{noise['degrees_of_freedom']} df"
     )
-    what = "measured change at the baseline's GPU rate" if comparison["rate_changed"] else "change"
+    rate_words = "per-GPU price" if comparison.get("gpu_count_changed") else "GPU rate"
+    what = f"measured change at the baseline's {rate_words}" if comparison["rate_changed"] else "change"
     failed: list[str] = []
     if pct is None or abs(pct) <= floor:
         change_text = f"{pct:+.1f}%" if pct is not None else "n/a"
@@ -2328,6 +2364,7 @@ def handle_check(args: argparse.Namespace) -> int:
         "label": args.label,
         "gpu_hourly_rate_usd": args.gpu_hourly_rate,
         "gpu_hourly_rate_source": "ASSUMED (user-supplied --gpu-hourly-rate)",
+        **({"gpu_count": args.gpus} if args.gpus else {}),
         "user_config": user_config,
         "server_models": models,
         "server_metrics": metrics,
@@ -2439,16 +2476,26 @@ def handle_check(args: argparse.Namespace) -> int:
             )
         old_rate = float(base_fp["gpu_hourly_rate_usd"])
         measured_pct = comparison.get("measured_delta_percent")
-        if comparison.get("rate_changed") and delta is not None and measured_pct is not None:
-            adjusted = headline["mean"] * old_rate / args.gpu_hourly_rate
-            rate_pct = (args.gpu_hourly_rate / old_rate - 1) * 100
+        gpus_changed = comparison.get("gpu_count_changed")
+        if gpus_changed:
             print(
-                f"  note    the GPU rate changed ({_money(old_rate)}/hr -> "
+                f"  note    GPUs: {gpus_changed['previous']} -> {gpus_changed['current']}. "
+                "The extra GPU-hours are a real cost of this config, so the verdict "
+                "counts them; only the per-GPU price is treated as ASSUMED."
+            )
+        if comparison.get("rate_changed") and delta is not None and measured_pct is not None:
+            factor = comparison["rate_factor"]
+            adjusted = headline["mean"] * factor
+            rate_pct = (1 / factor - 1) * 100
+            what_rate = "per-GPU price" if gpus_changed else "GPU rate"
+            old_words = "per-GPU price" if gpus_changed else "rate"
+            print(
+                f"  note    the {what_rate} changed ({_money(old_rate)}/hr -> "
                 f"{_money(args.gpu_hourly_rate)}/hr) [ASSUMED]: that alone moves $/M by "
                 f"{rate_pct:+.1f}%, arithmetic on rates you typed, not a measurement."
             )
             print(
-                f"          At the old rate this check measures {_money(adjusted)}/M "
+                f"          At the old {old_words} this check measures {_money(adjusted)}/M "
                 f"({measured_pct:+.1f}% vs before) [MEASURED throughput]; the verdict "
                 "judges only that part."
             )
