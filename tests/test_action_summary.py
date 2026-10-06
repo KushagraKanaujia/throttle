@@ -75,6 +75,35 @@ def test_gate_reports_an_unjudged_workload_mismatch(action, monkeypatch, capsys)
     assert code == 0 and "NOT CALIBRATED, so fail-if-costlier could not judge" in out
 
 
+def test_gate_reports_output_changed(action, monkeypatch, capsys):
+    code, out = gate(action, monkeypatch, capsys, 5, "OUTPUT CHANGED", "warn")
+    assert code == 0
+    assert out.startswith("::warning::Throttle cost check: OUTPUT CHANGED, so fail-if-costlier")
+    code, out = gate(action, monkeypatch, capsys, 5, "OUTPUT CHANGED", "fail")
+    assert code == 5 and out.startswith("::error::Throttle cost check: OUTPUT CHANGED")
+    # Without a gate Throttle exits 0, and the job still gets a warning.
+    code, out = gate(action, monkeypatch, capsys, 0, "OUTPUT CHANGED", "warn")
+    assert code == 0 and out.startswith("::warning::Throttle cost check: OUTPUT CHANGED: the answers")
+
+
+def test_summary_keeps_the_output_changed_verdict(action):
+    record = {
+        "id": "c3",
+        "metric": "output",
+        "result": {"output": {"mean": 0.5, "ci_low": 0.49, "ci_high": 0.51}},
+        "fingerprint": {"model": "m", "label": "fp8", "gpu_hourly_rate_usd": 2.0},
+        "comparison": {
+            "verdict": "OUTPUT CHANGED",
+            "reason": "the server's answers changed: output length per request moved +18.0%",
+            "previous": {"mean": 1.0},
+            "changes": [],
+        },
+    }
+    markdown, outputs = action.render_summary(record, 0, action.Scrubber(""), "")
+    assert outputs["verdict"] == "OUTPUT CHANGED"
+    assert "**Verdict: OUTPUT CHANGED**: the server's answers changed" in markdown
+
+
 def test_summary_lists_workload_differences(action):
     record = {
         "id": "c2",

@@ -399,6 +399,7 @@ label starts a new group, so it does not calibrate itself.
 | **CHEAPER** / **MORE EXPENSIVE** | Same workload, \|measured change\| is larger than the run-to-run bound, **and** the 95% CIs do not overlap | With `--monthly-tokens`, the change per month is printed, labelled PROJECTED |
 | **NO WINNER** | The change is not larger than the bound or the CIs overlap (every failed condition is named), or the two checks used different workloads | Not projected |
 | **NOT CALIBRATED** | Fewer than 2 df of recent repeat checks, or the baseline is more than 24 h old | Not projected; before/now, both CIs, the change and the reason are still printed |
+| **OUTPUT CHANGED** | Same prompts at temperature 0, but output tokens per request moved more than 10%, or 20+ points more requests stopped at `--max-tokens`: the $/M difference may come from broken or padded output (on an MI300X, on-the-fly FP8 looked 41% cheaper while the model answered "!!!!") | Not projected; read a few answers from both configs |
 
 When two checks of the same config and workload have non-overlapping CIs,
 `check` also prints a `hint` line naming both check IDs and saying that
@@ -452,7 +453,7 @@ verdicts, the CI gate's exit 4, and the cases above.
 | `1` | Measurement failed; nothing recorded |
 | `2` | Usage error |
 | `4` | `--fail-if-costlier PCT` tripped: a calibrated MORE EXPENSIVE whose measured change (at the baseline's GPU rate) is at least PCT percent |
-| `5` | `--fail-if-costlier` given and the change could not be judged: NOT CALIBRATED, or the baseline ran a different workload (NO WINNER, e.g. a cold check against a 0.4.0 or `--warm-cache` baseline); treat it as a warning or a failure |
+| `5` | `--fail-if-costlier` given and the change could not be judged: NOT CALIBRATED, OUTPUT CHANGED, or the baseline ran a different workload (NO WINNER, e.g. a cold check against a 0.4.0 or `--warm-cache` baseline); treat it as a warning or a failure |
 
 Other options:
 

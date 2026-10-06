@@ -7,6 +7,14 @@ Install the latest with `pipx install throttle-pro` or upgrade with `pipx upgrad
 ## Unreleased (on main, not yet on PyPI)
 
 #### Added
+- `throttle check` verdict **OUTPUT CHANGED**: when the same prompts at
+  temperature 0 come back more than 10% longer or shorter per request, or 20+
+  points more of them stop at `--max-tokens`, Throttle no longer reports
+  CHEAPER / MORE EXPENSIVE, because the $/M difference may come from broken or
+  padded output. Found on a real MI300X, where vLLM's on-the-fly FP8 looked
+  41-47% cheaper while the 32B model answered "!!!!". Each block now records
+  `max_tokens_hits`; older checks are still compared by output length.
+  With `--fail-if-costlier` it exits 5 (could not judge).
 - `notebooks/throttle-quickstart.ipynb`: measure $/M tokens on a free Colab or
   Kaggle T4 (Ollama or vLLM), change one setting and get a verdict.
 - README "Try it in 2 minutes" section (Colab, local Ollama, `throttle demo`).

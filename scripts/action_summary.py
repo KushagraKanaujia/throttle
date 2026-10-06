@@ -38,7 +38,7 @@ from pathlib import Path
 from typing import Any, Mapping
 from urllib.parse import urlsplit
 
-VERDICTS = ("CHEAPER", "MORE EXPENSIVE", "NO WINNER", "NOT CALIBRATED")
+VERDICTS = ("CHEAPER", "MORE EXPENSIVE", "NO WINNER", "NOT CALIBRATED", "OUTPUT CHANGED")
 VERDICT_ERROR = "ERROR"
 HISTORY_FILENAME = "checks.ndjson"
 KEY_PREFIX = "throttle-check-v1"
@@ -563,6 +563,18 @@ def cmd_gate() -> int:
             return 5
         command("warning", message + " (not-calibrated: warn, so the job passes)")
         return 0
+    if code == 5 and verdict == "OUTPUT CHANGED":
+        message = (
+            "Throttle cost check: OUTPUT CHANGED, so fail-if-costlier could not judge "
+            "this change: the same prompts got answers of a different length or many "
+            "more stopped at max-tokens. Read a few answers from both configs; the $/M "
+            "difference may come from broken or padded output."
+        )
+        if policy == "fail":
+            command("error", message + " (not-calibrated: fail)")
+            return 5
+        command("warning", message + " (not-calibrated: warn, so the job passes)")
+        return 0
     if code == 5 or (code == 0 and gate and verdict == "NOT CALIBRATED"):
         # 5 is Throttle's own 'gate could not judge'. A first check (no
         # baseline) exits 0 in Throttle but is just as unjudged, so it
@@ -582,6 +594,12 @@ def cmd_gate() -> int:
         return code
     if verdict == "NOT CALIBRATED":
         command("notice", "Throttle cost check: NOT CALIBRATED (no gate set).")
+    if verdict == "OUTPUT CHANGED":
+        command(
+            "warning",
+            "Throttle cost check: OUTPUT CHANGED: the answers changed shape, so the "
+            "$/M difference is not a verified saving. See the job summary.",
+        )
     return 0
 
 
