@@ -1,0 +1,106 @@
+name: Throttle Index submission
+description: Add a measured serving change to the Throttle Index (throttle-pro.com/cost-index)
+title: "[Index]: "
+labels: ["index"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for adding to the [Throttle Index](https://www.throttle-pro.com/cost-index).
+        A row is accepted only with the check output behind it. You need:
+        1. at least 3 `throttle check` runs of your **unchanged** config (that measures your run-to-run noise), then
+        2. at least one check **after** the change, compared with `--against <baseline id>`, and
+        3. the summary from `throttle check --share-id <id>` for the after-change check.
+        The summary leaves out URLs, hostnames, IPs and keys, but this issue is public: read it once before you submit.
+
+  - type: input
+    id: model
+    attributes:
+      label: Model
+      placeholder: meta-llama/Llama-3.1-8B-Instruct
+    validations:
+      required: true
+
+  - type: input
+    id: engine
+    attributes:
+      label: Engine and version
+      placeholder: vLLM 0.23.1
+    validations:
+      required: true
+
+  - type: input
+    id: gpu
+    attributes:
+      label: GPU
+      description: Type and count behind the endpoint.
+      placeholder: 1x H100 80GB
+    validations:
+      required: true
+
+  - type: input
+    id: change
+    attributes:
+      label: What changed
+      description: The one serving change between the baseline and the after-change checks.
+      placeholder: --max-num-seqs 256 -> 64
+    validations:
+      required: true
+
+  - type: dropdown
+    id: workload
+    attributes:
+      label: Workload profile
+      description: Which workload the checks ran. `--workload agent` sends multi-turn sessions with a shared system prompt and tool results; its shape is in the share summary.
+      options:
+        - agent (throttle check --workload agent)
+        - default (single-turn built-in prompts)
+        - custom (--prompts file)
+    validations:
+      required: true
+
+  - type: input
+    id: verdict
+    attributes:
+      label: Verdict
+      description: As Throttle printed it (CHEAPER, MORE EXPENSIVE, NO WINNER, NOT CALIBRATED, OUTPUT CHANGED).
+    validations:
+      required: true
+
+  - type: input
+    id: rate
+    attributes:
+      label: GPU $/hr and where it comes from
+      description: The --gpu-hourly-rate you used and its source. The Index labels it ASSUMED either way.
+      placeholder: $2.49/hr, provider on-demand list price
+    validations:
+      required: true
+
+  - type: textarea
+    id: summary
+    attributes:
+      label: Summary (markdown from `throttle check --share-id <id>`)
+      description: The after-change check, compared with your baseline. Add the baseline's summary below it if you like.
+      render: markdown
+    validations:
+      required: true
+
+  - type: textarea
+    id: notes
+    attributes:
+      label: Workload and anything else
+      description: Prompt mix, concurrency, output lengths, anything that makes your setup different. For agent checks, the turns, sessions and tool-output size if you changed the defaults. Why you made the change.
+    validations:
+      required: false
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Before you submit
+      options:
+        - label: I read a few answers from both configs and they were still correct (a cheaper token is not a saving if the answers broke).
+          required: true
+        - label: The baseline was checked at least 3 times without changes, within 24 hours of the after-change check.
+          required: true
+        - label: The Index may publish this result with my GitHub handle (we will ask before naming a company).
+          required: true
