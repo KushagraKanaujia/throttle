@@ -166,15 +166,43 @@ def test_token_source_must_be_exactly_one(history, capsys):
     )[0] == 2
 
 
-def fake_counter(monkeypatch, value: float) -> list[str]:
+def fake_counter(monkeypatch, value: float | str) -> list[str]:
+    """Serve a fake /metrics body: a number is one unlabelled series, a str is the body."""
+
+    body = value if isinstance(value, str) else (
+        "# TYPE vllm:generation_tokens_total counter\n"
+        f"vllm:generation_tokens_total {value}\n"
+        "vllm:num_requests_running 3.0\n"
+    )
     calls: list[str] = []
 
-    def scrape(url: str, timeout: float = 5.0) -> dict[str, float]:
+    def fetch(url: str) -> str:
         calls.append(url)
-        return {"vllm:generation_tokens_total": value, "vllm:num_requests_running": 3.0}
+        return body
 
-    monkeypatch.setattr(savings_module, "_scrape", scrape)
+    monkeypatch.setattr(savings_module, "fetch_metrics_text", fetch)
     return calls
+
+
+def engines(*values: tuple[str, str, float]) -> str:
+    """A vLLM V1 body with one series per (model_name, engine, value)."""
+
+    return "".join(
+        f'vllm:generation_tokens_total{{engine="{engine}",model_name="{model}"}} {value}\n'
+        for model, engine, value in values
+    ) + 'vllm:generation_tokens_total_created{engine="0",model_name="qwen-32b"} 1.7e9\n'
+
+
+def snapshot_then_report(monkeypatch, capsys, history, tmp_path, start_body, end_body):
+    write_history(history, make_check("cand", 30, 0.60, quant="fp8"))
+    start = tmp_path / "start.json"
+    fake_counter(monkeypatch, start_body)
+    assert main(["savings", "snapshot", "--metrics-url", METRICS_URL, "--out", str(start)]) == 0
+    capsys.readouterr()
+    fake_counter(monkeypatch, end_body)
+    return run_savings(
+        capsys, history, *pair("--metrics-url", METRICS_URL, "--window-start", str(start))
+    )
 
 
 def test_snapshot_delta_is_measured_tokens(history, tmp_path, monkeypatch, capsys):
@@ -185,7 +213,8 @@ def test_snapshot_delta_is_measured_tokens(history, tmp_path, monkeypatch, capsy
     assert main(["savings", "snapshot", "--metrics-url", METRICS_URL, "--out", str(start)]) == 0
     capsys.readouterr()
     saved = json.loads(start.read_text())
-    assert saved["value"] == 5_000_000 and saved["taken_at"] == "2026-10-01T12:00:00Z"
+    assert saved["series"] == [{"labels": {}, "value": 5_000_000}]
+    assert saved["taken_at"] == "2026-10-01T12:00:00Z"
 
     calls = fake_counter(monkeypatch, 505_000_000)
     monkeypatch.setattr(savings_module, "_now", lambda: T0 + timedelta(days=30))
@@ -212,7 +241,7 @@ def test_counter_reset_is_refused(history, tmp_path, monkeypatch, capsys):
     )
     assert code == 1
     assert out == ""
-    assert "counter reset" in err
+    assert "the counter reset" in err
 
 
 def test_snapshot_from_another_endpoint_is_refused(history, tmp_path, monkeypatch, capsys):
@@ -251,3 +280,86 @@ def test_json_statement_shape(history, capsys):
     assert statement["savings"]["conservative_usd"] == pytest.approx(0.76)
     assert statement["savings"]["point_estimate_usd"] == pytest.approx(0.80)
     assert statement["savings"]["conservative_usd"] <= statement["savings"]["point_estimate_usd"]
+
+
+# ---------------------------------------------------------------------------
+# Per-series counters: vLLM V1 with data parallelism exposes one series per
+# engine; other models on the same /metrics must not be billed.
+# ---------------------------------------------------------------------------
+
+
+def test_data_parallel_engines_are_summed(history, tmp_path, monkeypatch, capsys):
+    code, out, err = snapshot_then_report(
+        monkeypatch, capsys, history, tmp_path,
+        engines(("qwen-32b", "0", 1_000), ("qwen-32b", "1", 2_000)),
+        engines(("qwen-32b", "0", 300_001_000), ("qwen-32b", "1", 200_002_000)),
+    )
+    assert code == 0, err
+    assert "500,000,000  [MEASURED]" in out
+    assert "summed over 2 series with model_name=qwen-32b" in out
+    assert "Verified savings (conservative): $190.00" in out
+
+
+def test_series_order_swapped_still_totals_per_series(history, tmp_path, monkeypatch, capsys):
+    # Engine 1 listed first at the report: last-series-wins would compare
+    # engine 1 now against engine 0 then.
+    code, out, err = snapshot_then_report(
+        monkeypatch, capsys, history, tmp_path,
+        engines(("qwen-32b", "0", 10_000_000), ("qwen-32b", "1", 900_000_000)),
+        engines(("qwen-32b", "1", 1_000_000_000), ("qwen-32b", "0", 20_000_000)),
+    )
+    assert code == 0, err
+    assert "110,000,000  [MEASURED]" in out
+
+
+def test_reset_in_one_series_is_refused(history, tmp_path, monkeypatch, capsys):
+    code, out, err = snapshot_then_report(
+        monkeypatch, capsys, history, tmp_path,
+        engines(("qwen-32b", "0", 5_000), ("qwen-32b", "1", 900_000)),
+        engines(("qwen-32b", "0", 9_000_000), ("qwen-32b", "1", 10)),
+    )
+    assert code == 1 and out == ""
+    assert "the counter reset" in err and "'engine': '1'" in err
+
+
+def test_series_missing_at_report_is_refused(history, tmp_path, monkeypatch, capsys):
+    code, _out, err = snapshot_then_report(
+        monkeypatch, capsys, history, tmp_path,
+        engines(("qwen-32b", "0", 5_000), ("qwen-32b", "1", 6_000)),
+        engines(("qwen-32b", "0", 9_000_000)),
+    )
+    assert code == 1
+    assert "gone now" in err
+
+
+def test_new_series_counts_from_zero_and_is_noted(history, tmp_path, monkeypatch, capsys):
+    code, out, err = snapshot_then_report(
+        monkeypatch, capsys, history, tmp_path,
+        engines(("qwen-32b", "0", 1_000_000)),
+        engines(("qwen-32b", "0", 101_000_000), ("qwen-32b", "1", 50_000_000)),
+    )
+    assert code == 0, err
+    assert "150,000,000  [MEASURED]" in out
+    assert "note: 1 series new since the snapshot, counted from 0" in out
+
+
+def test_other_models_series_are_not_counted(history, tmp_path, monkeypatch, capsys):
+    code, out, err = snapshot_then_report(
+        monkeypatch, capsys, history, tmp_path,
+        engines(("qwen-32b", "0", 0), ("llama-8b", "0", 0)),
+        engines(("qwen-32b", "0", 40_000_000), ("llama-8b", "0", 999_000_000)),
+    )
+    assert code == 0, err
+    assert "40,000,000  [MEASURED]" in out
+    assert "summed over 1 series" in out
+
+
+def test_no_series_for_the_model_is_refused(history, tmp_path, monkeypatch, capsys):
+    code, out, err = snapshot_then_report(
+        monkeypatch, capsys, history, tmp_path,
+        engines(("llama-8b", "0", 0)),
+        engines(("llama-8b", "0", 999_000_000)),
+    )
+    assert code == 1 and out == ""
+    assert "has model_name='qwen-32b'" in err
+    assert len(err.strip().splitlines()) == 1

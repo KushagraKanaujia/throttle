@@ -14,7 +14,9 @@ Rules:
   saving. A change in GPU count does count (it is a real cost).
 * Token counts are REPORTED BY OPERATOR (``--tokens``) or MEASURED as a delta
   of vLLM's ``vllm:generation_tokens_total`` counter since a snapshot taken
-  with ``throttle savings snapshot``. A counter reset is refused.
+  with ``throttle savings snapshot``, per labelled series (e.g. one per
+  data-parallel engine), keeping only the checks' model_name, then summed.
+  A series that went down or disappeared is a reset and is refused.
 * No fees, no pricing, no network calls except the user-given metrics URL.
 """
 
@@ -22,20 +24,24 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import sys
+import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Mapping
 
-from .advisor import _scrape
 from .check import (
     EXIT_FAILED,
     EXIT_OK,
     EXIT_USAGE,
     HISTORY_FILENAME,
+    MAX_METRICS_BYTES,
     METRIC_LABELS,
+    METRICS_TIMEOUT_SECONDS,
     VERDICT_CHEAPER,
     WORKLOAD_IDENTITY_FIELDS,
+    _LABEL,
     _metrics_url_problem,
     _money,
     _token_count,
@@ -107,8 +113,8 @@ def add_savings_arguments(parser: argparse.ArgumentParser) -> None:
         "snapshot",
         help="record the vLLM generation-token counter at the start of a period",
         description=(
-            f"Reads {GENERATION_COUNTER} from --metrics-url once and writes it with a "
-            "UTC timestamp to --out. Pass that file to 'throttle savings --window-start'."
+            f"Reads every series of {GENERATION_COUNTER} from --metrics-url once and "
+            "writes them with a UTC timestamp to --out. Pass that file to 'throttle savings --window-start'."
         ),
     )
     snapshot.add_argument("--metrics-url", required=True, metavar="URL",
@@ -125,35 +131,91 @@ def _iso(moment: datetime) -> str:
     return moment.isoformat().replace("+00:00", "Z")
 
 
-def read_generation_counter(url: str) -> float:
-    """Current value of vLLM's generation-token counter at ``url``."""
+def fetch_metrics_text(url: str) -> str:
+    """One bounded GET of the user-given /metrics URL."""
 
     problem = _metrics_url_problem(url)
     if problem:
         raise SavingsRefused(f"--metrics-url {problem}")
     try:
-        metrics = _scrape(url)
-    except (ConnectionError, OSError, ValueError) as exc:
+        with urllib.request.urlopen(url, timeout=METRICS_TIMEOUT_SECONDS) as response:
+            body = response.read(MAX_METRICS_BYTES + 1)
+    except (OSError, ValueError) as exc:
         raise SavingsRefused(f"could not read {url}: {exc}") from None
-    value = metrics.get(GENERATION_COUNTER)
-    if value is None:
+    if len(body) > MAX_METRICS_BYTES:
+        raise SavingsRefused(f"{url} returned more than {MAX_METRICS_BYTES:,} bytes")
+    return body.decode("utf-8", errors="replace")
+
+
+def _series_key(labels: Mapping[str, str]) -> str:
+    return json.dumps(sorted(labels.items()))
+
+
+def parse_counter_series(text: str) -> dict[str, dict[str, Any]]:
+    """Every labelled series of the generation-token counter, keyed by label set."""
+
+    series: dict[str, dict[str, Any]] = {}
+    for raw in text.splitlines():
+        line = raw.strip()
+        if not line.startswith(GENERATION_COUNTER):
+            continue
+        rest = line[len(GENERATION_COUNTER):]
+        labels: dict[str, str] = {}
+        if rest.startswith("{"):
+            end = rest.rfind("}")
+            if end < 0:
+                continue
+            labels = {k: v for k, v in _LABEL.findall(rest[1:end])}
+            rest = rest[end + 1:]
+        elif not rest[:1].isspace():
+            continue  # another metric whose name starts with this one
+        try:
+            value = float(rest.split()[0])
+        except (IndexError, ValueError):
+            continue
+        if not math.isfinite(value) or value < 0:
+            continue
+        key = _series_key(labels)
+        if key in series:
+            raise SavingsRefused(f"{GENERATION_COUNTER} lists the label set {labels} twice")
+        series[key] = {"labels": labels, "value": value}
+    return series
+
+
+def read_counter_series(url: str) -> dict[str, dict[str, Any]]:
+    series = parse_counter_series(fetch_metrics_text(url))
+    if not series:
         raise SavingsRefused(f"{url} does not expose {GENERATION_COUNTER} (is it a vLLM /metrics endpoint?)")
-    return value
+    return series
 
 
 def take_snapshot(url: str) -> dict[str, Any]:
+    series = read_counter_series(url)
     return {
         "record_type": SNAPSHOT_RECORD_TYPE,
         "record_version": SNAPSHOT_RECORD_VERSION,
         "metrics_url": url,
         "counter": GENERATION_COUNTER,
-        "value": read_generation_counter(url),
+        "series": [series[key] for key in sorted(series)],
         "taken_at": _iso(_now()),
     }
 
 
-def measured_tokens(url: str, start_file: str) -> dict[str, Any]:
-    """Counter delta since the snapshot in ``start_file``; refuses a reset."""
+def _for_model(
+    series: Mapping[str, Mapping[str, Any]], has_model_label: bool, model: str
+) -> dict[str, Mapping[str, Any]]:
+    if not has_model_label:
+        return dict(series)
+    return {k: v for k, v in series.items() if v["labels"].get("model_name") == model}
+
+
+def measured_tokens(url: str, start_file: str, model: str) -> dict[str, Any]:
+    """Per-series counter delta since the snapshot in ``start_file``, summed.
+
+    Only series whose model_name label is ``model`` count (every series when
+    the server reports no model_name label). A series that went down, or that
+    disappeared, is a reset and is refused; a new series counts from 0.
+    """
 
     try:
         start = json.loads(Path(start_file).expanduser().read_text(encoding="utf-8"))
@@ -161,29 +223,66 @@ def measured_tokens(url: str, start_file: str) -> dict[str, Any]:
         raise SavingsRefused(f"could not read --window-start {start_file}: {exc}") from None
     if not isinstance(start, dict) or start.get("record_type") != SNAPSHOT_RECORD_TYPE:
         raise SavingsRefused(f"{start_file} is not a 'throttle savings snapshot' file")
-    start_value = start.get("value")
-    if not isinstance(start_value, (int, float)) or isinstance(start_value, bool) or start_value < 0:
-        raise SavingsRefused(f"{start_file} has no usable counter value")
+    entries = start.get("series")
+    if not isinstance(entries, list) or not all(
+        isinstance(e, dict) and isinstance(e.get("labels"), dict)
+        and isinstance(e.get("value"), (int, float)) and not isinstance(e.get("value"), bool)
+        and e["value"] >= 0
+        for e in entries
+    ):
+        raise SavingsRefused(f"{start_file} has no usable per-series counter values")
     if start.get("metrics_url") != url:
         raise SavingsRefused(
             f"the snapshot was taken from {start.get('metrics_url')}, not {url}; "
             "a counter delta across two endpoints is meaningless"
         )
-    current = read_generation_counter(url)
-    if current < start_value:
+    before_all = {_series_key(e["labels"]): e for e in entries}
+    now_all = read_counter_series(url)
+    has_model_label = any(
+        "model_name" in e["labels"] for e in [*before_all.values(), *now_all.values()]
+    )
+    before = _for_model(before_all, has_model_label, model)
+    now = _for_model(now_all, has_model_label, model)
+    if not now:
         raise SavingsRefused(
-            f"{GENERATION_COUNTER} went down ({start_value:,.0f} at the snapshot, "
-            f"{current:,.0f} now): the server restarted and the counter reset, so the "
-            "tokens served this period are unknown. Take a new snapshot, or use --tokens"
+            f"no {GENERATION_COUNTER} series at {url} has model_name={model!r}, the checks' model"
         )
+    missing = [before[k]["labels"] for k in before if k not in now]
+    if missing:
+        raise SavingsRefused(
+            f"{GENERATION_COUNTER} series {missing} existed at the snapshot but are gone now: "
+            "the server restarted or changed shape, so the tokens served this period are "
+            "unknown. Take a new snapshot, or use --tokens"
+        )
+    per_series = []
+    for key in sorted(now):
+        start_value = float(before[key]["value"]) if key in before else 0.0
+        end_value = float(now[key]["value"])
+        if end_value < start_value:
+            raise SavingsRefused(
+                f"{GENERATION_COUNTER}{now[key]['labels']} went down ({start_value:,.0f} at "
+                f"the snapshot, {end_value:,.0f} now): the counter reset, so the tokens "
+                "served this period are unknown. Take a new snapshot, or use --tokens"
+            )
+        per_series.append({
+            "labels": dict(now[key]["labels"]),
+            "start": start_value,
+            "end": end_value,
+            "delta": end_value - start_value,
+            "new_since_snapshot": key not in before,
+        })
+    new = [s["labels"] for s in per_series if s["new_since_snapshot"]]
     return {
-        "count": int(round(current - start_value)),
+        "count": int(round(sum(s["delta"] for s in per_series))),
         "source": SOURCE_MEASURED,
-        "detail": f"{GENERATION_COUNTER} delta at {url}",
+        "detail": f"{GENERATION_COUNTER} delta at {url}, summed over {len(per_series)} series"
+        + (f" with model_name={model}" if has_model_label else ""),
         "window_start": start.get("taken_at"),
         "window_end": _iso(_now()),
-        "counter_start": start_value,
-        "counter_end": current,
+        "series": per_series,
+        "new_series_note": (
+            f"{len(new)} series new since the snapshot, counted from 0: {new}" if new else None
+        ),
     }
 
 
@@ -356,6 +455,7 @@ def format_statement(statement: Mapping[str, Any]) -> str:
         f"  verdict     {statement['verdict']} (re-judged): {statement['verdict_reason']}",
         f"  tokens      {tokens['count']:,}  [{tokens['source']}]"
         + (f"  {tokens['detail']}" if tokens.get("detail") else ""),
+        *([f"              note: {tokens['new_series_note']}"] if tokens.get("new_series_note") else []),
         "",
         f"  Verified savings (conservative): {_money(savings['conservative_usd'])}",
         f"    = ({_money(base['dollars_per_million']['ci_low'])} baseline CI low - "
@@ -382,7 +482,7 @@ def handle_savings(args: argparse.Namespace) -> int:
             return _refuse(str(exc))
         out = Path(args.out).expanduser()
         out.write_text(json.dumps(snapshot, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-        print(f"Recorded {GENERATION_COUNTER} = {snapshot['value']:,.0f} at "
+        print(f"Recorded {len(snapshot['series'])} series of {GENERATION_COUNTER} at "
               f"{snapshot['taken_at']} in {out}")
         return EXIT_OK
 
@@ -404,7 +504,10 @@ def handle_savings(args: argparse.Namespace) -> int:
         if args.tokens is not None:
             tokens: dict[str, Any] = {"count": args.tokens, "source": SOURCE_OPERATOR}
         else:
-            tokens = measured_tokens(args.metrics_url, args.window_start)
+            baseline = records[_find(records, args.baseline, "baseline", path)]
+            tokens = measured_tokens(
+                args.metrics_url, args.window_start, str(baseline["fingerprint"].get("model"))
+            )
         statement = build_statement(
             records, args.baseline, args.candidate, tokens, path, args.period_label
         )
