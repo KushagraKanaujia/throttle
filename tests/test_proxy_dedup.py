@@ -13,6 +13,19 @@ from fastapi.responses import JSONResponse
 
 from throttle.proxy import ProxyServer
 
+# Each server gets a fresh free port, so a server left over from an earlier
+# test (or another process) can't make the next bind fail.
+PORTS: Dict[str, int] = {}
+
+
+def _bind(name: str) -> int:
+    import socket
+
+    with socket.socket() as sock:
+        sock.bind(("127.0.0.1", 0))
+        PORTS[name] = sock.getsockname()[1]
+    return PORTS[name]
+
 
 class MockBackend:
     """Mock inference backend for testing deduplication behavior."""
@@ -92,7 +105,7 @@ async def mock_backend_server():
     async def completions(request: Request):
         return await mock.handle_request(request)
 
-    config = uvicorn.Config(app, host="127.0.0.1", port=58090, log_level="error")
+    config = uvicorn.Config(app, host="127.0.0.1", port=_bind("backend"), log_level="error")
     server = uvicorn.Server(config)
 
     # Start server in background
@@ -123,7 +136,7 @@ async def proxy_to_mock(mock_backend_server):
         await proxy.shutdown()
 
     proxy = ProxyServer(
-        backend_url="http://127.0.0.1:58090",
+        backend_url=f"http://127.0.0.1:{PORTS['backend']}",
         enable_cache=True,
         cache_ttl_seconds=3600.0,
         cache_max_size=100,
@@ -133,7 +146,7 @@ async def proxy_to_mock(mock_backend_server):
 
     app = proxy.app
 
-    config = uvicorn.Config(app, host="127.0.0.1", port=58091, log_level="error")
+    config = uvicorn.Config(app, host="127.0.0.1", port=_bind("proxy"), log_level="error")
     server = uvicorn.Server(config)
 
     # Start server in background
@@ -161,7 +174,7 @@ async def test_five_concurrent_identical_requests_one_backend_call(proxy_to_mock
     async def send_request(client_id: int):
         async with httpx.AsyncClient(timeout=10.0) as client:
             response = await client.post(
-                "http://127.0.0.1:58091/v1/chat/completions",
+                f"http://127.0.0.1:{PORTS['proxy']}/v1/chat/completions",
                 json=payload,
             )
             return client_id, response.json()
@@ -182,7 +195,7 @@ async def test_five_concurrent_identical_requests_one_backend_call(proxy_to_mock
 
     # Assert backend_calls counter matches mock's count
     async with httpx.AsyncClient() as health_client:
-        health = await health_client.get("http://127.0.0.1:58091/health")
+        health = await health_client.get(f"http://127.0.0.1:{PORTS['proxy']}/health")
         stats = health.json()["cache_stats"]
         assert stats["backend_calls"] == 1, f"Counter shows {stats['backend_calls']}, mock received {mock.request_count}"
         assert stats["misses"] == 5, f"Expected 5 cache misses (all 5 checked cache)"
@@ -213,7 +226,7 @@ async def test_ten_concurrent_paraphrases_current_behavior(proxy_to_mock, mock_b
     async def send_request(idx: int, prompt: str):
         async with httpx.AsyncClient(timeout=10.0) as client:
             response = await client.post(
-                "http://127.0.0.1:58091/v1/chat/completions",
+                f"http://127.0.0.1:{PORTS['proxy']}/v1/chat/completions",
                 json={
                     "model": "mock-model",
                     "messages": [{"role": "user", "content": prompt}],
@@ -249,7 +262,7 @@ async def test_ten_concurrent_paraphrases_current_behavior(proxy_to_mock, mock_b
 
     # Assert backend_calls counter matches mock
     async with httpx.AsyncClient() as health_client:
-        health = await health_client.get("http://127.0.0.1:58091/health")
+        health = await health_client.get(f"http://127.0.0.1:{PORTS['proxy']}/health")
         stats = health.json()["cache_stats"]
         assert stats["backend_calls"] == expected_backend_calls
 
@@ -281,13 +294,13 @@ async def test_backend_error_propagates_to_all_waiters(mock_backend_server):
         await proxy.shutdown()
 
     proxy = ProxyServer(
-        backend_url="http://127.0.0.1:58090",
+        backend_url=f"http://127.0.0.1:{PORTS['backend']}",
         enable_cache=True,
         lifespan=lifespan,
     )
 
-    # Start proxy HTTP server on port 58092
-    config = uvicorn.Config(proxy.app, host="127.0.0.1", port=58092, log_level="error")
+    # Start proxy HTTP server on a free port
+    config = uvicorn.Config(proxy.app, host="127.0.0.1", port=_bind("proxy2"), log_level="error")
     server = uvicorn.Server(config)
     server_task = asyncio.create_task(server.serve())
     await asyncio.sleep(1)  # Wait for server to start
@@ -304,7 +317,7 @@ async def test_backend_error_propagates_to_all_waiters(mock_backend_server):
             try:
                 async with httpx.AsyncClient(timeout=5.0) as client:
                     response = await client.post(
-                        "http://127.0.0.1:58092/v1/chat/completions",
+                        f"http://127.0.0.1:{PORTS['proxy2']}/v1/chat/completions",
                         json=payload,
                     )
                     response.raise_for_status()
@@ -354,14 +367,14 @@ async def test_backend_timeout_does_not_hang_waiters(mock_backend_server):
         await proxy.shutdown()
 
     proxy = ProxyServer(
-        backend_url="http://127.0.0.1:58090",
+        backend_url=f"http://127.0.0.1:{PORTS['backend']}",
         enable_cache=True,
         backend_timeout_seconds=0.3,  # Short timeout to trigger before mock's 0.5s
         lifespan=lifespan,
     )
 
-    # Start proxy HTTP server on port 58091
-    config = uvicorn.Config(proxy.app, host="127.0.0.1", port=58091, log_level="error")
+    # Start proxy HTTP server on a free port
+    config = uvicorn.Config(proxy.app, host="127.0.0.1", port=_bind("proxy"), log_level="error")
     server = uvicorn.Server(config)
     server_task = asyncio.create_task(server.serve())
     await asyncio.sleep(1)  # Wait for server to start
@@ -379,7 +392,7 @@ async def test_backend_timeout_does_not_hang_waiters(mock_backend_server):
                 async with httpx.AsyncClient(timeout=2.0) as client:
                     # Call through proxy's HTTP endpoint
                     response = await client.post(
-                        "http://127.0.0.1:58091/v1/chat/completions",
+                        f"http://127.0.0.1:{PORTS['proxy']}/v1/chat/completions",
                         json=payload,
                     )
                     response.raise_for_status()  # Raise exception for 4xx/5xx
@@ -420,7 +433,7 @@ async def test_sequential_identical_requests_hit_cache(proxy_to_mock, mock_backe
     async with httpx.AsyncClient(timeout=10.0) as client:
         # First request - cache miss
         response1 = await client.post(
-            "http://127.0.0.1:58091/v1/chat/completions",
+            f"http://127.0.0.1:{PORTS['proxy']}/v1/chat/completions",
             json=payload,
         )
         assert response1.status_code == 200
@@ -431,7 +444,7 @@ async def test_sequential_identical_requests_hit_cache(proxy_to_mock, mock_backe
 
         # Second request - should be cache hit
         response2 = await client.post(
-            "http://127.0.0.1:58091/v1/chat/completions",
+            f"http://127.0.0.1:{PORTS['proxy']}/v1/chat/completions",
             json=payload,
         )
         assert response2.status_code == 200
@@ -444,7 +457,7 @@ async def test_sequential_identical_requests_hit_cache(proxy_to_mock, mock_backe
         assert mock.request_count == 1, f"Expected 1 backend call, got {mock.request_count}"
 
         # Check cache stats
-        health = await client.get("http://127.0.0.1:58091/health")
+        health = await client.get(f"http://127.0.0.1:{PORTS['proxy']}/health")
         stats = health.json()["cache_stats"]
         assert stats["backend_calls"] == 1
         assert stats["hits"] == 1, "Second request should be cache hit"
@@ -460,7 +473,7 @@ async def test_backend_calls_counter_matches_mock_count(proxy_to_mock, mock_back
         # 3 different prompts = 3 backend calls
         for i in range(3):
             await client.post(
-                "http://127.0.0.1:58091/v1/chat/completions",
+                f"http://127.0.0.1:{PORTS['proxy']}/v1/chat/completions",
                 json={
                     "model": "mock-model",
                     "messages": [{"role": "user", "content": f"Prompt {i}"}],
@@ -469,7 +482,7 @@ async def test_backend_calls_counter_matches_mock_count(proxy_to_mock, mock_back
             )
 
         # Check agreement
-        health = await client.get("http://127.0.0.1:58091/health")
+        health = await client.get(f"http://127.0.0.1:{PORTS['proxy']}/health")
         stats = health.json()["cache_stats"]
 
         assert stats["backend_calls"] == mock.request_count, \
@@ -496,7 +509,7 @@ async def test_concurrent_requests_with_mixed_prompts(proxy_to_mock, mock_backen
     async def send_request(idx: int):
         async with httpx.AsyncClient(timeout=10.0) as client:
             response = await client.post(
-                "http://127.0.0.1:58091/v1/chat/completions",
+                f"http://127.0.0.1:{PORTS['proxy']}/v1/chat/completions",
                 json={
                     "model": "mock-model",
                     "messages": [{"role": "user", "content": prompts[idx]}],
@@ -526,7 +539,7 @@ async def test_concurrent_requests_with_mixed_prompts(proxy_to_mock, mock_backen
 
     # Counter should match
     async with httpx.AsyncClient() as health_client:
-        health = await health_client.get("http://127.0.0.1:58091/health")
+        health = await health_client.get(f"http://127.0.0.1:{PORTS['proxy']}/health")
         stats = health.json()["cache_stats"]
         assert stats["backend_calls"] == 4
         assert stats["backend_calls"] == mock.request_count
@@ -547,12 +560,12 @@ async def test_cross_scope_hit_inflation_bug_regression(proxy_to_mock, mock_back
     async with httpx.AsyncClient(timeout=10.0) as client:
         # Prime cache with model A
         await client.post(
-            "http://127.0.0.1:58091/v1/chat/completions",
+            f"http://127.0.0.1:{PORTS['proxy']}/v1/chat/completions",
             json={"model": "model-a", "messages": messages, "stream": False},
         )
 
         # Get health after priming
-        health = await client.get("http://127.0.0.1:58091/health")
+        health = await client.get(f"http://127.0.0.1:{PORTS['proxy']}/health")
         stats_after_a = health.json()["cache_stats"]
         assert stats_after_a["hits"] == 0, "First request should not be a hit"
         assert stats_after_a["misses"] == 1, "First request should be a miss"
@@ -560,12 +573,12 @@ async def test_cross_scope_hit_inflation_bug_regression(proxy_to_mock, mock_back
 
         # Request with model B (same messages, different scope)
         await client.post(
-            "http://127.0.0.1:58091/v1/chat/completions",
+            f"http://127.0.0.1:{PORTS['proxy']}/v1/chat/completions",
             json={"model": "model-b", "messages": messages, "stream": False},
         )
 
         # Get health after model B
-        health = await client.get("http://127.0.0.1:58091/health")
+        health = await client.get(f"http://127.0.0.1:{PORTS['proxy']}/health")
         stats_after_b = health.json()["cache_stats"]
 
         # REGRESSION: Before fix, hits would be 1 (false positive from similarity before scope check)
