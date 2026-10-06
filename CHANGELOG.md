@@ -4,6 +4,16 @@ All notable changes to Throttle will be documented in this file.
 
 ## [Unreleased]
 
+### Added
+- `throttle savings`: a conservative, auditable verified-savings statement for a
+  baseline -> candidate change. Refuses unless re-judging the two recorded
+  checks gives a calibrated CHEAPER on the same model and workload. Uses the
+  conservative bound (baseline CI low - candidate CI high) x production tokens,
+  with the point estimate labelled. Tokens are `--tokens` (REPORTED BY OPERATOR)
+  or a vLLM generation-token counter delta since `throttle savings snapshot`
+  (MEASURED; a counter reset is refused). `--json` emits a `savings_statement`
+  record (version 1).
+
 ## [0.5.1] - 2026-09-29
 
 ### Added
