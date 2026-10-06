@@ -27,6 +27,11 @@ Honesty rules this module follows:
   traffic. ``--warm-cache`` resends identical prompts on purpose. The mode is
   part of the workload identity, so cold and warm checks are never judged
   against each other.
+* ``--workload agent`` sends multi-turn synthetic agent sessions instead
+  (see ``agent_workload``). Prefix reuse within a session is intended; a
+  per-run tag at the start of the shared system prompt blocks reuse across
+  runs. Its shape is part of the workload identity (``workload_shape``), so
+  agent and default checks are never judged against each other.
 * A within-run CI cannot see run-to-run drift (machine load, thermal state,
   other tenants), so two checks taken at different times are not a
   controlled comparison. A directional verdict (CHEAPER / MORE EXPENSIVE)
@@ -42,7 +47,8 @@ Run-to-run noise bound (the exact rule):
 * A "same-config group" is every check with the same endpoint, the same
   flattened config fingerprint (model, label, GPU rate, server-reported
   settings, --config pairs), the same workload identity fields (prompts,
-  requests per block, concurrency, max tokens, prompt cache mode) and the same Throttle version.
+  requests per block, concurrency, max tokens, prompt cache mode, agent
+  workload shape) and the same Throttle version.
 * Only the two groups on either side of the comparison count: the
   baseline's config and this check's config (one group if they are equal).
   The check being judged is never part of its own calibration sample, each
@@ -80,6 +86,7 @@ from urllib.parse import quote, urlencode, urlsplit, urlunsplit
 import httpx
 
 from . import __version__
+from . import agent_workload
 from .benchmark import (
     canonical_workload_hash,
     load_prompts,
@@ -156,6 +163,9 @@ WORKLOAD_IDENTITY_FIELDS = (
     "concurrency",
     "max_tokens",
     "prompt_cache_mode",
+    # The agent workload's shape parameters (None for the default workload,
+    # so default checks compare exactly as before). See workload_value.
+    "workload_shape",
 )
 
 # Prompt cache modes. COLD (default): every measured request carries a unique
@@ -486,6 +496,48 @@ def add_check_arguments(parser: argparse.ArgumentParser) -> None:
         "with a unique tag such as '[run 482915 req 0012] ' so a server with "
         "prefix caching (vLLM, SGLang, Ollama) cannot serve repeats from cache. "
         "Cold and warm checks are never compared with each other",
+    )
+    agent = parser.add_argument_group(
+        "agent workload (--workload agent; keep identical between checks)"
+    )
+    agent.add_argument(
+        "--workload",
+        choices=agent_workload.PROFILES,
+        default=agent_workload.PROFILE_DEFAULT,
+        help="'default': single-turn prompts, each with a unique tag. 'agent': "
+        "multi-turn synthetic agent sessions. Each session shares one system "
+        "prompt plus tool schema, and every turn resends the conversation so far "
+        "plus the model's reply and a tool result, so a prefix cache can reuse it "
+        "within the session (a per-run tag in the system prompt stops one run's "
+        "cache helping the next). A block is --sessions-concurrency concurrent "
+        "sessions of --turns sequential turns; --requests-per-block and --prompts "
+        "do not apply. Agent and default checks are never compared",
+    )
+    agent.add_argument(
+        "--turns",
+        type=_positive_int,
+        metavar="N",
+        help=f"agent: turns per session (default: {agent_workload.DEFAULT_TURNS})",
+    )
+    agent.add_argument(
+        "--sessions-concurrency",
+        type=_positive_int,
+        metavar="C",
+        help="agent: sessions run at once, and sessions per block (default: --concurrency)",
+    )
+    agent.add_argument(
+        "--tool-output-tokens",
+        type=_non_negative_int,
+        metavar="T",
+        help="agent: approximate size in tokens of the synthetic tool result "
+        f"appended each turn (default: {agent_workload.DEFAULT_TOOL_OUTPUT_TOKENS})",
+    )
+    agent.add_argument(
+        "--system-prompt-tokens",
+        type=_non_negative_int,
+        metavar="S",
+        help="agent: approximate size in tokens of the shared system prompt plus "
+        f"tool schema (default: {agent_workload.DEFAULT_SYSTEM_PROMPT_TOKENS})",
     )
     workload.add_argument(
         "--request-timeout",
@@ -907,6 +959,22 @@ async def _send(
 ) -> tuple[int, int, bool]:
     """Send one request; return prompt tokens, completion tokens, and whether
     the answer stopped at max_tokens (finish_reason "length")."""
+    prompt_tokens, completion_tokens, hit_max_tokens, _ = await _send_with_reply(
+        client, chat_url, headers, model, messages, max_tokens
+    )
+    return prompt_tokens, completion_tokens, hit_max_tokens
+
+
+async def _send_with_reply(
+    client: httpx.AsyncClient,
+    chat_url: str,
+    headers: Mapping[str, str],
+    model: str,
+    messages: Sequence[Mapping[str, Any]],
+    max_tokens: int,
+) -> tuple[int, int, bool, str]:
+    """``_send`` that also returns the answer's text (the agent workload
+    appends it to the next turn's prompt)."""
     try:
         response = await client.post(
             chat_url,
@@ -958,7 +1026,10 @@ async def _send(
     choices = body.get("choices")
     first = choices[0] if isinstance(choices, list) and choices else None
     hit_max_tokens = isinstance(first, dict) and first.get("finish_reason") == "length"
-    return prompt_tokens, completion_tokens, hit_max_tokens
+    message = first.get("message") if isinstance(first, dict) else None
+    content = message.get("content") if isinstance(message, dict) else None
+    reply = content if isinstance(content, str) else ""
+    return prompt_tokens, completion_tokens, hit_max_tokens, reply
 
 
 async def _run_block(
@@ -1060,6 +1131,226 @@ def measured_prompts(
     return plan
 
 
+# --------------------------------------------------------------------------
+# Agent workload (--workload agent)
+# --------------------------------------------------------------------------
+
+
+def _agent_shape(
+    args: argparse.Namespace,
+) -> tuple[agent_workload.AgentShape | None, str | None]:
+    """The agent shape for ``--workload agent`` (None for the default
+    workload), or a usage problem. Sets requests per block and concurrency to
+    the agent's, so the safety limits and the record use real request counts."""
+
+    options = {
+        "--turns": getattr(args, "turns", None),
+        "--sessions-concurrency": getattr(args, "sessions_concurrency", None),
+        "--tool-output-tokens": getattr(args, "tool_output_tokens", None),
+        "--system-prompt-tokens": getattr(args, "system_prompt_tokens", None),
+    }
+    if getattr(args, "workload", agent_workload.PROFILE_DEFAULT) != agent_workload.PROFILE_AGENT:
+        given = [flag for flag, value in options.items() if value is not None]
+        if given:
+            return None, ", ".join(given) + " only applies with --workload agent"
+        return None, None
+    if args.prompts:
+        return None, "--prompts does not apply to --workload agent (its sessions are synthetic)"
+    if args.warm_cache:
+        return None, (
+            "--warm-cache does not apply to --workload agent (prefix reuse within a "
+            "run is part of the agent workload; reuse across runs is always blocked)"
+        )
+
+    def pick(value: int | None, default: int) -> int:
+        return default if value is None else value
+
+    shape = agent_workload.AgentShape(
+        turns=pick(args.turns, agent_workload.DEFAULT_TURNS),
+        sessions_concurrency=pick(args.sessions_concurrency, args.concurrency),
+        system_prompt_tokens=pick(
+            args.system_prompt_tokens, agent_workload.DEFAULT_SYSTEM_PROMPT_TOKENS
+        ),
+        tool_output_tokens=pick(
+            args.tool_output_tokens, agent_workload.DEFAULT_TOOL_OUTPUT_TOKENS
+        ),
+    )
+    args.requests_per_block = shape.sessions_concurrency * shape.turns
+    args.concurrency = shape.sessions_concurrency
+    return shape, None
+
+
+def _agent_workload_record(
+    args: argparse.Namespace, shape: agent_workload.AgentShape, run_id: str | None
+) -> dict[str, Any]:
+    """The ``workload`` block of an agent check (measured fields filled later)."""
+
+    return {
+        # Hash of the generator, its seed and the shape: equal hashes mean the
+        # same synthetic sessions (given the same model replies).
+        "prompts_sha256": canonical_workload_hash(shape.generator_spec()),  # type: ignore[arg-type]
+        # Cold across runs (the run tag); prefix reuse within a run is intended.
+        "prompt_cache_mode": CACHE_MODE_COLD,
+        "prompt_nonce": {
+            "run_id": run_id,
+            "format": agent_workload.NONCE_FORMAT,
+            "placement": "start of the system message, shared by every session "
+            "and turn of this run",
+            "input_tokens": "include the run tag (a few tokens per request; not netted out)",
+        },
+        "sent_prompts_sha256": None,  # every measured request's messages, after the run
+        "prompt_count": args.blocks * shape.sessions_concurrency,
+        "prompts_source": "synthetic agent sessions",
+        "blocks": args.blocks,
+        "requests_per_block": args.requests_per_block,
+        "concurrency": args.concurrency,
+        "max_tokens": args.max_tokens,
+        "warmup_requests": args.warmup,
+        "temperature": 0,
+        "workload_shape": {
+            **shape.identity(),
+            "sessions_per_block": shape.sessions_concurrency,
+            "seed": shape.seed,
+            "generator_version": agent_workload.GENERATOR_VERSION,
+            "token_counts": "MEASURED (server usage); the *_tokens parameters are "
+            "estimates made without a tokenizer",
+            "mean_prompt_tokens_per_turn": None,
+            "mean_completion_tokens_per_turn": None,
+            "mean_prompt_tokens_by_turn": None,
+        },
+    }
+
+
+async def _run_agent_block(
+    client: httpx.AsyncClient,
+    chat_url: str,
+    headers: Mapping[str, str],
+    model: str,
+    shape: agent_workload.AgentShape,
+    run_id: str,
+    first_session: int,
+    max_tokens: int,
+) -> dict[str, Any]:
+    """Run ``shape.sessions_concurrency`` sessions at once, each of
+    ``shape.turns`` sequential turns. Session numbers start at ``first_session``."""
+
+    stop = asyncio.Event()
+    system = agent_workload.system_message(shape, run_id)
+
+    async def session(index: int) -> dict[str, Any]:
+        replies: list[str] = []
+        sent: list[list[dict[str, str]]] = []
+        prompt_by_turn: list[int] = []
+        completion = hits = 0
+        for _turn in range(shape.turns):
+            if stop.is_set():  # another session failed; send nothing more
+                break
+            messages = agent_workload.turn_messages(
+                shape, run_id, index, replies, system=system
+            )
+            try:
+                prompt_tokens, completion_tokens, hit, reply = await _send_with_reply(
+                    client, chat_url, headers, model, messages, max_tokens
+                )
+            except Exception:
+                stop.set()
+                raise
+            sent.append(messages)
+            replies.append(reply)
+            prompt_by_turn.append(prompt_tokens)
+            completion += completion_tokens
+            hits += 1 if hit else 0
+        return {"sent": sent, "prompt_by_turn": prompt_by_turn,
+                "completion": completion, "hits": hits}
+
+    started = time.perf_counter()
+    sessions = await gather_or_drain(
+        (session(first_session + i) for i in range(shape.sessions_concurrency)), stop
+    )
+    wall = time.perf_counter() - started
+    return {
+        "input_tokens": sum(sum(s["prompt_by_turn"]) for s in sessions),
+        "output_tokens": sum(s["completion"] for s in sessions),
+        "wall": wall,
+        "max_tokens_hits": sum(s["hits"] for s in sessions),
+        "sessions": sessions,
+    }
+
+
+async def _measure_agent(
+    client: httpx.AsyncClient,
+    chat_url: str,
+    headers: Mapping[str, str],
+    args: argparse.Namespace,
+    shape: agent_workload.AgentShape,
+    run_id: str,
+    workload: dict[str, Any],
+) -> list[dict[str, Any]]:
+    """Warm the run's system prefix, then measure ``args.blocks`` blocks of
+    concurrent sessions. Fills the measured fields of ``workload``."""
+
+    metric_label = METRIC_LABELS[args.metric]
+    if args.warmup:
+        print(
+            f"Warming up ({args.warmup} unmeasured request(s) with this run's system "
+            "prompt)...",
+            flush=True,
+        )
+        for index in range(args.warmup):
+            await _send(
+                client, chat_url, headers, args.model,
+                agent_workload.warmup_messages(shape, run_id, index), args.max_tokens,
+            )
+    blocks: list[dict[str, Any]] = []
+    all_sent: list[list[list[dict[str, str]]]] = []
+    by_turn: list[list[int]] = [[] for _ in range(shape.turns)]
+    completion_total = 0
+    for block_index in range(args.blocks):
+        measured = await _run_agent_block(
+            client, chat_url, headers, args.model, shape, run_id,
+            block_index * shape.sessions_concurrency, args.max_tokens,
+        )
+        input_tokens, output_tokens = measured["input_tokens"], measured["output_tokens"]
+        wall = measured["wall"]
+        if input_tokens == 0 or output_tokens == 0:
+            raise CheckError(
+                f"the endpoint reported {input_tokens} input / {output_tokens} "
+                "output tokens for a whole block, so $/M tokens is undefined"
+            )
+        for item in measured["sessions"]:
+            all_sent.append(item["sent"])
+            for turn, tokens in enumerate(item["prompt_by_turn"]):
+                by_turn[turn].append(tokens)
+        completion_total += output_tokens
+        costs = _block_costs(input_tokens, output_tokens, wall, args.gpu_hourly_rate)
+        blocks.append(
+            {
+                "input_tokens": input_tokens,
+                "output_tokens": output_tokens,
+                "max_tokens_hits": measured["max_tokens_hits"],
+                "sessions": shape.sessions_concurrency,
+                "wall_clock_seconds": wall,
+                "dollars_per_million": {k: costs[k] for k in METRIC_LABELS},
+                "gpu_dollars": costs["gpu_dollars"],
+            }
+        )
+        print(
+            f"  block {block_index + 1}/{args.blocks}: {shape.sessions_concurrency} sessions x "
+            f"{shape.turns} turns, {input_tokens} in / {output_tokens} out tokens in "
+            f"{wall:.2f}s -> {_money(costs[args.metric])}/M {metric_label}",
+            flush=True,
+        )
+    requests = args.blocks * args.requests_per_block
+    recorded = workload["workload_shape"]
+    recorded["mean_prompt_tokens_per_turn"] = sum(sum(t) for t in by_turn) / requests
+    recorded["mean_completion_tokens_per_turn"] = completion_total / requests
+    recorded["mean_prompt_tokens_by_turn"] = [
+        statistics.fmean(tokens) if tokens else None for tokens in by_turn
+    ]
+    workload["sent_prompts_sha256"] = canonical_workload_hash(all_sent)  # type: ignore[arg-type]
+    return blocks
+
+
 def workload_value(record: Mapping[str, Any], field: str) -> Any:
     """A workload identity field, reading pre-0.4.1 records as warm-cache."""
 
@@ -1067,6 +1358,11 @@ def workload_value(record: Mapping[str, Any], field: str) -> Any:
     value = workload.get(field)
     if field == "prompt_cache_mode" and value is None:
         return LEGACY_CACHE_MODE
+    if field == "workload_shape":
+        # Only the shape's parameters, never its measured token means.
+        if not isinstance(value, dict):
+            return None
+        return {key: value.get(key) for key in agent_workload.SHAPE_IDENTITY_KEYS}
     return value
 
 
@@ -1404,6 +1700,24 @@ def compare_checks(
                 "identical prompts that a prefix cache can serve, so their $/M "
                 "measure different traffic. Add or drop --warm-cache to match"
             )
+        if "workload_shape" in workload_diffs:
+            def shape_text(record: Mapping[str, Any]) -> str:
+                shape = workload_value(record, "workload_shape")
+                if shape is None:
+                    return "default"
+                return (
+                    f"{shape['profile']}: {shape['turns']} turns, "
+                    f"{shape['sessions_concurrency']} sessions at once, "
+                    f"{shape['system_prompt_tokens']}-token system prompt, "
+                    f"{shape['tool_output_tokens']}-token tool results"
+                )
+            comparison["reason"] += (
+                f". The workload profile changed ({shape_text(previous)} -> "
+                f"{shape_text(current)}): an agent check resends a growing "
+                "conversation that a prefix cache can reuse within a session, a "
+                "default check sends unrelated single-turn prompts. Match "
+                "--workload and its options"
+            )
         return comparison
     comparison["delta_dollars_per_million"] = new["mean"] - old["mean"]
     comparison["delta_percent"] = relative_delta_percent(new["mean"], old["mean"])
@@ -1565,12 +1879,24 @@ def _print_history(directory: Path, endpoint_filter: str | None, limit: int) -> 
         print(f"    endpoint  {record.get('endpoint')}  model {record['fingerprint'].get('model')}")
         print(f"    label     {record['fingerprint'].get('label') or '-'}   config {config_text}")
         print(f"    cache     {workload_value(record, 'prompt_cache_mode')}")
+        shape = workload_value(record, "workload_shape")
+        if shape is not None:
+            print(f"    workload  {_shape_text(shape)}")
         print(
             f"    cost      {_money(summary.get('mean'))}/M {METRIC_LABELS.get(metric, metric)} "
             f"[MEASURED] ({_ci_text(summary)}) at "
             f"{_money(record['fingerprint'].get('gpu_hourly_rate_usd'))}/hr [ASSUMED]"
         )
     return EXIT_OK
+
+
+def _shape_text(shape: Mapping[str, Any]) -> str:
+    return (
+        f"{shape.get('profile')}: {shape.get('turns')} turns x "
+        f"{shape.get('sessions_concurrency')} concurrent sessions, system prompt "
+        f"~{shape.get('system_prompt_tokens')} tokens, tool results "
+        f"~{shape.get('tool_output_tokens')} tokens"
+    )
 
 
 def _metrics_url_problem(url: str) -> str | None:
@@ -1849,8 +2175,22 @@ def build_share_summary(
         "cold (unique prompt per request)" if mode == CACHE_MODE_COLD
         else "warm (identical prompts repeated)"
     )
+    shape = workload_value(record, "workload_shape")
+    measured_shape = ""
+    if shape is not None:
+        recorded = workload.get("workload_shape") or {}
+        mode_text = "agent (shared system prefix reused within the run; per-run tag)"
+        if _is_number(recorded.get("mean_prompt_tokens_per_turn")) and _is_number(
+            recorded.get("mean_completion_tokens_per_turn")
+        ):
+            measured_shape = (
+                f"; measured {recorded['mean_prompt_tokens_per_turn']:.0f} prompt / "
+                f"{recorded['mean_completion_tokens_per_turn']:.0f} completion tokens per turn"
+            )
     source = workload.get("prompts_source")
     source_text = "built-in" if source in (None, "built-in") else "custom prompt file"
+    if shape is not None:
+        source_text = "synthetic agent session"
     digest = str(workload.get("prompts_sha256") or "")[:12]
     model = share_value("model", fp.get("model"))
     lines = [
@@ -1873,6 +2213,10 @@ def build_share_summary(
         )
         + " |",
         f"| Prompt cache | {mode_text} |",
+        *(
+            [f"| Workload shape | {_cell(_shape_text(shape) + measured_shape)} |"]
+            if shape is not None else []
+        ),
         f"| Label | {_cell(share_value('label', fp.get('label')) if fp.get('label') else '-')} |",
         f"| Check | {_cell(scrub_text(record.get('id')))} ({str(record.get('created_at', ''))[:10]}) |",
         "",
@@ -2096,6 +2440,11 @@ def handle_check(args: argparse.Namespace) -> int:
         return EXIT_USAGE
     assert chat_url is not None
 
+    shape, shape_problem = _agent_shape(args)
+    if shape_problem:
+        print(f"Error: {shape_problem}", file=sys.stderr)
+        return EXIT_USAGE
+
     if args.metrics_url and not args.no_metrics:
         problem = _metrics_url_problem(args.metrics_url)
         if problem:
@@ -2112,7 +2461,9 @@ def handle_check(args: argparse.Namespace) -> int:
         print("Error: the prompt file is empty", file=sys.stderr)
         return EXIT_USAGE
     cache_mode = CACHE_MODE_WARM if args.warm_cache else CACHE_MODE_COLD
-    probes = tag_probe_count(prompts, args.requests_per_block, cache_mode)
+    probes = (
+        tag_probe_count(prompts, args.requests_per_block, cache_mode) if shape is None else 0
+    )
 
     limit_problem, spend_ceiling = _limit_problem(args, probes)
     if limit_problem:
@@ -2157,10 +2508,11 @@ def handle_check(args: argparse.Namespace) -> int:
     metric = args.metric
     metric_label = METRIC_LABELS[metric]
     run_id = new_run_id() if cache_mode == CACHE_MODE_COLD else None
-    plan = measured_prompts(
-        prompts, args.blocks, args.requests_per_block, cache_mode, run_id
+    plan = (
+        measured_prompts(prompts, args.blocks, args.requests_per_block, cache_mode, run_id)
+        if shape is None else []
     )
-    workload = {
+    workload = _agent_workload_record(args, shape, run_id) if shape is not None else {
         # Hash of the prompt file itself (the same canonical hash smoke,
         # benchmark and golden record), not of the tagged prompts: the tags
         # change every run, the workload does not.
@@ -2208,12 +2560,30 @@ def handle_check(args: argparse.Namespace) -> int:
         f"  GPU rate   {_money(args.gpu_hourly_rate)}/hr   "
         "[ASSUMED: you supplied --gpu-hourly-rate; Throttle cannot see your bill]"
     )
-    print(
-        f"  workload   {args.blocks} blocks x {args.requests_per_block} requests, "
-        f"concurrency {args.concurrency}, max {args.max_tokens} output tokens, "
-        f"temperature 0, {len(prompts)} prompts ({workload['prompts_source']})"
-    )
-    if cache_mode == CACHE_MODE_COLD:
+    if shape is not None:
+        print(
+            f"  workload   AGENT: {args.blocks} blocks x {shape.sessions_concurrency} "
+            f"concurrent sessions x {shape.turns} sequential turns, max "
+            f"{args.max_tokens} output tokens per turn, temperature 0"
+        )
+        print(
+            f"             each session: shared system prompt + tool schema "
+            f"(~{shape.system_prompt_tokens} tokens), then every turn resends the "
+            f"conversation plus the model's reply and a ~{shape.tool_output_tokens}-token "
+            "tool result"
+        )
+        print(
+            f"  cache      prefix reuse within this run is expected (agent traffic); the "
+            f"system prompt starts with '{agent_workload.NONCE_FORMAT.format(run_id=run_id)}' "
+            "so an earlier run's cache cannot help (run id recorded)"
+        )
+    else:
+        print(
+            f"  workload   {args.blocks} blocks x {args.requests_per_block} requests, "
+            f"concurrency {args.concurrency}, max {args.max_tokens} output tokens, "
+            f"temperature 0, {len(prompts)} prompts ({workload['prompts_source']})"
+        )
+    if shape is None and cache_mode == CACHE_MODE_COLD:
         print(
             f"  cache      COLD (default): each request's first user message starts "
             f"with a unique tag, e.g. '{NONCE_FORMAT.format(run_id=run_id, index=0)}', "
@@ -2224,7 +2594,7 @@ def handle_check(args: argparse.Namespace) -> int:
             "unmeasured request(s) send each base prompt once untagged, and input "
             "and total $/M use those token counts"
         )
-    else:
+    elif shape is None:
         print(
             "  cache      WARM (--warm-cache): identical prompts are resent, so a "
             "server with prefix caching may serve them from cache; compared only "
@@ -2256,6 +2626,12 @@ def handle_check(args: argparse.Namespace) -> int:
                 metrics = await _fetch_metrics(
                     client, args.metrics_url or _default_metrics_url(chat_url)
                 )
+            if shape is not None:
+                assert run_id is not None
+                blocks = await _measure_agent(
+                    client, chat_url, headers, args, shape, run_id, workload
+                )
+                return models, metrics, blocks
             if args.warmup:
                 print(f"Warming up ({args.warmup} unmeasured request(s))...", flush=True)
                 for index in range(args.warmup):
@@ -2411,6 +2787,17 @@ def handle_check(args: argparse.Namespace) -> int:
         f"measured tokens, at concurrency {args.concurrency}. Cost at a different "
         "production concurrency will differ."
     )
+    recorded_shape = workload.get("workload_shape")
+    if recorded_shape:
+        by_turn = ", ".join(
+            f"{tokens:.0f}" for tokens in recorded_shape["mean_prompt_tokens_by_turn"]
+            if tokens is not None
+        )
+        print(
+            f"  shape   {recorded_shape['mean_prompt_tokens_per_turn']:.0f} prompt / "
+            f"{recorded_shape['mean_completion_tokens_per_turn']:.0f} completion tokens "
+            f"per turn [MEASURED]; prompt tokens by turn: {by_turn}"
+        )
     if args.monthly_tokens:
         volume = args.monthly_tokens / 1_000_000
         low = headline["ci_low"]

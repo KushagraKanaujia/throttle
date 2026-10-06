@@ -44,6 +44,7 @@ from .check import (
     _LABEL,
     _metrics_url_problem,
     _money,
+    _shape_text,
     _token_count,
     compare_checks,
     gpu_count,
@@ -385,7 +386,19 @@ def build_statement(
         period = None
 
     noise = comparison.get("noise") or {}
-    return {
+    shape = workload_value(baseline, "workload_shape")
+    if shape is None:
+        workload_assumption = (
+            "$/M is MEASURED by 'throttle check' on its fixed workload (95% CI across blocks); "
+            "production traffic is assumed to cost per token what that workload did"
+        )
+    else:
+        workload_assumption = (
+            f"$/M is MEASURED by 'throttle check' on its synthetic {shape['profile']} "
+            f"workload ({_shape_text(shape)}; 95% CI across blocks); production traffic "
+            "is assumed to cost per token what that workload did"
+        )
+    statement = {
         "record_type": RECORD_TYPE,
         "record_version": RECORD_VERSION,
         "created_at": _iso(_now()),
@@ -415,11 +428,14 @@ def build_statement(
             f"GPU $/hr is ASSUMED, as the user supplied it: baseline "
             f"{_money(base['gpu_hourly_rate_usd'])}/hr for {base['gpu_count']} GPU(s), candidate "
             f"{_money(cand['gpu_hourly_rate_usd'])}/hr for {cand['gpu_count']} GPU(s)",
-            "$/M is MEASURED by 'throttle check' on its fixed workload (95% CI across blocks); "
-            "production traffic is assumed to cost per token what that workload did",
+            workload_assumption,
             f"token count is {tokens['source']}",
         ],
     }
+    if shape is not None:
+        # Only for agent checks, so a default statement's JSON is unchanged.
+        statement["workload_shape"] = shape
+    return statement
 
 
 def _config_text(side: Mapping[str, Any]) -> str:
@@ -441,6 +457,10 @@ def format_statement(statement: Mapping[str, Any]) -> str:
         f"  period      {statement['period'] or '(not stated; pass --period-label)'}",
         f"  model       {base['model']}",
         f"  metric      {statement['metric_label']} (the primary metric of these checks)",
+        *(
+            [f"  workload    {_shape_text(statement['workload_shape'])}"]
+            if statement.get("workload_shape") else []
+        ),
         f"  baseline    {base['check_id']}  {base['gpu_count']} GPU(s)  {_config_text(base)}",
         f"              {_dpm_text(base['dollars_per_million'])}  [MEASURED]",
         f"  candidate   {cand['check_id']}  {cand['gpu_count']} GPU(s)  {_config_text(cand)}",
