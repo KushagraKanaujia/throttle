@@ -1,0 +1,77 @@
+{
+  "assumptions": [
+    "GPU $/hr is ASSUMED, as the user supplied it: baseline $2.00/hr for 1 GPU(s), candidate $2.00/hr for 1 GPU(s)",
+    "$/M is MEASURED by 'throttle check' on its fixed workload (95% CI across blocks); production traffic is assumed to cost per token what that workload did",
+    "token count is REPORTED BY OPERATOR"
+  ],
+  "baseline": {
+    "check_id": "20261001T120000Z-5c8c7840",
+    "config": {
+      "quant": "none"
+    },
+    "created_at": "2026-10-01T12:00:00Z",
+    "dollars_per_million": {
+      "ci_high": 5.955639966284035,
+      "ci_low": 5.199044129576529,
+      "mean": 5.577342047930282
+    },
+    "dollars_per_million_recorded": {
+      "ci_high": 5.955639966284035,
+      "ci_low": 5.199044129576529,
+      "mean": 5.577342047930282
+    },
+    "endpoint": "http://127.0.0.1:8000/v1/chat/completions",
+    "gpu_count": 1,
+    "gpu_hourly_rate_source": "ASSUMED (user-supplied --gpu-hourly-rate)",
+    "gpu_hourly_rate_usd": 2.0,
+    "label": "before",
+    "model": "mock-model"
+  },
+  "candidate": {
+    "check_id": "20261001T120300Z-37c78f81",
+    "config": {
+      "quant": "fp8"
+    },
+    "created_at": "2026-10-01T12:03:00Z",
+    "dollars_per_million": {
+      "ci_high": 2.880610440029995,
+      "ci_low": 2.478866684153021,
+      "mean": 2.679738562091508
+    },
+    "dollars_per_million_recorded": {
+      "ci_high": 2.880610440029995,
+      "ci_low": 2.478866684153021,
+      "mean": 2.679738562091508
+    },
+    "endpoint": "http://127.0.0.1:8000/v1/chat/completions",
+    "gpu_count": 1,
+    "gpu_hourly_rate_source": "ASSUMED (user-supplied --gpu-hourly-rate)",
+    "gpu_hourly_rate_usd": 2.0,
+    "label": "after",
+    "model": "mock-model"
+  },
+  "created_at": "2026-10-02T12:00:00Z",
+  "history_file": "<TMP>/history/checks.ndjson",
+  "measured_delta_percent": -51.953124999999915,
+  "metric": "output",
+  "metric_label": "$/M output tokens",
+  "noise_floor_percent": 11.617425831401524,
+  "period": "2026-10",
+  "priced_at": "baseline per-GPU rate (candidate $/M scaled by 1); GPU count changes are kept as real cost",
+  "rate_factor": 1.0,
+  "record_type": "savings_statement",
+  "record_version": 1,
+  "savings": {
+    "conservative_dollars_per_million": 2.318433689546534,
+    "conservative_usd": 2318.433689546534,
+    "point_estimate_dollars_per_million": 2.897603485838774,
+    "point_estimate_usd": 2897.603485838774,
+    "rule": "conservative = (baseline CI low - candidate CI high) x tokens / 1e6; point estimate = (baseline mean - candidate mean) x tokens / 1e6"
+  },
+  "tokens": {
+    "count": 1000000000,
+    "source": "REPORTED BY OPERATOR"
+  },
+  "verdict": "CHEAPER",
+  "verdict_reason": "the -52.0% change is larger than the run-to-run noise bound (11.6% = t x sqrt(2) x 1.9% run-to-run SD, 2 df) and the 95% confidence intervals do not overlap"
+}

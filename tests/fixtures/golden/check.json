@@ -1,0 +1,243 @@
+{
+  "baseline_id": "20261001T120200Z-e291136b",
+  "blocks": [
+    {
+      "dollars_per_million": {
+        "input": 5.028735632183895,
+        "output": 2.859477124182999,
+        "total": 1.8229166666666619
+      },
+      "gpu_dollars": 0.0002916666666666659,
+      "input_tokens": 58,
+      "max_tokens_hits": 0,
+      "output_tokens": 102,
+      "tag_input_tokens": 16,
+      "wall_clock_seconds": 0.5249999999999986
+    },
+    {
+      "dollars_per_million": {
+        "input": 4.885057471264383,
+        "output": 2.7777777777777866,
+        "total": 1.770833333333339
+      },
+      "gpu_dollars": 0.0002833333333333342,
+      "input_tokens": 58,
+      "max_tokens_hits": 0,
+      "output_tokens": 102,
+      "tag_input_tokens": 16,
+      "wall_clock_seconds": 0.5100000000000016
+    },
+    {
+      "dollars_per_million": {
+        "input": 4.7892720306513406,
+        "output": 2.7233115468409586,
+        "total": 1.7361111111111112
+      },
+      "gpu_dollars": 0.0002777777777777778,
+      "input_tokens": 58,
+      "max_tokens_hits": 0,
+      "output_tokens": 102,
+      "tag_input_tokens": 16,
+      "wall_clock_seconds": 0.5
+    },
+    {
+      "dollars_per_million": {
+        "input": 4.549808429118788,
+        "output": 2.5871459694989185,
+        "total": 1.6493055555555605
+      },
+      "gpu_dollars": 0.0002638888888888897,
+      "input_tokens": 58,
+      "max_tokens_hits": 0,
+      "output_tokens": 102,
+      "tag_input_tokens": 16,
+      "wall_clock_seconds": 0.4750000000000014
+    },
+    {
+      "dollars_per_million": {
+        "input": 4.310344827586234,
+        "output": 2.450980392156878,
+        "total": 1.5625000000000098
+      },
+      "gpu_dollars": 0.0002500000000000016,
+      "input_tokens": 58,
+      "max_tokens_hits": 0,
+      "output_tokens": 102,
+      "tag_input_tokens": 16,
+      "wall_clock_seconds": 0.45000000000000284
+    }
+  ],
+  "comparison": {
+    "baseline_age_seconds": 60.0,
+    "changes": [
+      {
+        "key": "config.quant",
+        "new": "fp8",
+        "old": "none"
+      },
+      {
+        "key": "label",
+        "new": "after",
+        "old": "before"
+      }
+    ],
+    "current": {
+      "ci_high": 2.880610440029995,
+      "ci_low": 2.478866684153021,
+      "ci_method": "student_t_blocks_95",
+      "mean": 2.679738562091508,
+      "n_blocks": 5
+    },
+    "delta_dollars_per_million": -2.6906318082788623,
+    "delta_percent": -50.10141987829606,
+    "measured_delta_percent": -50.10141987829606,
+    "metric": "output",
+    "noise": {
+      "calibrated": true,
+      "degrees_of_freedom": 2,
+      "floor_percent": 11.617425831401524,
+      "groups": [
+        {
+          "check_ids": [
+            "20261001T120000Z-5c8c7840",
+            "20261001T120100Z-b8acf737",
+            "20261001T120200Z-e291136b"
+          ],
+          "label": "before",
+          "n_checks": 3,
+          "sd_percent": 1.9090775238939768,
+          "side": "baseline config",
+          "spread_percent": 3.853955375253525
+        },
+        {
+          "check_ids": [],
+          "label": "after",
+          "n_checks": 0,
+          "sd_percent": null,
+          "side": "this check's config",
+          "spread_percent": null
+        }
+      ],
+      "hints": [],
+      "n_checks": 3,
+      "rule": "95% bound on the difference between two single checks of one config: t(0.975, df) x sqrt(2) x pooled run-to-run SD of $/M means, pooled over the baseline's and this check's same-config groups (endpoint + fingerprint + workload + Throttle version), from checks within 24 h of this one, excluding this check; needs df >= 2 (e.g. 3 checks of one unchanged config)",
+      "sd_percent": 1.9090775238939768,
+      "stale_or_undated_checks_ignored": 0,
+      "t_critical": 4.303,
+      "window_hours": 24.0
+    },
+    "notes": [],
+    "output_shift": {
+      "after": {
+        "max_tokens_hit_percent": 0.0,
+        "output_tokens_per_request": 25.5
+      },
+      "before": {
+        "max_tokens_hit_percent": 0.0,
+        "output_tokens_per_request": 25.5
+      },
+      "changed": false,
+      "length_percent": 0.0,
+      "max_tokens_hit_points": 0.0,
+      "reasons": []
+    },
+    "previous": {
+      "ci_high": 5.870925667883637,
+      "ci_low": 4.8698150728571035,
+      "ci_method": "student_t_blocks_95",
+      "mean": 5.37037037037037,
+      "n_blocks": 5
+    },
+    "previous_endpoint": "http://127.0.0.1:8000/v1/chat/completions",
+    "previous_id": "20261001T120200Z-e291136b",
+    "rate_changed": false,
+    "rate_factor": 1.0,
+    "reason": "the -50.1% change is larger than the run-to-run noise bound (11.6% = t x sqrt(2) x 1.9% run-to-run SD, 2 df) and the 95% confidence intervals do not overlap",
+    "verdict": "CHEAPER"
+  },
+  "created_at": "2026-10-01T12:03:00Z",
+  "endpoint": "http://127.0.0.1:8000/v1/chat/completions",
+  "fingerprint": {
+    "gpu_hourly_rate_source": "ASSUMED (user-supplied --gpu-hourly-rate)",
+    "gpu_hourly_rate_usd": 2.0,
+    "label": "after",
+    "model": "mock-model",
+    "server_metrics": {
+      "status": "not exposed (HTTP 404)",
+      "url": "http://127.0.0.1:8000/metrics"
+    },
+    "server_models": {
+      "model_detail": {
+        "max_model_len": "4096",
+        "owned_by": "vllm"
+      },
+      "model_ids": [
+        "mock-model"
+      ],
+      "requested_model_listed": true,
+      "status": "read",
+      "url": "http://127.0.0.1:8000/v1/models"
+    },
+    "user_config": {
+      "quant": "fp8"
+    }
+  },
+  "id": "20261001T120300Z-37c78f81",
+  "metric": "output",
+  "monthly_tokens": 1000000000,
+  "record_type": "throttle_check",
+  "record_version": 1,
+  "result": {
+    "input": {
+      "ci_high": 5.06590111867344,
+      "ci_low": 4.359386237648416,
+      "ci_method": "student_t_blocks_95",
+      "mean": 4.712643678160928,
+      "n_blocks": 5
+    },
+    "output": {
+      "ci_high": 2.880610440029995,
+      "ci_low": 2.478866684153021,
+      "ci_method": "student_t_blocks_95",
+      "mean": 2.679738562091508,
+      "n_blocks": 5
+    },
+    "total": {
+      "ci_high": 1.836389155519122,
+      "ci_low": 1.5802775111475507,
+      "ci_method": "student_t_blocks_95",
+      "mean": 1.7083333333333364,
+      "n_blocks": 5
+    }
+  },
+  "throttle_version": "<VERSION>",
+  "workload": {
+    "blocks": 5,
+    "concurrency": 2,
+    "max_tokens": 64,
+    "prompt_cache_mode": "cold",
+    "prompt_count": 8,
+    "prompt_nonce": {
+      "format": "[run {run_id} req {index:04d}] ",
+      "index": "measured request number across blocks, from 0",
+      "input_tokens": "net of the tag: each distinct base prompt is sent once untagged (unmeasured, max_tokens 1) and blocks count those prompt tokens",
+      "placement": "start of the first user message",
+      "run_id": "424242",
+      "tag_input_tokens": 80,
+      "tag_input_tokens_per_request": 4.0,
+      "untagged_prompt_tokens": [
+        14,
+        18,
+        10,
+        16
+      ],
+      "warmup_format": "[run {run_id} warmup {index:04d}] "
+    },
+    "prompts_sha256": "787fc93d62e140eba0ae9d2baaf16c7d386c536d05f525f1c01b3d955bc70871",
+    "prompts_source": "built-in",
+    "requests_per_block": 4,
+    "sent_prompts_sha256": "e1eaf7e63a1584788756b46e0549b6bb25e6ac230df068df95cd4a9d23286883",
+    "temperature": 0,
+    "warmup_requests": 1
+  }
+}
