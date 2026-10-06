@@ -1004,6 +1004,16 @@ def build_parser() -> argparse.ArgumentParser:
     )
     add_check_arguments(check)
 
+    # throttle savings: verified-savings statement from two recorded checks
+    from .savings import SAVINGS_DESCRIPTION, SAVINGS_EPILOG, add_savings_arguments
+    savings = subparsers.add_parser(
+        "savings",
+        help="conservative, auditable verified-savings statement from two recorded checks",
+        description=SAVINGS_DESCRIPTION,
+        epilog=SAVINGS_EPILOG,
+    )
+    add_savings_arguments(savings)
+
     upgrade = subparsers.add_parser(
         "upgrade",
         help="Throttle Pro and the Cost Audit: what you get, with a QR code to scan",
@@ -4740,6 +4750,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         return _handle_watch(args)
     if args.command == "check":
         return handle_check(args)
+    if args.command == "savings":
+        from .savings import handle_savings
+        return handle_savings(args)
     if args.command == "upgrade":
         from .upgrade import handle_upgrade
         return handle_upgrade(args)

@@ -556,6 +556,27 @@ uploaded: you open the link, read it, and submit it yourself. Links are kept
 under 7,000 characters; a longer summary is cut with a note, and the full
 text is in your terminal to paste.
 
+### Verified savings statement (`throttle savings`)
+
+```sh
+# at the start of the period: record vLLM's generation-token counter
+throttle savings snapshot --metrics-url http://localhost:8000/metrics --out start.json
+# at the end: a statement for the baseline -> candidate change
+throttle savings --baseline CHECK_ID --candidate CHECK_ID \
+    --metrics-url http://localhost:8000/metrics --window-start start.json
+# or with a token count you report yourself
+throttle savings --baseline CHECK_ID --candidate CHECK_ID --tokens 1.2B --period-label 2026-10
+```
+
+It re-judges the two recorded checks and refuses (exit 1, one-line reason)
+unless the verdict is a calibrated CHEAPER on the same model and workload: NO
+WINNER, NOT CALIBRATED, OUTPUT CHANGED, MORE EXPENSIVE, a model or workload
+mismatch, and a counter reset are all refused. The verified figure is the
+conservative bound, (baseline CI low - candidate CI high) x tokens / 1e6, in
+the check's primary $/M metric; the point estimate is shown and labelled. Tokens
+are MEASURED (counter delta) or REPORTED BY OPERATOR (`--tokens`); the GPU $/hr
+is ASSUMED, as you supplied it. `--json` prints a `savings_statement` record.
+
 ## Run it in CI
 
 `throttle check --fail-if-costlier PCT` exits 4 on a calibrated MORE
