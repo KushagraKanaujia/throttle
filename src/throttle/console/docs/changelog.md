@@ -4,7 +4,7 @@
 
 Install the latest with `pipx install throttle-pro` or upgrade with `pipx upgrade throttle-pro`.
 
-## Unreleased (on main, not yet on PyPI)
+## 0.6.0 (2026-10-06)
 
 #### Added
 - `throttle check --gpus N`: the GPU count is judged as a real config cost.
