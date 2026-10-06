@@ -30,24 +30,27 @@ NUDGE_FILE = ".upgrade-nudge"
 NUDGE_INTERVAL_SECONDS = 24 * 60 * 60
 NUDGE_TEXT = (
     "Want us to find and prove savings on your agent workload? "
-    "Throttle Pilot, free for 2 weeks: `throttle upgrade`"
+    "Throttle Pilot, free for 3 months: `throttle upgrade`"
 )
 
 PILOT_TAGLINE = "We find savings on your agent workload and prove them."
+PILOT_INTRO = (
+    "We're working with a small group of teams running agents on their own GPUs."
+)
 PILOT_TERMS = (
-    "Free for 2 weeks.",
-    "Then 20% of verified monthly savings (the conservative end of the 95% interval).",
-    "$500/month floor. Cancel anytime.",
-    "We take at most 5 design partners per round.",
+    "Free for 3 months: we set Throttle up on your stack, find the config changes that lower your cost per token, and prove each one.",
+    "We'd love to help you with your results.",
+    "After the pilot, pricing is based on the savings we verify together "
+    "(the conservative end of the 95% interval).",
 )
 PILOT_STEPS = (
-    "Weeks 1-2: we measure your agent workload's $/M tokens (baseline, 95% CI) on your own GPUs",
+    "We measure your agent workload's $/M tokens (baseline, 95% CI) on your own GPUs",
     "We test config changes and ship the winner only if it beats the noise bound with unchanged outputs",
-    "Every month after: savings shown line by line, priced at the conservative end",
+    "Each verified saving is shown line by line, priced at the conservative end",
 )
 PILOT_ONE_LINE = (
-    "Throttle Pilot: we find and prove savings on your agent workload. Free for 2 weeks, "
-    "then 20% of verified savings, $500/month floor. throttle upgrade"
+    "Throttle Pilot: we find and prove savings on your agent workload. Free for 3 months, "
+    "for a small group of teams. throttle upgrade"
 )
 
 # Served to the console Upgrade page by /api/upgrade.
@@ -55,11 +58,13 @@ PLANS = {
     "pilot": {
         "title": "Throttle Pilot",
         "tag": "for agent workloads on your own GPUs",
-        "price": "Free for 2 weeks",
+        "price": "Free for 3 months",
         "note": (
-            "Then 20% of verified monthly savings (the conservative end of the 95% "
-            "interval), $500/month floor, cancel anytime. We take at most 5 design "
-            "partners per round."
+            "We're working with a small group of teams running agents on their own "
+            "GPUs. We set Throttle up on your stack, find the config changes that "
+            "lower your cost per token, and prove each one. We'd love to help you "
+            "with your results. After the pilot, pricing is based on the savings we "
+            "verify together (the conservative end of the 95% interval)."
         ),
         "items": [PILOT_TAGLINE, *PILOT_STEPS],
         "url": PILOT_URL,
@@ -128,7 +133,7 @@ def qr_svg(text: str, quiet: int = 4, scale: int = 8) -> str:
 def pilot_page(style: Style, *, qr: bool) -> str:
     """The `throttle upgrade` screen: pilot terms in a panel, then the QR code."""
 
-    rows: list = [(PILOT_TAGLINE, ("1",)), ""]
+    rows: list = [(PILOT_TAGLINE, ("1",)), (PILOT_INTRO, ()), ""]
     rows += [(f"{style.dot} {term}", (), "  ") for term in PILOT_TERMS]
     rows += ["", ("How it works", ("1",))]
     rows += [(f"{i}. {step}", (), "   ") for i, step in enumerate(PILOT_STEPS, 1)]

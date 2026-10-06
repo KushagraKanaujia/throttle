@@ -4,6 +4,17 @@ All notable changes to Throttle will be documented in this file.
 
 ## [Unreleased]
 
+### Changed
+- Throttle Pilot terms: the pilot is now 3 months, free, for a small group of
+  teams running agents on their own GPUs. We set Throttle up on your stack,
+  find the config changes that lower your cost per token, and prove each one.
+  After the pilot, pricing is based on the savings we verify together
+  (conservative end of the 95% interval). Updated in `throttle upgrade`, the
+  post-verdict nudge (same once-a-day rules), the first-run screen, the
+  console Pilot page and `/api/upgrade`, and the README. The earlier 2-week
+  terms are retired from public copy, and the retired-strings test now
+  rejects them.
+
 ## [0.6.0] - 2026-10-06
 
 ### Added

@@ -61,18 +61,19 @@ def test_svg_draws_exactly_the_dark_modules() -> None:
 PILOT_TERMS = (
     "Throttle Pilot",
     "We find savings on your agent workload and prove them.",
-    "Free for 2 weeks.",
-    "20% of verified monthly savings",
+    "a small group of teams running agents on their own GPUs",
+    "Free for 3 months",
+    "find the config changes that lower your cost per token, and prove each one.",
+    "We'd love to help you with your results.",
+    "pricing is based on the savings we verify together",
     "conservative end of the 95% interval",
-    "$500/month floor",
-    "Cancel anytime.",
-    "at most 5 design partners per round",
     "https://throttle-pro.com",
     "kushthrottle@gmail.com",
     '"Throttle pilot"',
 )
 RETIRED = ("$19", "$50/", "$50 ", "Cost Audit", "early access", "Early access", "No savings guarantee",
-           "no savings guarantee", "formspree", "Throttle Pro", "one-time")
+           "no savings guarantee", "formspree", "Throttle Pro", "one-time",
+           "2 weeks", "2-week", "20%", "$500", "floor", "design partners")
 
 
 def _flat(out: str) -> str:

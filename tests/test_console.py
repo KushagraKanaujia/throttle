@@ -222,11 +222,12 @@ def test_upgrade_plans_and_offline_qr_codes(client: Client) -> None:
     pilot = plans["pilot"]
     assert pilot["url"] == "https://throttle-pro.com"
     assert pilot["email"] == "kushthrottle@gmail.com" and pilot["subject"] == "Throttle pilot"
-    assert pilot["price"] == "Free for 2 weeks"
-    assert "20% of verified monthly savings" in pilot["note"] and "$500/month floor" in pilot["note"]
-    assert "5 design partners" in pilot["note"]
+    assert pilot["price"] == "Free for 3 months"
+    assert "a small group of teams" in pilot["note"]
+    assert "pricing is based on the savings we verify together" in pilot["note"]
     text = json.dumps(plans)
-    for retired in ("$19", "Cost Audit", "early access", "No savings guarantee", "one-time"):
+    for retired in ("$19", "Cost Audit", "early access", "No savings guarantee", "one-time",
+                    "2 weeks", "20%", "$500", "floor", "design partners"):
         assert retired not in text
     # "pro" and "audit" are old targets: still served, and they encode the pilot URL.
     svgs = set()

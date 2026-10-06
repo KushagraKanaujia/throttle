@@ -9,7 +9,7 @@ agents (multi-turn, tool-calling, RL rollouts) on GPUs they own or rent:
 `throttle savings` produces the verified-savings statement.
 
 Want us to do it with you? The **Throttle Pilot** finds and proves savings on
-your agent workload: free for 2 weeks, then 20% of verified savings. See
+your agent workload: free for 3 months, for a small group of teams. See
 [throttle-pro.com/pilot](https://throttle-pro.com/pilot) or run `throttle upgrade`.
 
 ## Try it in 2 minutes
@@ -53,16 +53,17 @@ always agree.
 
 ## Throttle Pilot (`throttle upgrade`)
 
-We find savings on your agent workload and prove them. Free for 2 weeks, then
-20% of verified monthly savings (the conservative end of the 95% interval),
-with a $500/month floor; cancel anytime. We take at most 5 design partners per
-round.
+We're working with a small group of teams running agents on their own GPUs.
+For 3 months, free, we set Throttle up on your stack, find the config changes
+that lower your cost per token, and prove each one. We'd love to help you with
+your results. After the pilot, pricing is based on the savings we verify
+together, counted at the conservative end of the 95% interval.
 
 ```sh
 throttle upgrade          # the pilot terms, how to reach us, and a QR code to scan
 ```
 
-Apply at [throttle-pro.com](https://throttle-pro.com) or email
+Apply at [throttle-pro.com/pilot](https://throttle-pro.com/pilot) or email
 kushthrottle@gmail.com with the subject "Throttle pilot". The QR code is
 generated on your machine; `--url-only` prints just the link and `--no-qr`
 skips the drawing. The console has the same page under **Pilot**.
