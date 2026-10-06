@@ -87,6 +87,7 @@ import httpx
 
 from . import __version__
 from . import agent_workload
+from . import style as style_module
 from .benchmark import (
     canonical_workload_hash,
     load_prompts,
@@ -1357,10 +1358,14 @@ async def _measure_agent(
                 "gpu_dollars": costs["gpu_dollars"],
             }
         )
+        st = style_module.Style()
         print(
-            f"  block {block_index + 1}/{args.blocks}: {shape.sessions_concurrency} sessions x "
-            f"{shape.turns} turns, {input_tokens} in / {output_tokens} out tokens in "
-            f"{wall:.2f}s -> {_money(costs[args.metric])}/M {metric_label}",
+            f"  block {block_index + 1}/{args.blocks}  "
+            f"{st.bold(_money(costs[args.metric]))}/M {metric_label}  "
+            + st.dim(
+                f"{shape.sessions_concurrency} sessions x {shape.turns} turns, "
+                f"{input_tokens} in / {output_tokens} out tokens in {wall:.2f}s"
+            ),
             flush=True,
         )
     requests = args.blocks * args.requests_per_block
@@ -2426,6 +2431,109 @@ def judge_recorded(
 # --------------------------------------------------------------------------
 
 
+def _calibration_next_step(comparison: Mapping[str, Any]) -> str:
+    """How many more unchanged checks before noise is calibrated (a hint)."""
+
+    noise = comparison.get("noise") or {}
+    groups = noise.get("groups") or []
+    if len(groups) == 1:
+        have = groups[0]["n_checks"] + 1  # this check joins the pool for the next one
+        need = max(0, MIN_CALIBRATION_DF + 1 - have)
+        if need == 0:
+            return "noise is calibrated from the next check: change one setting, then run throttle check again"
+        return f"run {need} more unchanged check(s) to calibrate noise, then change one setting"
+    if len(groups) == 2:
+        df_next = max(0, groups[0]["n_checks"] - 1) + groups[1]["n_checks"]
+        need = 1 + max(0, MIN_CALIBRATION_DF - df_next)
+        return f"run this config {need} more time(s), unchanged, to calibrate noise"
+    return "run 2 more unchanged checks to calibrate noise"
+
+
+def verdict_panel(
+    st: "style_module.Style",
+    record: Mapping[str, Any],
+    comparison: Mapping[str, Any] | None,
+    baseline: Mapping[str, Any] | None,
+    args: argparse.Namespace,
+    *,
+    saved: bool,
+) -> str:
+    """The closing panel of `throttle check`: number, verdict, delta, next step.
+
+    Human output only. Everything here is already printed in full above it;
+    the panel is the summary a reader looks at first.
+    """
+
+    metric = record["metric"]
+    metric_label = METRIC_LABELS[metric]
+    headline = record["result"][metric]
+    big = f"{_money(headline['mean'])}/M {metric_label}"
+    rows: list[Any] = [
+        f"{st.bold(big)}  {st.dim(_ci_text(headline) + ' [MEASURED]')}",
+    ]
+    monthly_tokens = args.monthly_tokens
+    if comparison is None:
+        rows.append(
+            f"{st.bold('FIRST CHECK')}  "
+            + st.dim("nothing to compare with yet; this check is the baseline")
+        )
+        if monthly_tokens and headline.get("mean") is not None:
+            volume = monthly_tokens / 1_000_000
+            rows.append((
+                f"monthly   {_money(headline['mean'] * volume)} at "
+                f"{_tokens_text(monthly_tokens)} {metric_label} [PROJECTED]", ()
+            ))
+        next_step = (
+            "run 2 more unchanged checks to calibrate noise, then change one setting"
+        )
+    else:
+        verdict = comparison["verdict"]
+        inner = st.width - 4
+        first, *rest = st.wrap(comparison["reason"] + ".", inner - len(verdict) - 2) or [""]
+        rows.append(f"{st.verdict(verdict)}  {first}")
+        if rest:
+            rows.append((" ".join(rest), ()))
+        delta = comparison.get("delta_dollars_per_million")
+        pct = comparison.get("delta_percent")
+        before = (comparison.get("previous") or {}).get("mean")
+        if delta is not None:
+            pct_text = f" ({pct:+.1f}%)" if pct is not None else ""
+            rows.append((
+                f"vs base   {_signed_money(delta)}/M{pct_text}, "
+                f"baseline {_money(before)}/M ({baseline.get('id') if baseline else '-'})", (), "          "
+            ))
+        else:
+            rows.append(("vs base   not computed (different workloads)", ()))
+        if (
+            monthly_tokens and delta is not None
+            and verdict in (VERDICT_CHEAPER, VERDICT_COSTLIER)
+        ):
+            monthly = delta * monthly_tokens / 1_000_000
+            rows.append((
+                f"monthly   {_signed_money(monthly)} per month at "
+                f"{_tokens_text(monthly_tokens)} {metric_label} [PROJECTED]", ()
+            ))
+        if verdict == VERDICT_NOT_CALIBRATED:
+            next_step = _calibration_next_step(comparison)
+        elif verdict == VERDICT_CHEAPER:
+            next_step = (
+                f"throttle savings --baseline {baseline.get('id') if baseline else 'ID'} "
+                f"--candidate {record['id']} --tokens N"
+                if saved else "rerun without --no-save to keep this check for throttle savings"
+            )
+        elif verdict == VERDICT_COSTLIER:
+            next_step = "keep the old config; gate deploys with --fail-if-costlier 5"
+        elif verdict == VERDICT_OUTPUT_CHANGED:
+            next_step = "check the server's answers, then re-baseline with 3 unchanged checks"
+        elif comparison.get("workload_differs"):
+            next_step = "rerun with the baseline's workload options, or --against a check that used them"
+        else:
+            next_step = "the change is within noise: try a larger change, or more --blocks for a tighter CI"
+    rows.append((f"check     {record['id'] if saved else 'not saved (--no-save)'}", ()))
+    rows.append((f"next      {next_step}", ("2",), "          "))
+    return st.panel(rows, title="Verdict")
+
+
 def handle_check(args: argparse.Namespace) -> int:
     directory = history_dir(args)
 
@@ -2582,8 +2690,12 @@ def handle_check(args: argparse.Namespace) -> int:
         "temperature": 0,
     }
 
-    print(f"Throttle check: what does {args.model} cost per million {metric_label}?")
-    print(f"  endpoint   {chat_url}")
+    st = style_module.Style()
+    sep = st.dim(f" {st.dot} ")
+    print(
+        f"{st.brand()} {st.dim(__version__)}{sep}check{sep}{chat_url}{sep}{st.bold(args.model)}"
+    )
+    print(st.dim(f"  what does {args.model} cost per million {metric_label}?"))
     print(
         f"  GPU rate   {_money(args.gpu_hourly_rate)}/hr   "
         "[ASSUMED: you supplied --gpu-hourly-rate; Throttle cannot see your bill]"
@@ -2730,9 +2842,12 @@ def handle_check(args: argparse.Namespace) -> int:
                 )
                 tag_text = f" (+{tag_tokens} tag, not counted)" if untagged else ""
                 print(
-                    f"  block {block_index + 1}/{args.blocks}: {input_tokens} in{tag_text} / "
-                    f"{output_tokens} out tokens in {wall:.2f}s -> "
-                    f"{_money(costs[metric])}/M {metric_label}",
+                    f"  block {block_index + 1}/{args.blocks}  "
+                    f"{st.bold(_money(costs[metric]))}/M {metric_label}  "
+                    + st.dim(
+                        f"{input_tokens} in{tag_text} / {output_tokens} out tokens "
+                        f"in {wall:.2f}s"
+                    ),
                     flush=True,
                 )
             if untagged:
@@ -2794,15 +2909,15 @@ def handle_check(args: argparse.Namespace) -> int:
 
     headline = result[metric]
     print()
-    print("Config fingerprint")
+    print(st.bold("Config fingerprint"))
     print(f"  /v1/models  {models['status']}")
     print(f"  /metrics    {metrics['status']}")
     for key, value in flatten_fingerprint(fingerprint).items():
         print(f"    {key} = {value}")
     print()
-    print("Result")
+    print(st.bold("Result"))
     print(
-        f"  {_money(headline['mean'])} per million {metric_label}   [MEASURED]"
+        f"  {st.bold(_money(headline['mean']))} per million {metric_label}   [MEASURED]"
     )
     print(f"  {_ci_text(headline)}, across {headline['n_blocks']} blocks (Student t)")
     others = [key for key in METRIC_LABELS if key != metric]
@@ -2859,13 +2974,13 @@ def handle_check(args: argparse.Namespace) -> int:
         age = comparison.get("baseline_age_seconds")
         age_text = f", {_age_text(age)} ago" if age is not None else ", age unknown"
         print(
-            f"Compared with check {baseline.get('id')} "
+            st.bold("Compared with check ") + f"{baseline.get('id')} "
             f"({str(baseline.get('created_at', ''))[:19]}Z{age_text}, "
             f"label {base_fp.get('label') or '-'})"
         )
         if baseline.get("endpoint") != chat_url:
             print(
-                f"  WARNING: that check measured a different endpoint "
+                f"  {st.warn('WARNING')}: that check measured a different endpoint "
                 f"({baseline.get('endpoint')}); this is not a before/after of one server"
             )
         changes = comparison_changes(comparison)
@@ -2979,23 +3094,28 @@ def handle_check(args: argparse.Namespace) -> int:
                 )
         if comparison["verdict"] == VERDICT_NOT_CALIBRATED:
             print(f"  why     {comparison['reason']}.")
-            print(f"  {NOT_CALIBRATED_MESSAGE}")
+            print("  " + NOT_CALIBRATED_MESSAGE.replace(
+                VERDICT_NOT_CALIBRATED, st.verdict(VERDICT_NOT_CALIBRATED), 1
+            ))
         else:
-            print(f"  Verdict: {comparison['verdict']}, {comparison['reason']}.")
+            print(f"  Verdict: {st.verdict(comparison['verdict'])}, {comparison['reason']}.")
 
     record["comparison"] = comparison
     print()
-    if args.no_save:
-        print("Not saved (--no-save).")
-    else:
+    path: Path | None = None
+    if not args.no_save:
         try:
             path = append_history(directory, {k: v for k, v in record.items() if k != "comparison"})
         except OSError as exc:
             print(f"Error: could not save the check to {directory}: {exc}", file=sys.stderr)
             return EXIT_FAILED
-        print(f"Saved as check {record['id']} in {path}")
+    print(verdict_panel(st, record, comparison, baseline, args, saved=path is not None))
+    if args.no_save:
+        print("Not saved (--no-save).")
+    else:
+        print(st.dim(f"Saved as check {record['id']} in {path}"))
         if not args.share:
-            print(f"Share this result (no traffic): throttle check --share-id {record['id']}")
+            print(st.dim(f"Share this result (no traffic): throttle check --share-id {record['id']}"))
         if (
             not args.share
             and not args.json_output

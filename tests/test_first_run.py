@@ -16,6 +16,7 @@ import httpx
 import pytest
 
 import throttle.config as config_module
+from throttle import __version__
 from throttle import cli as cli_module
 from throttle.benchmark import run_native, validate_config
 from throttle.cli import build_parser, main
@@ -393,17 +394,38 @@ def test_old_flag_names_still_work():
 # --------------------------------------------------------------------------
 
 
-def test_no_args_prints_three_command_start_and_exits_zero(capsys):
+def test_no_args_prints_three_command_start_and_exits_zero(capsys, monkeypatch):
+    monkeypatch.delenv("FORCE_COLOR", raising=False)
     code, out = run(capsys)
     assert code == 0
-    assert "Get your first $/M-token number (3 commands)" in out
-    assert "throttle demo" in out
-    assert "throttle cost --url http://localhost:11434" in out
-    assert "throttle check --url" in out
+    lines = out.rstrip("\n").splitlines()
+    assert len(lines) <= 20
+    assert "Throttle " + __version__ in out
+    assert "Find and prove inference savings on your own GPUs." in out
+    assert "1. Install Ollama" in out and "vLLM / SGLang" in out
+    assert "2. Measure $/M tokens" in out and "throttle check --url http://localhost:11434" in out
+    assert "3. For agent traffic" in out and "throttle check --workload agent" in out
+    assert "Throttle Pilot" in out and "Free for 2 weeks" in out
+    assert "20% of verified savings, $500/month floor" in out and "throttle upgrade" in out
+    assert "\x1b[" not in out
     # Every command it tells the user to run must parse.
     parser = build_parser()
-    parser.parse_args(["cost", "--url", "http://localhost:11434", "--model", "llama3.2:3b", "--gpu-hourly-rate", "1.50"])
-    parser.parse_args(["check", "--url", "http://localhost:11434", "--model", "llama3.2:3b", "--gpu-hourly-rate", "1.50", "--label", "baseline"])
+    parser.parse_args(["check", "--url", "http://localhost:11434", "--model", "llama3.2:3b", "--gpu-hourly-rate", "1.50"])
+    parser.parse_args(["check", "--workload", "agent", "--url", "http://localhost:11434", "--model", "llama3.2:3b", "--gpu-hourly-rate", "1.50"])
+    parser.parse_args(["upgrade"])
+    parser.parse_args(["demo"])
+
+
+def test_no_args_screen_with_force_color_and_ascii(capsys, monkeypatch):
+    monkeypatch.delenv("NO_COLOR", raising=False)
+    monkeypatch.setenv("FORCE_COLOR", "1")
+    code, out = run(capsys)
+    assert code == 0
+    assert "\x1b[" in out
+    from throttle.style import strip_ansi
+    plain = strip_ansi(out)
+    assert "Find and prove inference savings on your own GPUs." in plain
+    assert "throttle check --workload agent" in plain
 
 
 def test_help_does_not_leak_suppressed_command_but_it_still_parses(capsys):

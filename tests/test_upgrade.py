@@ -1,8 +1,8 @@
-"""Tests for `throttle upgrade`, its offline QR codes and the once-a-day nudge.
+"""Tests for `throttle upgrade` (the Throttle Pilot), its offline QR code and the once-a-day nudge.
 
 The reference matrices in fixtures/upgrade_qr_matrices.json were produced by
 the vendored encoder and decoded back to the exact URLs with an independent
-decoder (zxing-cpp) when they were recorded; these tests pin them so the
+decoder (zxing-cpp) when they were recorded (the pilot URL on 2026-10-06); these tests pin them so the
 encoder, its settings and the renderers can't drift silently.
 """
 
@@ -23,13 +23,13 @@ def as_text(matrix: list[list[bool]]) -> list[str]:
     return ["".join("#" if dark else "." for dark in row) for row in matrix]
 
 
-@pytest.mark.parametrize("url", [upgrade.PRO_URL, upgrade.AUDIT_URL])
+@pytest.mark.parametrize("url", [upgrade.PILOT_URL])
 def test_qr_matrix_matches_decoded_reference(url: str) -> None:
     assert url in REFERENCE
     assert as_text(upgrade.qr_matrix(url)) == REFERENCE[url]
 
 
-@pytest.mark.parametrize("url", [upgrade.PRO_URL, upgrade.AUDIT_URL])
+@pytest.mark.parametrize("url", [upgrade.PILOT_URL])
 def test_terminal_rendering_round_trips_to_the_matrix(url: str) -> None:
     quiet = 2
     lines = upgrade.qr_terminal(url, quiet=quiet).split("\n")
@@ -51,32 +51,82 @@ def test_terminal_rendering_round_trips_to_the_matrix(url: str) -> None:
 
 
 def test_svg_draws_exactly_the_dark_modules() -> None:
-    svg = upgrade.qr_svg(upgrade.PRO_URL)
-    dark = sum(row.count("#") for row in REFERENCE[upgrade.PRO_URL])
+    svg = upgrade.qr_svg(upgrade.PILOT_URL)
+    dark = sum(row.count("#") for row in REFERENCE[upgrade.PILOT_URL])
     assert svg.startswith("<svg") and svg.endswith("</svg>")
     assert svg.count("h1v1h-1z") == dark
     assert 'fill="#fff"' in svg
 
 
-def test_upgrade_prints_pro_summary_link_and_qr(capsys) -> None:
+PILOT_TERMS = (
+    "Throttle Pilot",
+    "We find savings on your agent workload and prove them.",
+    "Free for 2 weeks.",
+    "20% of verified monthly savings",
+    "conservative end of the 95% interval",
+    "$500/month floor",
+    "Cancel anytime.",
+    "at most 5 design partners per round",
+    "https://throttle-pro.com",
+    "kushthrottle@gmail.com",
+    '"Throttle pilot"',
+)
+RETIRED = ("$19", "$50/", "$50 ", "Cost Audit", "early access", "Early access", "No savings guarantee",
+           "no savings guarantee", "formspree", "Throttle Pro", "one-time")
+
+
+def _flat(out: str) -> str:
+    return " ".join(" ".join(line.strip().strip("│|").split()) for line in out.splitlines())
+
+
+def test_upgrade_prints_pilot_terms_link_and_qr(capsys, monkeypatch) -> None:
+    monkeypatch.delenv("FORCE_COLOR", raising=False)
     assert main(["upgrade"]) == 0
     out = capsys.readouterr().out
-    assert "$19/month launch price" in out and "$50/month list price" in out
-    assert "Open: https://throttle-pro.com/upgrade" in out
+    for term in PILOT_TERMS:
+        assert term in _flat(out), term
+    for retired in RETIRED:
+        assert retired not in out, retired
+    assert "Open: https://throttle-pro.com" in out
     assert "▀" in out or "▄" in out
-    assert "throttle upgrade --audit" in out
+    assert "\x1b[" not in out  # not a TTY, no FORCE_COLOR: no colour
 
 
-def test_upgrade_audit_url_only_and_no_qr(capsys) -> None:
+def test_audit_is_a_hidden_alias_for_the_same_pilot_page(capsys, monkeypatch) -> None:
+    monkeypatch.delenv("FORCE_COLOR", raising=False)
+    assert main(["upgrade", "--no-qr"]) == 0
+    plain = capsys.readouterr().out
     assert main(["upgrade", "--audit", "--no-qr"]) == 0
-    out = capsys.readouterr().out
-    assert "$500 one-time" in out and "No savings guarantee" in out
-    assert "https://throttle-pro.com/audit/book" in out
-    assert "▀" not in out and "▄" not in out
+    assert capsys.readouterr().out == plain
+    assert "▀" not in plain and "▄" not in plain
+    for term in PILOT_TERMS:
+        assert term in _flat(plain), term
     assert main(["upgrade", "--url-only"]) == 0
-    assert capsys.readouterr().out == "https://throttle-pro.com/upgrade\n"
+    assert capsys.readouterr().out == "https://throttle-pro.com\n"
     assert main(["upgrade", "--audit", "--url-only"]) == 0
-    assert capsys.readouterr().out == "https://throttle-pro.com/audit/book\n"
+    assert capsys.readouterr().out == "https://throttle-pro.com\n"
+    with pytest.raises(SystemExit):
+        main(["upgrade", "--help"])
+    help_text = capsys.readouterr().out
+    assert "--audit" not in help_text and "Throttle Pilot" in help_text
+
+
+def test_upgrade_with_force_color_is_styled_and_still_complete(capsys, monkeypatch) -> None:
+    monkeypatch.delenv("NO_COLOR", raising=False)
+    monkeypatch.setenv("FORCE_COLOR", "1")
+    assert main(["upgrade", "--no-qr"]) == 0
+    out = capsys.readouterr().out
+    assert "\x1b[" in out
+    from throttle.style import strip_ansi
+    for term in PILOT_TERMS:
+        assert term in _flat(strip_ansi(out)), term
+
+
+def test_nudge_text_points_at_the_pilot() -> None:
+    assert "throttle upgrade" in upgrade.NUDGE_TEXT
+    assert "Pilot" in upgrade.NUDGE_TEXT
+    for retired in RETIRED:
+        assert retired not in upgrade.NUDGE_TEXT
 
 
 @pytest.fixture

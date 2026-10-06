@@ -183,7 +183,7 @@ def test_cold_input_tokens_exclude_the_tag_and_match_a_warm_check(
         # The tag's tokens are measured, constant, and shown as not counted.
         tag = {block["tag_input_tokens"] for block in record["blocks"]}
         assert len(tag) == 1 and tag.pop() > 0
-        assert f": {n} in (+" in out and " tag, not counted) / " in out
+        assert f"  {n} in (+" in out and " tag, not counted) / " in out
         assert "6 unmeasured request(s) send each base prompt once untagged" in out
         nonce = record["workload"]["prompt_nonce"]
         assert sum(nonce["untagged_prompt_tokens"]) == n

@@ -27,6 +27,40 @@ All notable changes to Throttle will be documented in this file.
   agent and default checks are never compared. Default checks and their
   records are unchanged.
 
+### Changed
+- Human CLI output is restyled; machine-readable output is not. `throttle check`
+  opens with a one-line header (Throttle, version, endpoint, model), prints
+  compact block progress lines and ends with a **verdict panel**: $/M with its
+  95% CI, the coloured verdict and its reason, the delta vs the baseline in $/M
+  and %, the projected monthly $ when computed, the saved check id and one
+  next step (e.g. `throttle savings --baseline X --candidate Y --tokens N`, or
+  how many unchanged checks calibrate noise). Every earlier line (MEASURED /
+  ASSUMED / PROJECTED labels, CI method, noise bound, warnings) is still
+  printed above the panel. `throttle savings` puts the statement in a panel
+  with the conservative $ figure as the headline and the point estimate dim.
+  `--json`, `--share`, record formats, exit codes and verdicts are unchanged,
+  and a golden test pins them byte for byte.
+- New `throttle.style` module (plain ANSI, no new dependencies): colour only on
+  a TTY with `NO_COLOR` unset and `TERM` not `dumb`; `FORCE_COLOR` forces it;
+  box-drawing panels with an ASCII fallback when the output encoding is not
+  UTF-8; width follows the terminal, 60 to 80 columns.
+- `throttle` with no arguments shows a short first-run screen: what Throttle is,
+  three steps (start Ollama or point at vLLM / SGLang, `throttle check`,
+  `throttle check --workload agent`) and the pilot line. The full 3-command
+  guide stays in `throttle --help`.
+- The Throttle Pilot replaces the Pro plan and the Cost Audit everywhere a user
+  sees an offer: `throttle upgrade`, the post-verdict nudge text, the console
+  Upgrade page (now **Pilot**) and its `/api/upgrade` copy, the bundled docs
+  (`more/pilot` replaces `more/pro` and `more/cost-audit`) and the README. We
+  find savings on your agent workload and prove them: free for 2 weeks, then 20%
+  of verified monthly savings (conservative end of the 95% interval), $500/month
+  floor, cancel anytime, at most 5 design partners per round. Contact:
+  https://throttle-pro.com, kushthrottle@gmail.com (subject "Throttle pilot").
+  The QR code now encodes https://throttle-pro.com. `throttle upgrade --audit`
+  is a hidden alias that prints the same page. The nudge rules are unchanged
+  (once per 24 h; off with `THROTTLE_NO_NUDGE`, in CI, and with `--json`,
+  `--share` and `--fail-if-costlier`).
+
 ## [0.5.1] - 2026-09-29
 
 ### Added

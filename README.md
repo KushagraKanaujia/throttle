@@ -46,16 +46,21 @@ It runs on 127.0.0.1, reads your check history (`~/.throttle/checks`, or
 internet. Verdicts come from the same code as `throttle check`, so the two
 always agree.
 
-## Pro and the Cost Audit (`throttle upgrade`)
+## Throttle Pilot (`throttle upgrade`)
+
+We find savings on your agent workload and prove them. Free for 2 weeks, then
+20% of verified monthly savings (the conservative end of the 95% interval),
+with a $500/month floor; cancel anytime. We take at most 5 design partners per
+round.
 
 ```sh
-throttle upgrade          # Throttle Pro: what's in it, the link, and a QR code to scan
-throttle upgrade --audit  # the $500 Cost Audit, done with you in 2 weeks
+throttle upgrade          # the pilot terms, how to reach us, and a QR code to scan
 ```
 
-The QR code is generated on your machine; `--url-only` prints just the link
-and `--no-qr` skips the drawing. The console has the same page under
-**Upgrade**.
+Apply at [throttle-pro.com](https://throttle-pro.com) or email
+kushthrottle@gmail.com with the subject "Throttle pilot". The QR code is
+generated on your machine; `--url-only` prints just the link and `--no-qr`
+skips the drawing. The console has the same page under **Pilot**.
 
 ## Results
 
@@ -1511,7 +1516,7 @@ no keys, prompts or responses.)
 
 **No telemetry.** Throttle never phones home: it only sends requests to the
 endpoint you point it at. After a calibrated CHEAPER or MORE EXPENSIVE verdict,
-`throttle check` may print one line suggesting `throttle upgrade`, at most once
+`throttle check` may print one line suggesting the Throttle Pilot (`throttle upgrade`), at most once
 every 24 hours. The only state is a timestamp file (`.upgrade-nudge`) in the
 check history directory. It's skipped with `--json`, `--share` and
 `--fail-if-costlier`, when `CI` is set, and entirely with `THROTTLE_NO_NUDGE=1`.

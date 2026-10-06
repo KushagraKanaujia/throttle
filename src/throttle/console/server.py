@@ -70,8 +70,7 @@ DOCS_NAV: list[dict[str, Any]] = [
         ("guides/share-results", "Share your results"),
     ]},
     {"tab": "docs", "group": "More", "pages": [
-        ("more/cost-audit", "Cost Audit"),
-        ("more/pro", "Pro"),
+        ("more/pilot", "Throttle Pilot"),
         ("more/privacy", "Privacy"),
         ("more/faq", "FAQ"),
     ]},
@@ -328,10 +327,11 @@ def create_app(history_dir: Path, *, cwd: Path | None = None, allow_any_host: bo
         return PLANS
 
     @app.get("/api/qr.svg", include_in_schema=False)
-    def qr(target: str = Query(..., pattern="^(pro|audit)$")) -> Response:
-        # Only the two fixed plan URLs can be encoded; nothing user-supplied.
-        from ..upgrade import PLANS, qr_svg
-        return Response(qr_svg(PLANS[target]["url"]), media_type="image/svg+xml")
+    def qr(target: str = Query(..., pattern="^(pilot|pro|audit)$")) -> Response:
+        # Only the fixed pilot URL can be encoded; nothing user-supplied.
+        # "pro" and "audit" are old targets, kept so cached pages still load.
+        from ..upgrade import PILOT_URL, qr_svg
+        return Response(qr_svg(PILOT_URL), media_type="image/svg+xml")
 
     @app.get("/api/quickstart-status")
     def quickstart() -> list[dict[str, Any]]:

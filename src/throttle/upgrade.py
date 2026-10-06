@@ -1,8 +1,11 @@
-"""`throttle upgrade`: where to get Pro or the Cost Audit, with a scannable QR code.
+"""`throttle upgrade`: the Throttle Pilot terms, with a scannable QR code.
 
 Everything here is offline. The QR code is generated locally (vendored
 qrcodegen, MIT), nothing is fetched, and nothing is tracked. The only state is
 the timestamp file that limits the post-verdict nudge to once per 24 hours.
+
+`--audit` is a hidden alias kept so older docs and scripts still work; it
+prints the same pilot page.
 """
 
 from __future__ import annotations
@@ -13,66 +16,56 @@ import time
 from pathlib import Path
 
 from ._vendor.qrcodegen import QrCode, QrSegment
+from .style import Style
 
-PRO_URL = "https://throttle-pro.com/upgrade"
-AUDIT_URL = "https://throttle-pro.com/audit/book"
+PILOT_URL = "https://throttle-pro.com"
+PILOT_EMAIL = "kushthrottle@gmail.com"
+PILOT_SUBJECT = "Throttle pilot"
+# Older names, kept for imports; every offer now points at the pilot page.
+PRO_URL = PILOT_URL
+AUDIT_URL = PILOT_URL
 
 NUDGE_ENV = "THROTTLE_NO_NUDGE"
 NUDGE_FILE = ".upgrade-nudge"
 NUDGE_INTERVAL_SECONDS = 24 * 60 * 60
-NUDGE_TEXT = "Want this checked on every deploy? `throttle upgrade`"
+NUDGE_TEXT = (
+    "Want us to find and prove savings on your agent workload? "
+    "Throttle Pilot, free for 2 weeks: `throttle upgrade`"
+)
 
-# Wording mirrors the Pro and Cost Audit cards on throttle-pro.com.
-PRO_SUMMARY = """\
-Throttle Pro, for what repeats (early access)
-  $19/month launch price ($50/month list price once Pro fully launches).
-  Sign up during launch and you keep $19/month for as long as you stay subscribed.
+PILOT_TAGLINE = "We find savings on your agent workload and prove them."
+PILOT_TERMS = (
+    "Free for 2 weeks.",
+    "Then 20% of verified monthly savings (the conservative end of the 95% interval).",
+    "$500/month floor. Cancel anytime.",
+    "We take at most 5 design partners per round.",
+)
+PILOT_STEPS = (
+    "Weeks 1-2: we measure your agent workload's $/M tokens (baseline, 95% CI) on your own GPUs",
+    "We test config changes and ship the winner only if it beats the noise bound with unchanged outputs",
+    "Every month after: savings shown line by line, priced at the conservative end",
+)
+PILOT_ONE_LINE = (
+    "Throttle Pilot: we find and prove savings on your agent workload. Free for 2 weeks, "
+    "then 20% of verified savings, $500/month floor. throttle upgrade"
+)
 
-  - Scheduled config-drift checks              (early access)
-  - Cost history across deploys                (early access)
-  - Alerts when a change makes you pay more    (early access)
-  - Team sharing                               (early access)
-
-  These features are in progress. The CLI stays free and local (MIT)."""
-
-AUDIT_SUMMARY = """\
-Throttle Cost Audit: $500 one-time, done with you in 2 weeks
-  - Your true $ per million tokens, measured on your own stack with 95% confidence intervals
-  - Calibrated verdicts on up to 3 config changes you choose: flags, quantization, engine or GPU
-  - A CI cost gate wired into your pipeline, so a costlier deploy fails before production
-  - A written report in dollars, with the raw results attached
-
-  No savings guarantee. What you get is a measurement you can trust, in dollars."""
-
-
+# Served to the console Upgrade page by /api/upgrade.
 PLANS = {
-    "pro": {
-        "title": "Throttle Pro",
-        "tag": "for what repeats · early access",
-        "price": "$19/month launch price",
-        "note": "$50/month list price once Pro fully launches. Sign up during launch and you keep $19/month for as long as you stay subscribed.",
-        "items": [
-            "Scheduled config-drift checks (early access)",
-            "Cost history across deploys (early access)",
-            "Alerts when a change makes you pay more (early access)",
-            "Team sharing (early access)",
-        ],
-        "url": PRO_URL,
+    "pilot": {
+        "title": "Throttle Pilot",
+        "tag": "for agent workloads on your own GPUs",
+        "price": "Free for 2 weeks",
+        "note": (
+            "Then 20% of verified monthly savings (the conservative end of the 95% "
+            "interval), $500/month floor, cancel anytime. We take at most 5 design "
+            "partners per round."
+        ),
+        "items": [PILOT_TAGLINE, *PILOT_STEPS],
+        "url": PILOT_URL,
+        "email": PILOT_EMAIL,
+        "subject": PILOT_SUBJECT,
         "command": "throttle upgrade",
-    },
-    "audit": {
-        "title": "Cost Audit",
-        "tag": "done with you · 2 weeks",
-        "price": "$500 one-time",
-        "note": "No savings guarantee. What you get is a measurement you can trust, in dollars.",
-        "items": [
-            "Your true $ per million tokens, measured on your own stack with 95% confidence intervals",
-            "Calibrated verdicts on up to 3 config changes you choose: flags, quantization, engine or GPU",
-            "A CI cost gate wired into your pipeline, so a costlier deploy fails before production",
-            "A written report in dollars, with the raw results attached",
-        ],
-        "url": AUDIT_URL,
-        "command": "throttle upgrade --audit",
     },
 }
 
@@ -132,20 +125,33 @@ def qr_svg(text: str, quiet: int = 4, scale: int = 8) -> str:
     )
 
 
+def pilot_page(style: Style, *, qr: bool) -> str:
+    """The `throttle upgrade` screen: pilot terms in a panel, then the QR code."""
+
+    rows: list = [(PILOT_TAGLINE, ("1",)), ""]
+    rows += [(f"{style.dot} {term}", (), "  ") for term in PILOT_TERMS]
+    rows += ["", ("How it works", ("1",))]
+    rows += [(f"{i}. {step}", (), "   ") for i, step in enumerate(PILOT_STEPS, 1)]
+    rows += [
+        "",
+        (f"Contact  {PILOT_URL}", ("1", "36")),
+        (f"         {PILOT_EMAIL}  (subject \"{PILOT_SUBJECT}\")", ()),
+        "",
+        ("The CLI stays free, local and open source (MIT).", ("2",)),
+    ]
+    out = [style.panel(rows, title="Throttle Pilot")]
+    if qr:
+        out += ["", style.dim("Scan with your phone:"), qr_terminal(PILOT_URL)]
+    out += ["", f"Open: {PILOT_URL}"]
+    return "\n".join(out)
+
+
 def handle_upgrade(args: argparse.Namespace) -> int:
-    url = AUDIT_URL if args.audit else PRO_URL
+    # --audit is a hidden alias: same pilot page, same link.
     if args.url_only:
-        print(url)
+        print(PILOT_URL)
         return 0
-    print(AUDIT_SUMMARY if args.audit else PRO_SUMMARY)
-    print()
-    if not args.no_qr:
-        print("Scan with your phone:")
-        print(qr_terminal(url))
-        print()
-    print(f"Open: {url}")
-    if not args.audit:
-        print("Want it done with you instead? throttle upgrade --audit")
+    print(pilot_page(Style(), qr=not args.no_qr))
     return 0
 
 

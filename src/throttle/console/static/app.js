@@ -84,7 +84,7 @@
   var CONSOLE = [
     ["quickstart", "Quickstart", "quickstart"], ["checks", "Checks", "checks"], ["compare", "Compare", "compare"],
     ["endpoints", "Endpoints", "endpoints"], ["ci", "CI Gate", "ci"], ["share", "Share", "share"], ["settings", "Settings", "settings"],
-    ["upgrade", "Upgrade", "upgrade"]
+    ["upgrade", "Pilot", "upgrade"]
   ];
   var LEARN = [
     ["docs/getting-started/quickstart", "Getting Started", "rocket"], ["docs/concepts/noise-and-calibration", "Concepts", "book"],
@@ -348,16 +348,14 @@
 
   function pUpgrade() {
     api("/api/upgrade").then(function (plans) {
-      function plan(key) {
-        var p = plans[key];
-        return '<div class="panel pad plan"><div class="plan-head"><div><h2 class="m0">' + esc(p.title) + '</h2><p class="small muted m0">' + esc(p.tag) + '</p></div>' +
-          '<span class="badge cheaper">' + esc(p.price) + '</span></div><p class="small muted">' + esc(p.note) + '</p><ul class="plan-list">' +
-          p.items.map(function (i) { return "<li>" + esc(i) + "</li>"; }).join("") + '</ul><div class="plan-qr"><img src="/api/qr.svg?target=' + key +
-          '" width="168" height="168" alt="QR code for ' + esc(p.url) + '"><div><p class="small muted m0b10">Scan with your phone, or open:</p><p class="m0b10"><a href="' + esc(p.url) +
-          '" target="_blank" rel="noopener">' + esc(p.url) + "</a></p>" + cmd(p.command) + "</div></div></div>";
-      }
-      show('<p class="eyebrow">Console</p><h1>Upgrade</h1><p class="lede">The CLI and this console stay free and local. Pro is for what repeats; the Cost Audit is done with you. QR codes are generated on this machine.</p>' +
-        '<div class="plans">' + plan("pro") + plan("audit") + "</div>");
+      var p = plans.pilot;
+      var mail = "mailto:" + p.email + "?subject=" + encodeURIComponent(p.subject);
+      show('<p class="eyebrow">Console</p><h1>Throttle Pilot</h1><p class="lede">The CLI and this console stay free, local and open source. The pilot is for teams running agent workloads on their own GPUs: we find savings and prove them. The QR code is generated on this machine.</p>' +
+        '<div class="panel pad plan" style="max-width:680px"><div class="plan-head"><div><h2 class="m0">' + esc(p.title) + '</h2><p class="small muted m0">' + esc(p.tag) + '</p></div>' +
+        '<span class="badge cheaper">' + esc(p.price) + '</span></div><p class="small muted">' + esc(p.note) + '</p><ul class="plan-list">' +
+        p.items.map(function (i) { return "<li>" + esc(i) + "</li>"; }).join("") + '</ul><div class="plan-qr"><img src="/api/qr.svg?target=pilot" width="168" height="168" alt="QR code for ' + esc(p.url) +
+        '"><div><p class="small muted m0b10">Scan with your phone, or open:</p><p class="m0b10"><a href="' + esc(p.url) + '" target="_blank" rel="noopener">' + esc(p.url) + '</a></p>' +
+        '<p class="m0b10 small">Email <a href="' + esc(mail) + '">' + esc(p.email) + '</a> (subject &ldquo;' + esc(p.subject) + '&rdquo;)</p>' + cmd(p.command) + "</div></div></div>");
     }).catch(fail);
   }
 

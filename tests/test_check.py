@@ -874,7 +874,7 @@ def test_upgrade_nudge_follows_a_calibrated_verdict_once(history, monkeypatch, c
         assert "throttle upgrade" not in out  # first check / NOT CALIBRATED: no nudge
     code, out = run_check(monkeypatch, capsys, FakeServer(constant(0.01)), "--config", "quant=fp8")
     assert "Verdict: CHEAPER" in out
-    assert "Want this checked on every deploy? `throttle upgrade`" in out
+    assert "Want us to find and prove savings on your agent workload? Throttle Pilot, free for 2 weeks: `throttle upgrade`" in out
     code, out = run_check(monkeypatch, capsys, FakeServer(constant(0.08)), "--config", "quant=none")
     assert "Verdict: MORE EXPENSIVE" in out
     assert "throttle upgrade" not in out  # once per 24 hours
