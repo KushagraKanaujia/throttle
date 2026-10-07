@@ -4,6 +4,12 @@ All notable changes to Throttle will be documented in this file.
 
 ## [Unreleased]
 
+## [0.6.1] - 2026-10-07
+
+### Fixed
+- PyPI project page: project links (homepage, source, docs, changelog, issues) and README links that pointed at relative paths now resolve.
+- Docs: GitHub Action examples pin v0.6.0 and mention OUTPUT CHANGED; the quickstart notebook installs 0.6.0; issue templates list OUTPUT CHANGED and link to the pilot page.
+
 ## [0.6.0] - 2026-10-07
 
 ### Added
