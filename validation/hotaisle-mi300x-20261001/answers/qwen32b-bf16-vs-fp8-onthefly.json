@@ -1,0 +1,38 @@
+[
+ {
+  "prompt": "In two sentences, why is the sky blue?",
+  "bf16": "The sky appears blue because the Earth's atmosphere scatters sunlight in all directions and blue light is scattered more than other colors because it travels as shorter, smaller waves.",
+  "bf16_tokens": 34,
+  "bf16_finish": "stop",
+  "fp8": "The sky appears blue because the Earth's atmosphere scatters sunlight in all directions and blue light is scattered more than other colors because it travels as shorter, smaller waves. This scattering of light is known as Rayleigh scattering.",
+  "fp8_tokens": 45,
+  "fp8_finish": "stop"
+ },
+ {
+  "prompt": "Write a Python function that returns the n-th Fibonacci number.",
+  "bf16": "Certainly! Below is a Python function that calculates and returns the n-th Fibonacci number using an iterative approach. This method is efficient and avoids the potential stack overflow issues that can arise with recursive solutions for large values of `n`.\n\n```python\ndef fibonacci(n):\n    if n <= 0:\n        return \"Input should be a positive integer.\"\n    elif n == 1:\n        return 0\n    elif n == 2:\n        return 1\n    \n    a, b = 0, 1\n    for _ in range(2, n):\n        a, b = b, a + b\n    return b\n\n# Example usage:\nprint(fibonacci(10))  # Output: 34\n```\n\nThis function starts by checking if the input `n` is less than or equal to zero, returning an error message if so. It then handles the base cases where `n` is 1 or 2 directly. For larger values of `n`, it uses a loop to iteratively calculate the Fibonacci numbers until it reaches the desired position.\n\nIf you prefer a recursive solution (which might be less efficient but more straightforward), here's how you could implement it:\n\n```python\ndef fibonacci_recursive(n):\n    if n <=",
+  "bf16_tokens": 256,
+  "bf16_finish": "length",
+  "fp8": "1. **Problem Understanding**: The problem requires us to write a Python function that calculates the n-th Fibonacci number. The Fibonacci sequence is a series of numbers where each number is the sum of the two preceding ones, usually starting with 0 and 1.\n\n2. **Function Definition**:\n   - We need to define a function named `fibonacci` that takes an integer `n` as input.\n   - The function should return the n-th Fibonacci number.\n\n3. **Base Cases**:\n   - If `n` is 0, the function should return 0 (since the 0th Fibonacci number is 0).\n   - If `n` is 1, the function should return 1 (since the 1st Fibonacci number is 1).\n\n4. **Recursive Case**:\n   - For any other value of `n`, the function should return the sum of the (n-1)th and (n-2)th Fibonacci numbers.\n\n5. **Implementation**:\n   - We can implement this using recursion, but it might be inefficient for large values of `n` due to repeated calculations.\n   - A more efficient approach would be to use dynamic programming or memoization to store previously computed Fibonacci numbers.\n\n6. **Example",
+  "fp8_tokens": 256,
+  "fp8_finish": "length"
+ },
+ {
+  "prompt": "Summarize the causes of World War I in about 80 words.",
+  "bf16": "World War I was triggered by a complex interplay of factors including nationalism, imperialism, militarism, and the intricate system of alliances in Europe. The immediate catalyst was the assassination of Archduke Franz Ferdinand of Austria-Hungary by a Serbian nationalist in 1914. This event led to Austria-Hungary declaring war on Serbia, activating a chain reaction due to existing alliances, pulling major European powers into conflict within weeks.",
+  "bf16_tokens": 89,
+  "bf16_finish": "stop",
+  "fp8": "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!",
+  "fp8_tokens": 256,
+  "fp8_finish": "length"
+ },
+ {
+  "prompt": "What is 17 * 23? Answer with just the number.",
+  "bf16": "391",
+  "bf16_tokens": 4,
+  "bf16_finish": "stop",
+  "fp8": "391",
+  "fp8_tokens": 4,
+  "fp8_finish": "stop"
+ }
+]

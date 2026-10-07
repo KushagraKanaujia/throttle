@@ -269,8 +269,8 @@ with no usable block data skip the test.
 ### Why it exists
 
 A cheaper $/M can come from broken output. The case it was built for, as
-recorded in the `check.py` comments and the changelog (not a saved artifact
-in `validation/`): on an MI300X, vLLM's on-the-fly FP8 on Qwen2.5-32B looked
+saved in [`validation/hotaisle-mi300x-20261001/`](../validation/hotaisle-mi300x-20261001/)
+(check records plus answer samples): on an MI300X, vLLM's on-the-fly FP8 on Qwen2.5-32B looked
 41% cheaper while one answer was 256 tokens of `"!!!!"` and every request ran
 to `max_tokens` (8,192 output tokens per block against 6,883 for BF16).
 
@@ -352,8 +352,8 @@ judging: `factor = per_gpu_rate(baseline) / per_gpu_rate(candidate)`, where
 
 The GPU count (`--gpus N`, or a `gpus` `--config` value; default 1, see
 `check.gpu_count`) stays in the verdict, because serving on 2 GPUs instead of
-1 really doubles the hourly cost. The case recorded in the code and
-changelog: Qwen2.5-72B on 2x MI300X was 1.56x faster but \$2.14 vs \$1.67/M,
+1 really doubles the hourly cost. The case saved in
+[`validation/hotaisle-mi300x-20261001/`](../validation/hotaisle-mi300x-20261001/): Qwen2.5-72B on 2x MI300X was 1.56x faster but \$2.14 vs \$1.67/M,
 28% more per token. Judged at the 1-GPU rate it had been called 36% CHEAPER.
 
 README recording of the rate rule: the same unchanged server checked at
