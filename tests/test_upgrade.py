@@ -134,6 +134,37 @@ def test_nudge_text_points_at_the_pilot() -> None:
 def nudge_env(monkeypatch):
     monkeypatch.delenv(upgrade.NUDGE_ENV, raising=False)
     monkeypatch.delenv("CI", raising=False)
+    monkeypatch.setattr(upgrade, "_stdout_is_tty", lambda: True)
+
+
+def test_nudge_needs_a_tty(tmp_path: Path, monkeypatch) -> None:
+    import io
+    import sys
+
+    monkeypatch.delenv(upgrade.NUDGE_ENV, raising=False)
+    monkeypatch.delenv("CI", raising=False)
+    monkeypatch.setattr(sys, "stdout", io.StringIO())  # a pipe or a log file
+    assert upgrade.maybe_nudge(tmp_path) is None
+    assert not (tmp_path / upgrade.NUDGE_FILE).exists()
+
+
+def test_no_qr_on_a_stream_that_cannot_encode_it(monkeypatch) -> None:
+    import io
+    import sys
+
+    from throttle.style import Style
+
+    monkeypatch.delenv("FORCE_COLOR", raising=False)
+    stream = io.TextIOWrapper(io.BytesIO(), encoding="ascii")
+    page = upgrade.pilot_page(Style(stream), qr=True)
+    page.encode("ascii")  # every character can be written to the stream
+    assert "▀" not in page and "▄" not in page and "█" not in page
+    assert "Scan with your phone" not in page
+    assert page.rstrip().endswith(f"Open: {upgrade.PILOT_URL}")
+    monkeypatch.setattr(sys, "stdout", stream)
+    assert main(["upgrade"]) == 0
+    stream.flush()
+    assert f"Open: {upgrade.PILOT_URL}" in stream.buffer.getvalue().decode("ascii")
 
 
 def test_nudge_at_most_once_per_24_hours(tmp_path: Path, nudge_env) -> None:

@@ -105,8 +105,10 @@ def test_cheaper_pair_gives_conservative_dollars(history, capsys):
     write_history(history, make_check("cand", 30, 0.60, quant="fp8"))
     code, out, err = run_savings(capsys, history, *pair("--tokens", "1B", "--period-label", "2026-10"))
     assert code == 0, err
-    # (1.00 - 0.01) - (0.60 + 0.01) = $0.38/M x 1,000M tokens = $380.
-    assert "Verified savings (conservative): $380.00" in out
+    # CI term (1.00 - 0.01) - (0.60 + 0.01) = $0.38/M; noise term
+    # (1 - 6.085%) x 1.00 - 0.60 = $0.3391/M; the smaller x 1,000M = $339.15.
+    assert "Verified savings (conservative): $339.15" in out
+    assert "$0.3800/M" in flat(out) and "$0.3391/M" in flat(out)
     # The point estimate (0.40/M) is shown, labelled, and is not the headline.
     assert "Point estimate (not the verified figure): $400.00" in out
     assert "period      2026-10" in out
@@ -217,12 +219,13 @@ def test_snapshot_delta_is_measured_tokens(history, tmp_path, monkeypatch, capsy
     write_history(history, make_check("cand", 30, 0.60, quant="fp8"))
     start = tmp_path / "start.json"
     fake_counter(monkeypatch, 5_000_000)
-    monkeypatch.setattr(savings_module, "_now", lambda: T0)
+    # The snapshot is taken after the candidate check (T0 + 30 min).
+    monkeypatch.setattr(savings_module, "_now", lambda: T0 + timedelta(hours=1))
     assert main(["savings", "snapshot", "--metrics-url", METRICS_URL, "--out", str(start)]) == 0
     capsys.readouterr()
     saved = json.loads(start.read_text())
     assert saved["series"] == [{"labels": {}, "value": 5_000_000}]
-    assert saved["taken_at"] == "2026-10-01T12:00:00Z"
+    assert saved["taken_at"] == "2026-10-01T13:00:00Z"
 
     calls = fake_counter(monkeypatch, 505_000_000)
     monkeypatch.setattr(savings_module, "_now", lambda: T0 + timedelta(days=30))
@@ -232,9 +235,9 @@ def test_snapshot_delta_is_measured_tokens(history, tmp_path, monkeypatch, capsy
     assert code == 0, err
     assert calls == [METRICS_URL]
     assert "500,000,000  [MEASURED]" in out
-    assert "period      2026-10-01T12:00:00Z to 2026-10-31T12:00:00Z" in out
-    # $0.38/M x 500M = $190.
-    assert "Verified savings (conservative): $190.00" in out
+    assert "period      2026-10-01T13:00:00Z to 2026-10-31T12:00:00Z" in out
+    # $0.3391/M (the noise term) x 500M = $169.57.
+    assert "Verified savings (conservative): $169.57" in out
 
 
 def test_counter_reset_is_refused(history, tmp_path, monkeypatch, capsys):
@@ -272,7 +275,7 @@ def test_json_statement_shape(history, capsys):
     assert code == 0, err
     statement = json.loads(out)
     assert statement["record_type"] == "savings_statement"
-    assert statement["record_version"] == 1
+    assert statement["record_version"] == 2
     assert set(statement) >= {
         "created_at", "period", "metric", "metric_label", "verdict", "verdict_reason",
         "baseline", "candidate", "tokens", "savings", "assumptions", "rate_factor",
@@ -285,7 +288,10 @@ def test_json_statement_shape(history, capsys):
         assert set(statement[side]["dollars_per_million"]) == {"mean", "ci_low", "ci_high"}
         assert statement[side]["gpu_hourly_rate_source"].startswith("ASSUMED")
     assert statement["tokens"] == {"count": 2_000_000, "source": "REPORTED BY OPERATOR"}
-    assert statement["savings"]["conservative_usd"] == pytest.approx(0.76)
+    assert statement["savings"]["ci_term_dollars_per_million"] == pytest.approx(0.38)
+    assert statement["savings"]["noise_bound_percent"] == pytest.approx(6.0854, abs=1e-3)
+    assert statement["savings"]["noise_term_dollars_per_million"] == pytest.approx(0.33915, abs=1e-4)
+    assert statement["savings"]["conservative_usd"] == pytest.approx(0.33915 * 2, abs=1e-3)
     assert statement["savings"]["point_estimate_usd"] == pytest.approx(0.80)
     assert statement["savings"]["conservative_usd"] <= statement["savings"]["point_estimate_usd"]
 
@@ -305,7 +311,7 @@ def test_data_parallel_engines_are_summed(history, tmp_path, monkeypatch, capsys
     assert code == 0, err
     assert "500,000,000  [MEASURED]" in out
     assert "summed over 2 series with model_name=qwen-32b" in flat(out)
-    assert "Verified savings (conservative): $190.00" in out
+    assert "Verified savings (conservative): $169.57" in out
 
 
 def test_series_order_swapped_still_totals_per_series(history, tmp_path, monkeypatch, capsys):
@@ -371,3 +377,85 @@ def test_no_series_for_the_model_is_refused(history, tmp_path, monkeypatch, caps
     assert code == 1 and out == ""
     assert "has model_name='qwen-32b'" in err
     assert len(err.strip().splitlines()) == 1
+
+
+# ---------------------------------------------------------------------------
+# Pre-release review fixes: a statement that may be invoiced never overstates.
+# ---------------------------------------------------------------------------
+
+
+def test_per_gpu_price_rise_is_real_cost_not_a_saving(history, capsys):
+    # Baseline 1 GPU at $2/hr, $1.00/M. Candidate 1 GPU at $4/hr (a pricier
+    # GPU type), $1.40/M: 40% more per token. Scaling the candidate down by
+    # 2/4 used to call it CHEAPER and bill $285.
+    write_history(history, make_check("cand", 30, 1.40, rate=4.0, quant="h100"))
+    code, out, err = run_savings(capsys, history, *pair("--tokens", "1B"))
+    assert code == 1 and out == ""
+    assert "re-judged verdict is MORE EXPENSIVE" in err
+    assert "higher per-GPU price counted as real cost" in err
+
+
+def test_total_rate_for_more_gpus_without_gpus_flag_is_not_a_saving(history, capsys):
+    # TP=2 on 2 GPUs, the total $4/hr passed but --gpus forgotten.
+    write_history(history, make_check("cand", 30, 1.40, rate=4.0, quant="tp2"))
+    code, _out, err = run_savings(capsys, history, *pair("--tokens", "1B"))
+    assert code == 1
+    assert "not CHEAPER" in err
+
+
+def test_assumed_price_cut_still_never_counts(history, capsys):
+    # Same speed, rate typed lower ($1/hr): $/M halves but nothing was measured faster.
+    write_history(history, make_check("cand", 30, 0.50, rate=1.0, quant="cheap"))
+    code, _out, err = run_savings(capsys, history, *pair("--tokens", "1B"))
+    assert code == 1
+    assert "re-judged verdict is NO WINNER" in err
+
+
+def test_window_starting_before_candidate_is_refused(history, tmp_path, monkeypatch, capsys):
+    write_history(history, make_check("cand", 30, 0.60, quant="fp8"))
+    start = tmp_path / "start.json"
+    fake_counter(monkeypatch, 0)
+    monkeypatch.setattr(savings_module, "_now", lambda: T0 + timedelta(minutes=29))
+    assert main(["savings", "snapshot", "--metrics-url", METRICS_URL, "--out", str(start)]) == 0
+    capsys.readouterr()
+    fake_counter(monkeypatch, 5_000_000_000)
+    monkeypatch.setattr(savings_module, "_now", lambda: T0 + timedelta(days=30))
+    code, out, err = run_savings(
+        capsys, history, *pair("--metrics-url", METRICS_URL, "--window-start", str(start))
+    )
+    assert code == 1 and out == ""
+    assert err.strip() == (
+        "Savings refused: the window starts before the candidate config was measured; "
+        "take a new snapshot after deploying it."
+    )
+
+
+def test_conservative_figure_includes_run_to_run_noise(history, capsys):
+    # Tight candidate CI: the CI term alone is (1.00 - 0.01) - (0.90 + 0.001) = $0.089/M.
+    # The 6.085% noise bound leaves (1 - 0.06085) x 1.00 - 0.90 = $0.0391/M.
+    write_history(history, make_check("cand", 30, 0.90, half_width=0.001, quant="fp8"))
+    code, out, err = run_savings(capsys, history, *pair("--tokens", "1B", "--json"))
+    assert code == 0, err
+    savings = json.loads(out)["savings"]
+    assert savings["ci_term_dollars_per_million"] == pytest.approx(0.089, abs=1e-6)
+    assert savings["noise_term_dollars_per_million"] == pytest.approx(0.03915, abs=1e-4)
+    assert savings["conservative_dollars_per_million"] == savings["noise_term_dollars_per_million"]
+    assert savings["conservative_usd"] == pytest.approx(39.15, abs=0.01)
+
+
+def test_noise_term_not_positive_is_refused(monkeypatch, history, capsys):
+    # Guard: a CHEAPER verdict whose noise-adjusted reduction is not
+    # positive must refuse rather than bill. Hand the statement a CHEAPER
+    # comparison whose noise bound (45%) exceeds the 40% reduction.
+    write_history(history, make_check("cand", 30, 0.60, quant="fp8"))
+    real = savings_module.compare_checks
+
+    def wide(*args, **kwargs):
+        comparison = real(*args, **kwargs)
+        return {**comparison, "noise": {**comparison["noise"], "floor_percent": 45.0}}
+
+    monkeypatch.setattr(savings_module, "compare_checks", wide)
+    code, out, err = run_savings(capsys, history, *pair("--tokens", "1B"))
+    assert code == 1 and out == ""
+    assert "the conservative $/M reduction is not positive" in err
+    assert "noise term" in err

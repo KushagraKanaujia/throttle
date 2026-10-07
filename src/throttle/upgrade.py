@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import sys
 import time
 from pathlib import Path
 
@@ -145,7 +146,9 @@ def pilot_page(style: Style, *, qr: bool) -> str:
         ("The CLI stays free, local and open source (MIT).", ("2",)),
     ]
     out = [style.panel(rows, title="Throttle Pilot")]
-    if qr:
+    # The QR code is drawn with block characters: only on a stream that can
+    # encode them. Otherwise the URL line below is the whole link.
+    if qr and style.unicode:
         out += ["", style.dim("Scan with your phone:"), qr_terminal(PILOT_URL)]
     out += ["", f"Open: {PILOT_URL}"]
     return "\n".join(out)
@@ -160,16 +163,26 @@ def handle_upgrade(args: argparse.Namespace) -> int:
     return 0
 
 
+def _stdout_is_tty() -> bool:
+    try:
+        return bool(sys.stdout.isatty())
+    except (AttributeError, ValueError):
+        return False
+
+
 def maybe_nudge(directory: Path, now: float | None = None) -> str | None:
     """Return the nudge line at most once per 24 hours, else None.
 
-    Disabled by THROTTLE_NO_NUDGE=1 and in CI. The only state is a timestamp
+    Disabled by THROTTLE_NO_NUDGE=1, in CI, and when stdout is not a TTY
+    (so it never lands in a pipe or a log). The only state is a timestamp
     file in the check history directory; nothing leaves the machine.
     """
     if os.environ.get(NUDGE_ENV, "").strip() not in ("", "0"):
         return None
     if os.environ.get("CI", "").strip() not in ("", "0", "false"):
         return None
+    if not _stdout_is_tty():
+        return None  # never into a pipe or a log
     now = time.time() if now is None else now
     stamp = directory / NUDGE_FILE
     try:

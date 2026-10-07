@@ -37,10 +37,13 @@ Honesty rules this module follows:
   controlled comparison. A directional verdict (CHEAPER / MORE EXPENSIVE)
   also needs a run-to-run noise bound measured from recent history, and a
   change larger than it. Without one the verdict is NOT CALIBRATED.
-* The verdict judges only what was MEASURED. $/M scales linearly with the
-  ASSUMED GPU rate, so when the rate differs the new check is put on the
-  baseline's rate before judging; the rate-driven part is reported
-  separately and never called significant.
+* The verdict never counts an ASSUMED price cut as a saving. $/M scales
+  linearly with the ASSUMED GPU rate, so when the new check's per-GPU rate is
+  LOWER it is put on the baseline's per-GPU rate before judging; that
+  rate-driven part is reported separately and never called significant. A
+  per-GPU rate RISE (a pricier GPU type) always counts as real cost: the
+  candidate is scaled by max(1, baseline per-GPU rate / candidate per-GPU
+  rate), never by less than 1.
 
 Run-to-run noise bound (the exact rule):
 
@@ -245,6 +248,13 @@ def _config_pair(value: str) -> tuple[str, str]:
         raise argparse.ArgumentTypeError(
             f"config key {key!r} looks like a secret; checks are stored in "
             "plain text, so it is refused"
+        )
+    if key == "gpus" and not (raw.strip().isdigit() and int(raw.strip()) > 0):
+        # The GPU count drives the verdict's cost; a value like 2xH100 would
+        # silently count as 1 GPU.
+        raise argparse.ArgumentTypeError(
+            f"--config gpus must be a whole number of GPUs, got {raw.strip()!r} "
+            "(e.g. --config gpus=2 --config gpu=H100, or use --gpus 2)"
         )
     return key, raw.strip()
 
@@ -874,6 +884,11 @@ def flatten_fingerprint(fingerprint: Mapping[str, Any]) -> dict[str, str]:
     flat: dict[str, str] = {}
     flat["request.model"] = str(fingerprint.get("model"))
     flat["gpu_hourly_rate_usd (ASSUMED)"] = f"{float(fingerprint['gpu_hourly_rate_usd']):.4f}"
+    gpus = gpu_count({"fingerprint": fingerprint})
+    if gpus != 1:
+        # Only when not 1, so a check recorded without --gpus (1 GPU)
+        # flattens exactly as it did before this key existed.
+        flat["gpu_count"] = str(gpus)
     if fingerprint.get("label"):
         flat["label"] = str(fingerprint["label"])
     models = fingerprint.get("server_models") or {}
@@ -1482,6 +1497,17 @@ def per_gpu_rate(record: Mapping[str, Any]) -> float:
     return rate_of(record) / gpu_count(record)
 
 
+def rate_factor(baseline: Mapping[str, Any], candidate: Mapping[str, Any]) -> float:
+    """What the candidate's $/M is multiplied by before it is judged.
+
+    ``max(1, baseline per-GPU rate / candidate per-GPU rate)``: an ASSUMED
+    per-GPU price cut is undone (it never counts as a saving), but a per-GPU
+    price rise always counts as real cost (it is never scaled away).
+    """
+
+    return max(1.0, per_gpu_rate(baseline) / per_gpu_rate(candidate))
+
+
 def run_to_run_noise(
     history: Sequence[Mapping[str, Any]],
     previous: Mapping[str, Any],
@@ -1753,15 +1779,19 @@ def compare_checks(
         return comparison
     comparison["delta_dollars_per_million"] = new["mean"] - old["mean"]
     comparison["delta_percent"] = relative_delta_percent(new["mean"], old["mean"])
-    # The verdict judges only what was MEASURED (tokens per wall-clock
-    # second). $/M scales linearly with the ASSUMED per-GPU price, so put the
-    # new check on the baseline's per-GPU price before judging it. A change in
-    # GPU COUNT is a real config change, not an assumption: running a model on
-    # 2 GPUs instead of 1 really costs twice as much per hour, so that part of
-    # the rate stays in the verdict. (Measured on 2x MI300X: Qwen2.5-72B on 2
-    # GPUs was 1.56x faster but $2.14 vs $1.67/M, 28% more per token. Judging
-    # at the 1-GPU rate called it 36% CHEAPER.)
-    factor = per_gpu_rate(previous) / per_gpu_rate(current)
+    # The verdict judges what was MEASURED (tokens per wall-clock second),
+    # and never lets an ASSUMED price cut count as a saving: when the new
+    # check's per-GPU price is lower, it is put back on the baseline's
+    # per-GPU price before judging. A per-GPU price RISE is kept as real
+    # cost (factor never below 1): a pricier GPU type, or a total --gpu-
+    # hourly-rate for more GPUs given without --gpus, really costs more, and
+    # scaling it down would hide that increase as a saving. A change in GPU
+    # COUNT is a real config change too: running a model on 2 GPUs instead
+    # of 1 really costs twice as much per hour, so that part of the rate
+    # stays in the verdict. (Measured on 2x MI300X: Qwen2.5-72B on 2 GPUs
+    # was 1.56x faster but $2.14 vs $1.67/M, 28% more per token. Judging at
+    # the 1-GPU rate called it 36% CHEAPER.)
+    factor = rate_factor(previous, current)
     comparison["rate_changed"] = factor != 1.0
     comparison["rate_factor"] = factor
     gpus_before, gpus_after = gpu_count(previous), gpu_count(current)
@@ -1816,7 +1846,12 @@ def compare_checks(
         f"{noise['degrees_of_freedom']} df"
     )
     rate_words = "per-GPU price" if comparison.get("gpu_count_changed") else "GPU rate"
-    what = f"measured change at the baseline's {rate_words}" if comparison["rate_changed"] else "change"
+    if comparison["rate_changed"]:
+        what = f"measured change at the baseline's {rate_words}"
+    elif per_gpu_rate(current) > per_gpu_rate(previous):
+        what = "change (the higher per-GPU price counted as real cost)"
+    else:
+        what = "change"
     failed: list[str] = []
     if pct is None or abs(pct) <= floor:
         change_text = f"{pct:+.1f}%" if pct is not None else "n/a"
@@ -3034,6 +3069,14 @@ def handle_check(args: argparse.Namespace) -> int:
                 f"          At the old {old_words} this check measures {_money(adjusted)}/M "
                 f"({measured_pct:+.1f}% vs before) [MEASURED throughput]; the verdict "
                 "judges only that part."
+            )
+        elif delta is not None and per_gpu_rate(record) > per_gpu_rate(baseline):
+            what_rate = "per-GPU price" if gpus_changed else "GPU rate"
+            print(
+                f"  note    the {what_rate} rose ({_money(old_rate)}/hr -> "
+                f"{_money(args.gpu_hourly_rate)}/hr) [ASSUMED]: a price rise is a real "
+                "cost, so the verdict judges $/M at the rates as typed (only a price "
+                "cut is set aside)."
             )
         noise = comparison.get("noise")
         if noise is not None:

@@ -57,16 +57,19 @@
   "metric_label": "$/M output tokens",
   "noise_floor_percent": 11.617425831401524,
   "period": "2026-10",
-  "priced_at": "baseline per-GPU rate (candidate $/M scaled by 1); GPU count changes are kept as real cost",
+  "priced_at": "candidate $/M scaled by max(1, baseline / candidate per-GPU rate) = 1: an assumed per-GPU price cut is not a saving, a per-GPU price rise and GPU count changes are kept as real cost",
   "rate_factor": 1.0,
   "record_type": "savings_statement",
-  "record_version": 1,
+  "record_version": 2,
   "savings": {
-    "conservative_dollars_per_million": 2.318433689546534,
-    "conservative_usd": 2318.433689546534,
+    "ci_term_dollars_per_million": 2.318433689546534,
+    "conservative_dollars_per_million": 2.249659910056902,
+    "conservative_usd": 2249.659910056902,
+    "noise_bound_percent": 11.617425831401524,
+    "noise_term_dollars_per_million": 2.249659910056902,
     "point_estimate_dollars_per_million": 2.897603485838774,
     "point_estimate_usd": 2897.603485838774,
-    "rule": "conservative = (baseline CI low - candidate CI high) x tokens / 1e6; point estimate = (baseline mean - candidate mean) x tokens / 1e6"
+    "rule": "conservative = min(baseline CI low - candidate CI high, (1 - noise bound) x baseline mean - candidate mean) x tokens / 1e6; point estimate = (baseline mean - candidate mean) x tokens / 1e6"
   },
   "tokens": {
     "count": 1000000000,

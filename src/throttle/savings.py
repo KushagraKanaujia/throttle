@@ -6,12 +6,20 @@ unless the verdict is a calibrated CHEAPER on the same model and workload.
 
 Rules:
 
-* Savings use the conservative bound, never the point estimate: the smallest
-  plausible $/M reduction (baseline CI low minus candidate CI high) times the
-  production token count / 1e6. The point estimate is shown, labelled.
-* Both sides are priced at the baseline's per-GPU rate, exactly as the
-  verdict judges them, so a change in the ASSUMED price never counts as a
-  saving. A change in GPU count does count (it is a real cost).
+* Savings use the conservative bound, never the point estimate: the smaller
+  of two $/M reductions, (a) baseline CI low minus candidate CI high and
+  (b) (1 - run-to-run noise bound) x baseline mean minus candidate mean,
+  times the production token count / 1e6. (b) uses the same noise bound the
+  re-judged verdict used, so run-to-run drift is never billed. If the
+  result is not positive the statement is refused. The point estimate is
+  shown, labelled.
+* The candidate is priced exactly as the verdict judges it: scaled by
+  max(1, baseline per-GPU rate / candidate per-GPU rate). An ASSUMED
+  per-GPU price cut never counts as a saving; a per-GPU price rise (a
+  pricier GPU type) always counts as real cost. A change in GPU count
+  counts too (it is a real cost).
+* A MEASURED token window must start after the candidate check was taken:
+  tokens served before the candidate config existed are not its savings.
 * Token counts are REPORTED BY OPERATOR (``--tokens``) or MEASURED as a delta
   of vLLM's ``vllm:generation_tokens_total`` counter since a snapshot taken
   with ``throttle savings snapshot``, per labelled series (e.g. one per
@@ -47,18 +55,19 @@ from .check import (
     _money,
     _shape_text,
     _token_count,
+    _created,
     compare_checks,
     gpu_count,
     history_dir,
     load_history,
-    per_gpu_rate,
+    rate_factor,
     workload_value,
 )
 
 RECORD_TYPE = "savings_statement"
-RECORD_VERSION = 1
+RECORD_VERSION = 2
 SNAPSHOT_RECORD_TYPE = "savings_counter_snapshot"
-SNAPSHOT_RECORD_VERSION = 1
+SNAPSHOT_RECORD_VERSION = 2
 GENERATION_COUNTER = "vllm:generation_tokens_total"
 SOURCE_OPERATOR = "REPORTED BY OPERATOR"
 SOURCE_MEASURED = "MEASURED"
@@ -67,8 +76,9 @@ SAVINGS_DESCRIPTION = (
     "Produce a conservative, auditable savings statement for a baseline -> candidate\n"
     "config change. Re-judges the two recorded checks and refuses (exit 1, one-line\n"
     "reason) unless the verdict is a calibrated CHEAPER on the same model and workload.\n\n"
-    "Verified savings = smallest plausible $/M reduction (baseline CI low - candidate\n"
-    "CI high) x production tokens / 1e6. The point estimate is shown too, labelled.\n"
+    "Verified savings = smallest plausible $/M reduction x production tokens / 1e6:\n"
+    "the smaller of (baseline CI low - candidate CI high) and ((1 - run-to-run noise\n"
+    "bound) x baseline mean - candidate mean). The point estimate is shown, labelled.\n"
     "GPU $/hr is ASSUMED (what you passed to 'throttle check'). Sends no traffic,\n"
     "except one read of --metrics-url when given."
 )
@@ -360,6 +370,15 @@ def build_statement(
             "vLLM counter counts output tokens only; use --tokens with the matching count"
         )
 
+    if tokens.get("window_start") is not None:
+        window_start = _created({"created_at": tokens["window_start"]})
+        measured_from = _created(candidate)
+        if window_start is None or measured_from is None or window_start < measured_from:
+            raise SavingsRefused(
+                "the window starts before the candidate config was measured; "
+                "take a new snapshot after deploying it."
+            )
+
     # Re-judge with the history that existed when the later of the two was recorded.
     history = records[: max(b_index, c_index) + 1]
     comparison = compare_checks(baseline, candidate, history)
@@ -367,16 +386,27 @@ def build_statement(
     if verdict != VERDICT_CHEAPER:
         raise SavingsRefused(f"re-judged verdict is {verdict}, not CHEAPER: {comparison['reason']}")
 
-    factor = per_gpu_rate(baseline) / per_gpu_rate(candidate)
+    # Same factor the verdict used: an assumed price cut is undone, a price
+    # rise is kept as real cost.
+    factor = rate_factor(baseline, candidate)
     base = _side(baseline, metric, 1.0)
     cand = _side(candidate, metric, factor)
     b_dpm, c_dpm = base["dollars_per_million"], cand["dollars_per_million"]
     if b_dpm["ci_low"] is None or c_dpm["ci_high"] is None:
         raise SavingsRefused("a check has no 95% CI, so there is no conservative bound")
-    conservative_dpm = b_dpm["ci_low"] - c_dpm["ci_high"]
+    noise = comparison.get("noise") or {}
+    noise_percent = noise.get("floor_percent")
+    if noise_percent is None:
+        raise SavingsRefused("the re-judged verdict has no run-to-run noise bound")
+    ci_dpm = b_dpm["ci_low"] - c_dpm["ci_high"]
+    noise_dpm = (1.0 - noise_percent / 100.0) * b_dpm["mean"] - c_dpm["mean"]
+    conservative_dpm = min(ci_dpm, noise_dpm)
     point_dpm = b_dpm["mean"] - c_dpm["mean"]
     if conservative_dpm <= 0:
-        raise SavingsRefused("the conservative $/M reduction is not positive")
+        raise SavingsRefused(
+            f"the conservative $/M reduction is not positive (CI term {_money(ci_dpm)}/M, "
+            f"run-to-run noise term {_money(noise_dpm)}/M)"
+        )
     count = int(tokens["count"])
 
     if period_label:
@@ -386,7 +416,6 @@ def build_statement(
     else:
         period = None
 
-    noise = comparison.get("noise") or {}
     shape = workload_value(baseline, "workload_shape")
     if shape is None:
         workload_assumption = (
@@ -411,8 +440,9 @@ def build_statement(
         "verdict_reason": comparison["reason"],
         "noise_floor_percent": noise.get("floor_percent"),
         "measured_delta_percent": comparison.get("measured_delta_percent"),
-        "priced_at": "baseline per-GPU rate (candidate $/M scaled by "
-                     f"{factor:.6g}); GPU count changes are kept as real cost",
+        "priced_at": "candidate $/M scaled by max(1, baseline / candidate per-GPU rate) = "
+                     f"{factor:.6g}: an assumed per-GPU price cut is not a saving, a per-GPU "
+                     "price rise and GPU count changes are kept as real cost",
         "rate_factor": factor,
         "baseline": base,
         "candidate": cand,
@@ -420,9 +450,13 @@ def build_statement(
         "savings": {
             "conservative_usd": conservative_dpm * count / 1e6,
             "conservative_dollars_per_million": conservative_dpm,
+            "ci_term_dollars_per_million": ci_dpm,
+            "noise_term_dollars_per_million": noise_dpm,
+            "noise_bound_percent": noise_percent,
             "point_estimate_usd": point_dpm * count / 1e6,
             "point_estimate_dollars_per_million": point_dpm,
-            "rule": "conservative = (baseline CI low - candidate CI high) x tokens / 1e6; "
+            "rule": "conservative = min(baseline CI low - candidate CI high, "
+                    "(1 - noise bound) x baseline mean - candidate mean) x tokens / 1e6; "
                     "point estimate = (baseline mean - candidate mean) x tokens / 1e6",
         },
         "assumptions": [
@@ -464,9 +498,15 @@ def format_statement(statement: Mapping[str, Any], st: "style_module.Style | Non
     rows: list[Any] = [
         "Verified savings (conservative): "
         + st.paint(_money(savings["conservative_usd"]), "1", "32"),
-        (f"= ({_money(base['dollars_per_million']['ci_low'])} baseline CI low - "
-         f"{_money(cand['dollars_per_million']['ci_high'])} candidate CI high) "
-         f"x {tokens['count']:,} / 1e6", ("2",), "  "),
+        (f"= {_money(savings['conservative_dollars_per_million'])}/M x {tokens['count']:,} / 1e6, "
+         "the smaller of:", ("2",), "  "),
+        (f"  CI term     {_money(base['dollars_per_million']['ci_low'])} baseline CI low - "
+         f"{_money(cand['dollars_per_million']['ci_high'])} candidate CI high = "
+         f"{_money(savings['ci_term_dollars_per_million'])}/M", ("2",), " " * 14),
+        (f"  noise term  (1 - {savings['noise_bound_percent']:.1f}% run-to-run noise bound) x "
+         f"{_money(base['dollars_per_million']['mean'])} baseline mean - "
+         f"{_money(cand['dollars_per_million']['mean'])} candidate mean = "
+         f"{_money(savings['noise_term_dollars_per_million'])}/M", ("2",), " " * 14),
         (f"Point estimate (not the verified figure): {_money(savings['point_estimate_usd'])}", ("2",)),
         "",
         f"verdict     {st.verdict(statement['verdict'])} (re-judged)",
@@ -486,7 +526,7 @@ def format_statement(statement: Mapping[str, Any], st: "style_module.Style | Non
     if statement["rate_factor"] != 1.0:
         rows.append((
             f"{indent}(recorded {_dpm_text(cand['dollars_per_million_recorded'])}; "
-            "shown at the baseline's per-GPU rate)", (), indent
+            "shown at the baseline's per-GPU rate: a per-GPU price cut is not a saving)", (), indent
         ))
     rows.append((f"tokens      {tokens['count']:,}  [{tokens['source']}]", ()))
     if tokens.get("detail"):

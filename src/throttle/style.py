@@ -9,7 +9,10 @@ Colour and bold are used only when they can help and never when they can hurt:
 
 Panels use box-drawing characters when the stream's encoding is UTF-8 and plain
 ASCII (``+-|``) otherwise. Width follows the terminal, capped at
-``MAX_WIDTH`` and never below ``MIN_WIDTH`` columns.
+``MAX_WIDTH`` and never below ``MIN_WIDTH`` columns. A terminal narrower than
+``MIN_WIDTH`` gets panels without the frame (plain rows wrapped to its real
+width), so nothing overflows. A styled row wider than the panel is wrapped as
+plain text (its colour is dropped for that row) instead of overflowing.
 
 Machine-readable output (``--json``, ``--share``) never goes through here.
 """
@@ -73,9 +76,14 @@ def unicode_enabled(stream: IO[str] | None = None) -> bool:
     return encoding in ("utf8", "utf8sig")
 
 
+def terminal_columns() -> int:
+    """The real terminal width (``COLUMNS`` wins), uncapped."""
+
+    return shutil.get_terminal_size(fallback=(MAX_WIDTH, 24)).columns
+
+
 def terminal_width() -> int:
-    columns = shutil.get_terminal_size(fallback=(MAX_WIDTH, 24)).columns
-    return max(MIN_WIDTH, min(columns, MAX_WIDTH))
+    return max(MIN_WIDTH, min(terminal_columns(), MAX_WIDTH))
 
 
 def visible_len(text: str) -> int:
@@ -99,7 +107,11 @@ class Style:
     ) -> None:
         self.colour = colour_enabled(stream) if colour is None else colour
         self.unicode = unicode_enabled(stream) if unicode is None else unicode
+        columns = width if width is not None else terminal_columns()
         self.width = max(MIN_WIDTH, width if width is not None else terminal_width())
+        # Under MIN_WIDTH a 60-column box would overflow: panels drop the frame.
+        self.narrow = columns < MIN_WIDTH
+        self.columns = max(20, columns) if self.narrow else self.width
         self.box = UNICODE_BOX if self.unicode else ASCII_BOX
 
     # ----- inline -----
@@ -166,13 +178,15 @@ class Style:
         """A boxed panel.
 
         Each row is either a pre-styled string (printed as is, padded by its
-        visible length; keep it shorter than the panel) or ``(text, codes)`` /
-        ``(text, codes, indent)``: plain text wrapped to the panel width, each
-        wrapped line painted with ``codes``.
+        visible length; one wider than the panel is wrapped as plain text,
+        without its colour) or ``(text, codes)`` / ``(text, codes, indent)``:
+        plain text wrapped to the panel width, each wrapped line painted with
+        ``codes``. On a terminal narrower than ``MIN_WIDTH`` the frame is
+        dropped and the rows are wrapped to the terminal's real width.
         """
 
         b = self.box
-        inner = self.width - 4  # "│ " + text + " │"
+        inner = self.columns if self.narrow else self.width - 4  # "│ " + text + " │"
         lines: list[str] = []
         for row in rows:
             if isinstance(row, tuple):
@@ -182,10 +196,13 @@ class Style:
                     lines.append(self.paint(piece, *codes))
             else:
                 for piece in row.split("\n"):
-                    if visible_len(piece) > inner and "\x1b" not in piece:
-                        lines.extend(self.wrap(piece, inner))
+                    if visible_len(piece) > inner:
+                        lines.extend(self.wrap(strip_ansi(piece), inner))
                     else:
                         lines.append(piece)
+        if self.narrow:
+            head = [self.accent(self.wrap(title, inner)[0])] if title else []
+            return "\n".join(head + lines)
         if title:
             label = f" {title} "
             if len(label) > self.width - 4:
