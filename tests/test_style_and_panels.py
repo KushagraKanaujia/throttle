@@ -121,6 +121,65 @@ def test_panel_rows_are_one_width_and_wrap(colour: bool) -> None:
     assert flat(box).count("word") == 40
 
 
+def test_styled_row_wider_than_the_panel_wraps_instead_of_overflowing() -> None:
+    st = Style(colour=True, unicode=True, width=60)
+    wide = st.accent("3.") + " " + "a styled row that is far too long for a sixty column panel"
+    box = st.panel([wide, st.bold("short")], title="Verdict")
+    assert {visible_len(line) for line in box.splitlines()} == {60}
+    assert "far too long for a sixty column panel" in flat(box)
+
+
+def test_welcome_screen_fits_60_columns_with_colour(monkeypatch) -> None:
+    from throttle.cli import WELCOME_STEPS, welcome_screen
+
+    monkeypatch.setenv("FORCE_COLOR", "1")
+    monkeypatch.delenv("NO_COLOR", raising=False)
+    monkeypatch.setenv("COLUMNS", "60")
+    screen = welcome_screen()
+    assert "\x1b[" in screen
+    panel = [line for line in screen.splitlines() if strip_ansi(line)[:1] in "┌│└+|"]
+    assert panel and all(visible_len(line) == 60 for line in panel), [
+        visible_len(line) for line in panel
+    ]
+    first, second, _ = WELCOME_STEPS[0]
+    assert len(f"1. {first}") <= 56 and len(f"   {second}") <= 56  # wraps cleanly: no rewrap
+    assert f"1. {first}" in strip_ansi(screen)
+
+
+def test_verdict_panel_fits_60_columns_with_colour(history, monkeypatch, capsys):  # noqa: F811
+    monkeypatch.setenv("THROTTLE_NO_NUDGE", "1")
+    monkeypatch.setenv("FORCE_COLOR", "1")
+    monkeypatch.delenv("NO_COLOR", raising=False)
+    monkeypatch.setenv("COLUMNS", "60")
+    code, out = calibrated_cheaper(monkeypatch, capsys)
+    assert code == 0, out
+    lines = strip_ansi(out).splitlines()
+    start = next(i for i, line in enumerate(lines) if "Verdict " in line and line[:1] in "┌+")
+    end = next(i for i in range(start + 1, len(lines)) if lines[i][:1] in "└+")
+    assert all(len(line) == 60 for line in lines[start:end + 1]), [
+        len(line) for line in lines[start:end + 1]
+    ]
+
+
+def test_narrow_terminal_gets_panels_without_a_frame(monkeypatch) -> None:
+    from throttle.cli import welcome_screen
+
+    monkeypatch.setenv("COLUMNS", "40")
+    monkeypatch.delenv("FORCE_COLOR", raising=False)
+    st = Style(colour=False, unicode=True)
+    assert st.narrow is True
+    box = st.panel([("word " * 30, ()), "short"], title="Verdict")
+    assert all(len(line) <= 40 for line in box.splitlines())
+    assert not any(ch in box for ch in "┌┐└┘│")
+    assert box.splitlines()[0] == "Verdict"
+    screen = welcome_screen()
+    assert not any(ch in screen for ch in "┌┐└┘")
+    assert "1. Install Ollama" in screen
+    # 60 columns and up keep the frame.
+    monkeypatch.setenv("COLUMNS", "60")
+    assert Style(colour=False, unicode=True).panel(["x"]).startswith("┌")
+
+
 # --------------------------------------------------------------------------
 # throttle check: verdict panel
 # --------------------------------------------------------------------------

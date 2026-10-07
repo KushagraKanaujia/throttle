@@ -4648,7 +4648,7 @@ def _render_watch_snap(snap) -> None:
 
 WELCOME_TAGLINE = "Find and prove inference savings on your own GPUs."
 WELCOME_STEPS = (
-    ("Install Ollama (ollama pull llama3.2:3b), or point at your", "vLLM / SGLang server's OpenAI-compatible URL.", ()),
+    ("Install Ollama: ollama pull llama3.2:3b", "or use your vLLM / SGLang OpenAI-compatible URL.", ()),
     ("Measure $/M tokens, with a 95% CI and a verdict:", None, (
         "throttle check --url http://localhost:11434 \\",
         "    --model llama3.2:3b --gpu-hourly-rate 1.50",

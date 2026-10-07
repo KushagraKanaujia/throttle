@@ -907,6 +907,9 @@ def test_a_throttle_upgrade_is_listed_as_a_change(history, monkeypatch, capsys):
 def test_upgrade_nudge_follows_a_calibrated_verdict_once(history, monkeypatch, capsys):
     monkeypatch.delenv("THROTTLE_NO_NUDGE", raising=False)
     monkeypatch.delenv("CI", raising=False)
+    import throttle.upgrade as upgrade_module
+
+    monkeypatch.setattr(upgrade_module, "_stdout_is_tty", lambda: True)  # a person at a terminal
     for _ in range(3):  # three repeats calibrate run-to-run noise (2 df)
         code, out = run_check(monkeypatch, capsys, FakeServer(constant(0.08)), "--config", "quant=none")
         assert "throttle upgrade" not in out  # first check / NOT CALIBRATED: no nudge
@@ -918,8 +921,21 @@ def test_upgrade_nudge_follows_a_calibrated_verdict_once(history, monkeypatch, c
     assert "throttle upgrade" not in out  # once per 24 hours
 
 
+def test_upgrade_nudge_never_prints_into_a_pipe(history, monkeypatch, capsys):
+    # stdout is captured (not a TTY): a calibrated verdict prints no nudge.
+    monkeypatch.delenv("THROTTLE_NO_NUDGE", raising=False)
+    monkeypatch.delenv("CI", raising=False)
+    for _ in range(3):
+        run_check(monkeypatch, capsys, FakeServer(constant(0.08)), "--config", "quant=none")
+    code, out = run_check(monkeypatch, capsys, FakeServer(constant(0.01)), "--config", "quant=fp8")
+    assert "Verdict: CHEAPER" in out and "throttle upgrade" not in out
+
+
 def test_upgrade_nudge_suppressed_by_env_json_and_ci_gate(history, monkeypatch, capsys, tmp_path):
     monkeypatch.delenv("CI", raising=False)
+    import throttle.upgrade as upgrade_module
+
+    monkeypatch.setattr(upgrade_module, "_stdout_is_tty", lambda: True)
     for _ in range(3):
         run_check(monkeypatch, capsys, FakeServer(constant(0.08)), "--config", "quant=none")
     monkeypatch.setenv("THROTTLE_NO_NUDGE", "1")
