@@ -345,10 +345,13 @@ part of the identity.
 ### How the GPU rate is handled
 
 The GPU \$/hr is something you type, recorded as ASSUMED. $/M scales linearly
-with it, so a change in the typed rate alone must never be a verdict.
-`compare_checks` puts the candidate on the baseline's **per-GPU** rate before
-judging: `factor = per_gpu_rate(baseline) / per_gpu_rate(candidate)`, where
-`per_gpu_rate = rate / gpu_count`.
+with it, so a typed price cut alone must never be a saving. `compare_checks`
+scales the candidate by `factor = max(1, per_gpu_rate(baseline) /
+per_gpu_rate(candidate))` before judging (`check.rate_factor`), where
+`per_gpu_rate = rate / gpu_count`. A lower per-GPU rate is put back on the
+baseline's; a higher per-GPU rate (a pricier GPU type, or a total rate for
+more GPUs typed without `--gpus`) is never scaled down, so it counts as real
+cost.
 
 The GPU count (`--gpus N`, or a `gpus` `--config` value; default 1, see
 `check.gpu_count`) stays in the verdict, because serving on 2 GPUs instead of
@@ -356,10 +359,14 @@ The GPU count (`--gpus N`, or a `gpus` `--config` value; default 1, see
 [`validation/hotaisle-mi300x-20261001/`](../validation/hotaisle-mi300x-20261001/): Qwen2.5-72B on 2x MI300X was 1.56x faster but \$2.14 vs \$1.67/M,
 28% more per token. Judged at the 1-GPU rate it had been called 36% CHEAPER.
 
-README recording of the rate rule: the same unchanged server checked at
-\$3.00/hr against a \$1.50/hr baseline went up 94.2% in $/M at the typed
-rates, but -2.9% at the baseline's rate, inside a 30.4% bound: NO WINNER,
-exit 0.
+README recording of the rate rule (made with 0.5.x): the same unchanged
+server checked at \$3.00/hr against a \$1.50/hr baseline went up 94.2% in $/M
+at the typed rates, but -2.9% at the baseline's rate, inside a 30.4% bound:
+NO WINNER, exit 0. Since 0.6.0 a rate rise is not scaled away, so that pair
+is MORE EXPENSIVE (+94.2%, CIs apart). The GPU count is part of the
+flattened fingerprint (`gpu_count`, listed only when it is not 1), so a GPU
+count change shows as a config change and its checks form their own
+calibration group.
 
 ### Decision-grade comparisons
 
@@ -380,28 +387,38 @@ the measurement, not a saving to expect.
 
 **Short answer:** `throttle savings` re-judges two recorded checks, refuses
 unless the verdict is a calibrated CHEAPER, and multiplies the **smallest
-plausible** $/M reduction by your production token count. Implemented in
+plausible** $/M reduction, allowing for both within-run and run-to-run noise,
+by your production token count. Implemented in
 [`src/throttle/savings.py`](../src/throttle/savings.py), `build_statement`.
 
 ### The formula
 
 ```text
-conservative savings ($) = (baseline CI low - candidate CI high) x tokens / 1e6
-point estimate ($)       = (baseline mean   - candidate mean)    x tokens / 1e6
+CI term ($/M)            = baseline CI low - candidate CI high
+noise term ($/M)         = (1 - noise bound) x baseline mean - candidate mean
+conservative savings ($) = min(CI term, noise term) x tokens / 1e6
+point estimate ($)       = (baseline mean - candidate mean) x tokens / 1e6
 ```
 
 - Both sides are in the checks' primary metric ($/M output tokens by
   default).
-- The candidate's mean and interval are scaled to the baseline's per-GPU rate
-  (the same `factor` as the verdict), so a change in the typed price never
-  counts as savings. A change in GPU count does count.
-- The conservative figure is the headline. The point estimate is shown and
-  labelled "not the verified figure".
+- The candidate's mean and interval are scaled by the same `factor` as the
+  verdict, `max(1, baseline per-GPU rate / candidate per-GPU rate)`: a typed
+  per-GPU price cut never counts as savings, and a per-GPU price rise (a
+  pricier GPU type) always counts as real cost. A change in GPU count counts
+  too.
+- The noise bound is the run-to-run bound the re-judged verdict used (the
+  `t x sqrt(2) x pooled SD` of section 1), as a fraction.
+- The conservative figure is the headline. Both terms are printed (and are
+  in `--json` as `ci_term_dollars_per_million`, `noise_term_dollars_per_million`
+  and `noise_bound_percent`, record_version 2). The point estimate is shown
+  and labelled "not the verified figure".
 
-Because the bound uses the baseline's lower interval edge and the
-candidate's upper edge, it is the reduction that holds even if the baseline
-was as cheap as its interval allows and the candidate as expensive as its
-interval allows.
+The CI term is the reduction that holds even if the baseline was as cheap as
+its interval allows and the candidate as expensive as its interval allows.
+That only covers within-run noise; two checks taken at different times also
+drift. The noise term takes the run-to-run bound off the baseline before
+subtracting, so drift that the verdict treats as noise is never billed.
 
 ### Refusals (exit 1, one-line reason)
 
@@ -418,7 +435,11 @@ interval allows.
   CHANGED and MORE EXPENSIVE are all refused. The re-judgment uses only the
   history that existed when the later of the two checks was recorded;
 - either check has no 95% interval;
-- the conservative reduction is zero or negative.
+- the conservative reduction (the smaller term) is zero or negative;
+- a MEASURED token window starts before the candidate check was taken
+  ("the window starts before the candidate config was measured; take a new
+  snapshot after deploying it."): tokens served before the candidate config
+  existed are not its savings.
 
 ### Token sources
 

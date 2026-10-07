@@ -248,17 +248,18 @@ def test_savings_panel_headlines_the_conservative_figure(tmp_path, capsys, monke
     lines = plain.splitlines()
     assert lines[0].startswith(("┌─ Verified savings", "+- Verified savings"))
     # The conservative figure is the first line inside the panel; the point estimate follows, dim.
-    assert "Verified savings (conservative): $380.00" in lines[1]
+    assert "Verified savings (conservative): $339.15" in lines[1]
     assert "Point estimate (not the verified figure): $400.00" in plain
     if force:
-        assert "\x1b[1;32m$380.00\x1b[0m" in out
+        assert "\x1b[1;32m$339.15\x1b[0m" in out
         assert "\x1b[2mPoint estimate (not the verified figure): $400.00" in out
         assert "\x1b[1;32mCHEAPER\x1b[0m" in out
     text = flat(out)
     for field in (
         "period 2026-10", "model qwen-32b", "$/M output tokens", "base-3", "cand", "1 GPU(s)",
         "[MEASURED]", "1,000,000,000 [REPORTED BY OPERATOR]", "CHEAPER (re-judged)",
-        "baseline CI low", "candidate CI high", "GPU $/hr is ASSUMED", "Assumptions",
+        "baseline CI low", "candidate CI high", "run-to-run noise bound", "baseline mean",
+        "candidate mean", "GPU $/hr is ASSUMED", "Assumptions",
     ):
         assert field in text, field
     assert {visible_len(line) for line in lines if line[:1] in "┌│└+|"} == {lines[0].__len__()}

@@ -21,11 +21,13 @@ All notable changes to Throttle will be documented in this file.
 - `throttle savings`: a conservative, auditable verified-savings statement for a
   baseline -> candidate change. Refuses unless re-judging the two recorded
   checks gives a calibrated CHEAPER on the same model and workload. Uses the
-  conservative bound (baseline CI low - candidate CI high) x production tokens,
-  with the point estimate labelled. Tokens are `--tokens` (REPORTED BY OPERATOR)
-  or a vLLM generation-token counter delta since `throttle savings snapshot`
-  (MEASURED; a counter reset is refused). `--json` emits a `savings_statement`
-  record (version 1).
+  conservative bound min(baseline CI low - candidate CI high, (1 - run-to-run
+  noise bound) x baseline mean - candidate mean) x production tokens, with
+  both terms shown and the point estimate labelled. Tokens are `--tokens`
+  (REPORTED BY OPERATOR) or a vLLM generation-token counter delta since
+  `throttle savings snapshot` (MEASURED; a counter reset, or a snapshot taken
+  before the candidate check, is refused). `--json` emits a
+  `savings_statement` record (version 2).
 - `throttle check --workload agent`: measures multi-turn agent traffic. Each
   session is a seeded synthetic conversation: a shared system prompt and tool
   schema, then sequential turns that resend the conversation plus a scripted
@@ -73,6 +75,33 @@ All notable changes to Throttle will be documented in this file.
   is a hidden alias that prints the same page. The nudge rules are unchanged
   (once per 24 h; off with `THROTTLE_NO_NUDGE`, in CI, and with `--json`,
   `--share` and `--fail-if-costlier`).
+
+### Fixed (pre-release review)
+- A per-GPU price rise no longer hides as a saving. `check` and `savings`
+  scale the candidate by `max(1, baseline per-GPU rate / candidate per-GPU
+  rate)`: a typed price cut is still never a saving, but a pricier GPU type
+  (or a total rate for more GPUs typed without `--gpus`) always counts as real
+  cost. Before, 1 GPU at $4/hr and $1.40/M against $2/hr and $1.00/M was
+  called CHEAPER and billed. Same-throughput rate rises are now MORE
+  EXPENSIVE, not NO WINNER.
+- The GPU count is part of the flattened config fingerprint (`gpu_count`,
+  listed only when not 1, so older records flatten as before): a GPU count
+  change shows as a config change and gets its own calibration group.
+  `--config gpus=VALUE` must be a whole number (e.g. `2xH100` is rejected with
+  a hint instead of silently counting as 1 GPU).
+- `throttle savings` refuses a MEASURED token window that starts before the
+  candidate check was taken.
+- `throttle savings` conservative figure now also subtracts run-to-run noise
+  (the smaller of the CI term and the noise term); `savings_statement` record
+  version 2 adds `ci_term_dollars_per_million`,
+  `noise_term_dollars_per_million` and `noise_bound_percent`.
+- `throttle upgrade` draws the QR code only on a stream that can encode it;
+  otherwise it prints the URL line only.
+- Panels: a styled row wider than the panel is wrapped as plain text instead
+  of overflowing; a terminal narrower than 60 columns gets panels without the
+  frame. The first-run screen's first step is shortened to fit 60 columns.
+- The post-verdict Pilot nudge prints only when stdout is a TTY, never into a
+  pipe or a log.
 
 ## [0.5.1] - 2026-09-29
 

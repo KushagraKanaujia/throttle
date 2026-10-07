@@ -118,7 +118,7 @@ change a serving setting ──► throttle check ──► $/M tokens (95% CI) 
 | --- | --- | --- |
 | **Price it** | `throttle cost`, `throttle watch` | Dollars per million tokens, measured against a live endpoint (`cost`) or read from vLLM `/metrics` (`watch`). The GPU $/hr is yours and always labelled ASSUMED; tokens and time are MEASURED. |
 | **Re-check it after every config change** | `throttle check` | $/M tokens with a 95% confidence interval, what changed in the config, and a verdict against the last check. CHEAPER or MORE EXPENSIVE only when the measured change is larger than a run-to-run noise bound estimated from at least 3 recent repeat checks **and** the intervals don't overlap. Otherwise NO WINNER, or NOT CALIBRATED when there is no recent noise measurement yet. `--fail-if-costlier` makes it a CI gate. |
-| **Prove the savings** | `throttle savings` | A conservative dollar figure for a verified CHEAPER change: (baseline CI low - candidate CI high) x your production tokens, refused unless the verdict is calibrated, on the same model and workload, with unchanged outputs. |
+| **Prove the savings** | `throttle savings` | A conservative dollar figure for a verified CHEAPER change: the smaller of (baseline CI low - candidate CI high) and ((1 - run-to-run noise bound) x baseline mean - candidate mean), x your production tokens, refused unless the verdict is calibrated, on the same model and workload, with unchanged outputs. |
 | **Prove a config change** | `throttle plan` → `smoke` → `benchmark` → `golden` | Traffic that is planned and capped before any request goes out, repeated measurement blocks, 95% intervals, and a six-position counterbalanced protocol for a decision-grade baseline-vs-candidate answer. |
 | **Profile agents** | `throttle proxy --enable-session-tracking` + `throttle sessions` | A per-session breakdown of time spent generating versus waiting, an estimate of redundant prefill, and suggested backend settings to check. |
 
@@ -419,12 +419,20 @@ When two checks of the same config and workload have non-overlapping CIs,
 "your machine's run-to-run noise is larger than within-run noise, so a
 within-run CI alone understates the uncertainty".
 
-**The GPU rate is ASSUMED, so it never decides a verdict.** $/M scales
-linearly with the rate you type. When it differs from the baseline's, the
-check is put on the baseline's rate and only that measured part (throughput)
-is judged; the rate-driven part is printed separately as arithmetic. The same
+**A typed price cut never counts as a saving; a price rise always counts as
+cost.** $/M scales linearly with the GPU rate you type, which is ASSUMED. When
+the per-GPU rate is lower than the baseline's, the check is put on the
+baseline's rate and only the measured part (throughput) is judged; the
+rate-driven part is printed separately as arithmetic. When the per-GPU rate is
+higher (a pricier GPU type), the candidate is never scaled down: the check is
+judged at the rates as typed, so the higher price counts as real cost
+(scale factor `max(1, baseline per-GPU rate / candidate per-GPU rate)`).
+
+The recording below was made with Throttle 0.5.x, before that rule: the same
 laptop, the same unchanged server, `--gpu-hourly-rate 3.00` against the third
-`before` check above:
+`before` check above. Since 0.6.0 the same pair is judged at the typed rates,
++94.2% with non-overlapping CIs: MORE EXPENSIVE, and `--fail-if-costlier 5`
+exits 4.
 
 ```sh
 throttle check --url http://localhost:11434 --model llama3.2:3b \
@@ -448,9 +456,9 @@ Compared with check 20260924T054147Z-fa7d9cda (2026-09-24T05:41:47Z, 1 min ago, 
   Verdict: NO WINNER, the measured change at the baseline's GPU rate (-2.9%) is not larger than the run-to-run noise bound (30.4% = t x sqrt(2) x 5.0% run-to-run SD, 2 df); and the 95% confidence intervals overlap, so the difference is within measurement noise.
 ```
 
-It exited with code 0. $/M at the typed rates went up 94.2%, but nothing
-measured got worse (-2.9% at the old rate, inside the 30.4% bound), so it is
-not MORE EXPENSIVE and the CI gate does not fail. `<CHECK_ID>` is an ID from
+In 0.5.x it exited with code 0: the rate rise was set aside and only the
+measured -2.9% was judged. Since 0.6.0 a price rise is a real cost, so this
+pair is MORE EXPENSIVE and exits 4. `<CHECK_ID>` is an ID from
 `throttle check --history`. With `--json`, the check, its comparison and the
 noise groups are also written to a file.
 
@@ -637,9 +645,11 @@ throttle savings --baseline CHECK_ID --candidate CHECK_ID --tokens 1.2B --period
 It re-judges the two recorded checks and refuses (exit 1, one-line reason)
 unless the verdict is a calibrated CHEAPER on the same model and workload: NO
 WINNER, NOT CALIBRATED, OUTPUT CHANGED, MORE EXPENSIVE, a model or workload
-mismatch, and a counter reset are all refused. The verified figure is the
-conservative bound, (baseline CI low - candidate CI high) x tokens / 1e6, in
-the check's primary $/M metric; the point estimate is shown and labelled. Tokens
+mismatch, a counter reset, and a snapshot window that starts before the
+candidate check was taken are all refused. The verified figure is the
+conservative bound, min(baseline CI low - candidate CI high, (1 - run-to-run
+noise bound) x baseline mean - candidate mean) x tokens / 1e6, in the check's
+primary $/M metric; both terms and the point estimate are shown. Tokens
 are MEASURED (counter delta) or REPORTED BY OPERATOR (`--tokens`); the GPU $/hr
 is ASSUMED, as you supplied it. `--json` prints a `savings_statement` record.
 

@@ -283,17 +283,28 @@ def test_server_reported_config_is_fingerprinted_and_diffed(history, monkeypatch
     assert "gpu_memory_utilization:" not in out  # unchanged keys are not listed
 
 
-def test_gpu_rate_change_is_listed_and_separated_from_throughput(history, monkeypatch, capsys):
+def test_gpu_rate_cut_is_listed_and_separated_from_throughput(history, monkeypatch, capsys):
+    # A typed price CUT never counts as a saving: it is set aside.
+    run_check(monkeypatch, capsys, FakeServer(constant(0.02)), rate="4.00")
+    code, out = run_check(monkeypatch, capsys, FakeServer(constant(0.02)), rate="2.00")
+    assert code == 0, out
+    assert "gpu_hourly_rate_usd (ASSUMED): 4.0000 -> 2.0000" in out
+    assert (
+        "the GPU rate changed ($4.00/hr -> $2.00/hr) [ASSUMED]: that alone moves $/M "
+        "by -50.0%, arithmetic on rates you typed, not a measurement." in out
+    )
+    assert "At the old rate this check measures $" in out
+    assert "[MEASURED throughput]; the verdict judges only that part." in out
+
+
+def test_gpu_rate_rise_is_listed_and_counted_as_real_cost(history, monkeypatch, capsys):
+    # A typed price RISE (a pricier GPU type) is a real cost: never scaled away.
     run_check(monkeypatch, capsys, FakeServer(constant(0.02)), rate="2.00")
     code, out = run_check(monkeypatch, capsys, FakeServer(constant(0.02)), rate="4.00")
     assert code == 0, out
     assert "gpu_hourly_rate_usd (ASSUMED): 2.0000 -> 4.0000" in out
-    assert (
-        "the GPU rate changed ($2.00/hr -> $4.00/hr) [ASSUMED]: that alone moves $/M "
-        "by +100.0%, arithmetic on rates you typed, not a measurement." in out
-    )
-    assert "At the old rate this check measures $" in out
-    assert "[MEASURED throughput]; the verdict judges only that part." in out
+    assert "the GPU rate rose ($2.00/hr -> $4.00/hr) [ASSUMED]: a price rise is a real cost" in out
+    assert "At the old rate this check measures" not in out
 
 
 def test_history_lists_checks_and_filters_by_endpoint(history, monkeypatch, capsys):
@@ -826,35 +837,62 @@ def test_stale_checks_neither_calibrate_nor_serve_as_a_judged_baseline(
     assert "Verdict: NOT CALIBRATED" in out and "CHEAPER" not in out
 
 
-@pytest.mark.parametrize("new_rate", ["2.20", "1.80"])
-def test_changing_only_the_assumed_rate_is_never_a_measured_winner(
-    history, monkeypatch, capsys, new_rate
+def test_cutting_only_the_assumed_rate_is_never_a_measured_winner(
+    history, monkeypatch, capsys
 ):
     for wall in (10.02, 9.99, 10.0):
         run_clocked(monkeypatch, capsys, wall, rate="2.00")
-    # Identical measured throughput; only the rate the user typed changed.
+    # Identical measured throughput; only the rate the user typed went down.
     code, out = run_clocked(
-        monkeypatch, capsys, 10.0, "--fail-if-costlier", "5", rate=new_rate,
+        monkeypatch, capsys, 10.0, "--fail-if-costlier", "5", rate="1.80",
     )
     assert code == 0, out
-    assert f"gpu_hourly_rate_usd (ASSUMED): 2.0000 -> {float(new_rate):.4f}" in out
+    assert "gpu_hourly_rate_usd (ASSUMED): 2.0000 -> 1.8000" in out
     assert "Verdict: NO WINNER" in out
     assert "CHEAPER" not in out and "MORE EXPENSIVE" not in out
     assert "the measured change at the baseline's GPU rate (+0.0%)" in out
 
 
-def test_real_throughput_gain_with_a_rate_change_is_judged_on_the_measured_part(
+def test_raising_the_assumed_rate_counts_as_real_cost(history, monkeypatch, capsys):
+    # A price rise is never scaled away: same throughput at $2.20/hr is 10%
+    # more per token, and the CI gate trips on it.
+    for wall in (10.02, 9.99, 10.0):
+        run_clocked(monkeypatch, capsys, wall, rate="2.00")
+    code, out = run_clocked(
+        monkeypatch, capsys, 10.0, "--fail-if-costlier", "5", rate="2.20",
+    )
+    assert code == 4, out
+    assert "Verdict: MORE EXPENSIVE" in out
+    assert "the +10.0% change (the higher per-GPU price counted as real cost)" in out
+
+
+def test_real_throughput_gain_with_a_rate_cut_is_judged_on_the_measured_part(
     history, monkeypatch, capsys
 ):
     for wall in (10.02, 9.99, 10.0):
         run_clocked(monkeypatch, capsys, wall, rate="2.00")
-    # 2.5x faster at twice the assumed rate: $/M -20% at the typed rates,
-    # -60% at the baseline's rate (the measured part).
-    code, out = run_clocked(monkeypatch, capsys, 4.0, rate="4.00")
+    # 2.5x faster at half the assumed rate: $/M -80% at the typed rates,
+    # -60% at the baseline's rate (the measured part; the cut is set aside).
+    code, out = run_clocked(monkeypatch, capsys, 4.0, rate="1.00")
     assert code == 0, out
-    assert "(-20.0%)" in out  # the change at the rates as typed
+    assert "(-80.0%)" in out  # the change at the rates as typed
     assert "At the old rate this check measures $11.12/M (-60.0% vs before)" in out
     assert "Verdict: CHEAPER, the -60.0% measured change at the baseline's GPU rate" in out
+
+
+def test_real_throughput_gain_with_a_rate_rise_is_judged_at_the_typed_rates(
+    history, monkeypatch, capsys
+):
+    for wall in (10.02, 9.99, 10.0):
+        run_clocked(monkeypatch, capsys, wall, rate="2.00")
+    # 2.5x faster at twice the assumed rate: the rise is real cost, so only
+    # the -20% at the typed rates counts (it used to be judged as -60%).
+    code, out = run_clocked(monkeypatch, capsys, 4.0, rate="4.00")
+    assert code == 0, out
+    assert (
+        "Verdict: CHEAPER, the -20.0% change (the higher per-GPU price counted as real cost)"
+        in out
+    )
 
 
 def test_a_throttle_upgrade_is_listed_as_a_change(history, monkeypatch, capsys):
@@ -1019,11 +1057,63 @@ def test_gpu_count_is_read_from_a_gpus_config_value(history, monkeypatch, capsys
     assert "Verdict: MORE EXPENSIVE" in out, out
 
 
-def test_a_per_gpu_price_change_is_still_normalized(history, monkeypatch, capsys):
-    # Same 2 GPUs, only the typed per-GPU price changes: the verdict still
+def test_a_per_gpu_price_cut_is_still_normalized(history, monkeypatch, capsys):
+    # Same 2 GPUs, only the typed per-GPU price goes down: the verdict still
     # judges measured throughput alone (unchanged here).
     for wall in (10.02, 9.99, 10.0):
         run_clocked(monkeypatch, capsys, wall, "--gpus", "2", rate="4.00")
-    code, out = run_clocked(monkeypatch, capsys, 10.0, "--gpus", "2", rate="6.00")
+    code, out = run_clocked(monkeypatch, capsys, 10.0, "--gpus", "2", rate="3.00")
     assert "Verdict: NO WINNER" in out, out
     assert "measured change at the baseline's GPU rate" in out
+
+
+def test_a_per_gpu_price_rise_is_real_cost(history, monkeypatch, capsys):
+    for wall in (10.02, 9.99, 10.0):
+        run_clocked(monkeypatch, capsys, wall, "--gpus", "2", rate="4.00")
+    code, out = run_clocked(monkeypatch, capsys, 10.0, "--gpus", "2", rate="6.00")
+    assert "Verdict: MORE EXPENSIVE" in out, out
+
+
+def test_rate_factor_is_never_below_one():
+    def record(rate, gpus=None):
+        return {"fingerprint": {"gpu_hourly_rate_usd": rate, **({"gpu_count": gpus} if gpus else {})}}
+
+    assert check_module.rate_factor(record(2.0), record(4.0)) == 1.0  # rise: real cost
+    assert check_module.rate_factor(record(4.0), record(2.0)) == 2.0  # cut: undone
+    assert check_module.rate_factor(record(2.0, 1), record(4.0, 2)) == 1.0  # more GPUs: real
+
+
+def test_gpu_count_change_is_a_config_change_and_splits_calibration(
+    history, monkeypatch, capsys
+):
+    for wall in (10.02, 9.99, 10.0):
+        run_clocked(monkeypatch, capsys, wall, rate="2.00")
+    code, out = run_clocked(monkeypatch, capsys, 6.25, "--gpus", "2", rate="4.00")
+    assert code == 0, out
+    assert "gpu_count: (not set) -> 2" in out
+    records, _ = check_module.load_history(history)
+    one_gpu, two_gpus = records[0], records[-1]
+    assert "gpu_count" in check_module.flatten_fingerprint(two_gpus["fingerprint"])
+    assert check_module._config_identity(one_gpu) != check_module._config_identity(two_gpus)
+
+
+def test_legacy_record_without_gpus_flattens_as_before():
+    fingerprint = {"model": "m", "gpu_hourly_rate_usd": 2.0, "user_config": {"quant": "fp8"}}
+    assert check_module.flatten_fingerprint(fingerprint) == {
+        "request.model": "m",
+        "gpu_hourly_rate_usd (ASSUMED)": "2.0000",
+        "config.quant": "fp8",
+    }
+    # --gpus 1 is the same 1 GPU: no diff line against a legacy record.
+    assert check_module.flatten_fingerprint({**fingerprint, "gpu_count": 1}) == (
+        check_module.flatten_fingerprint(fingerprint)
+    )
+
+
+def test_config_gpus_must_be_a_whole_number(history, monkeypatch, capsys):
+    with pytest.raises(SystemExit) as exc:
+        main(["check", "--url", URL, "--model", "m", "--gpu-hourly-rate", "4",
+              "--config", "gpus=2xH100"])
+    assert exc.value.code == 2
+    err = capsys.readouterr().err
+    assert "--config gpus must be a whole number of GPUs, got '2xH100'" in err
