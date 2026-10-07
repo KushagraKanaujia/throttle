@@ -13,7 +13,7 @@ The **Throttle LLM cost check** action runs `throttle check` against your endpoi
 
 - name: Throttle cost check
   id: cost
-  uses: KushagraKanaujia/throttle@v0.4.2
+  uses: KushagraKanaujia/throttle@v0.6.0
   env:
     VLLM_API_KEY: ${{ secrets.VLLM_API_KEY }}
   with:
@@ -47,6 +47,6 @@ Checks older than 24 hours don't calibrate. If you deploy rarely, add a schedule
 ## Exit behavior
 
 - **4**: calibrated MORE EXPENSIVE by at least `fail-if-costlier` percent.
-- **5**: the change couldn't be judged (NOT CALIBRATED or a different workload). The `not-calibrated` input decides whether that warns or fails.
+- **5**: the change couldn't be judged (NOT CALIBRATED, OUTPUT CHANGED, or a different workload). The `not-calibrated` input decides whether that warns or fails.
 
-> **Tip:** Pin the action to a release tag like `v0.4.2`; it then installs the matching `throttle-pro==0.4.2`. The full reference is in the repo's `docs/github-action.md`.
+> **Tip:** Pin the action to a release tag like `v0.6.0`; it then installs the matching `throttle-pro==0.6.0`. The full reference is in the repo's `docs/github-action.md`.

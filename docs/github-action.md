@@ -55,7 +55,7 @@ jobs:
 
       - name: Throttle cost check
         id: cost
-        uses: KushagraKanaujia/throttle@v0.4.2
+        uses: KushagraKanaujia/throttle@v0.6.0
         env:
           VLLM_API_KEY: ${{ secrets.VLLM_API_KEY }}
         with:
@@ -80,8 +80,12 @@ jobs:
         run: echo "verdict $VERDICT, \$${COST}/M output tokens"
 ```
 
+For agent traffic (multi-turn sessions with a shared system prompt and tool
+results), add `extra-args: --workload agent`; keep it on every run, since agent
+and default checks are never compared.
+
 Pin the action to a release tag (as above) or a full commit SHA. With a
-release tag like `v0.4.2` the action installs the matching `throttle-pro==0.4.2`
+release tag like `v0.6.0` the action installs the matching `throttle-pro==0.6.0`
 from PyPI. For any other ref it installs the latest release, unless you set
 `throttle-version`.
 
@@ -100,7 +104,7 @@ this is by design:
 | 1 | nothing (first check for this endpoint) | NOT CALIBRATED |
 | 2 | run 1; noise has 0 degrees of freedom | NOT CALIBRATED |
 | 3 | run 2; noise has 1 degree of freedom | NOT CALIBRATED |
-| 4+ | the latest check; noise measured from runs 1-3 | CHEAPER, MORE EXPENSIVE or NO WINNER |
+| 4+ | the latest check; noise measured from runs 1-3 | CHEAPER, MORE EXPENSIVE, NO WINNER or OUTPUT CHANGED |
 
 Two more rules matter in CI:
 
@@ -132,7 +136,7 @@ jobs:
     steps:
       - uses: actions/setup-python@v5
         with: { python-version: "3.12" }
-      - uses: KushagraKanaujia/throttle@v0.4.2
+      - uses: KushagraKanaujia/throttle@v0.6.0
         env:
           VLLM_API_KEY: ${{ secrets.VLLM_API_KEY }}
         with:
@@ -169,7 +173,7 @@ NOT CALIBRATED:
 | 1 | measurement failed, nothing recorded | fails (1), summary says ERROR |
 | 2 | usage error | fails (2) |
 | 4 | calibrated MORE EXPENSIVE by at least `fail-if-costlier` % | **fails (4)** |
-| 5 | `fail-if-costlier` is set but the change could not be judged: NOT CALIBRATED, or NO WINNER because the baseline ran a different workload (e.g. another prompt cache mode, the first run after upgrading from 0.4.0) | `not-calibrated: warn` (default): `::warning::`, passes. `fail`: fails (5) |
+| 5 | `fail-if-costlier` is set but the change could not be judged: NOT CALIBRATED, OUTPUT CHANGED (the answers changed shape, so the $/M difference is not trusted), or NO WINNER because the baseline ran a different workload (e.g. another prompt cache mode, the first run after upgrading from 0.4.0) | `not-calibrated: warn` (default): `::warning::`, passes. `fail`: fails (5) |
 
 The very first check of an endpoint has no baseline, so Throttle exits 0.
 With `fail-if-costlier` set, the action treats it like exit 5 (it is just as

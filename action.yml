@@ -38,8 +38,8 @@ inputs:
     default: ""
   not-calibrated:
     description: >-
-      With fail-if-costlier set, what a NOT CALIBRATED verdict does: warn
-      (::warning::, job passes) or fail (job fails with exit 5).
+      With fail-if-costlier set, what a NOT CALIBRATED or OUTPUT CHANGED
+      verdict does: warn (::warning::, job passes) or fail (job fails with exit 5).
     required: false
     default: warn
   blocks:
