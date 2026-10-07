@@ -2,6 +2,8 @@
 
 **Find and prove inference savings for agent workloads on your own GPUs.** Throttle measures what your serving setup costs in dollars per million tokens, with a 95% confidence interval, tells you whether a config change really made it cheaper (and refuses to call a winner inside the noise or when the answers changed), and turns a verified win into a conservative dollar figure for the month.
 
+How Throttle decides: [docs/METHODOLOGY.md](docs/METHODOLOGY.md)
+
 Throttle is an open-source CLI for any OpenAI-compatible endpoint: vLLM,
 SGLang, Ollama, LMDeploy and similar servers. It is built for teams running
 agents (multi-turn, tool-calling, RL rollouts) on GPUs they own or rent:
