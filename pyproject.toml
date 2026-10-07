@@ -16,6 +16,14 @@ dependencies = [
     "uvicorn[standard]>=0.30.0,<1",
 ]
 
+[project.urls]
+Homepage = "https://www.throttle-pro.com"
+Source = "https://github.com/KushagraKanaujia/throttle"
+Documentation = "https://github.com/KushagraKanaujia/throttle/blob/main/docs/METHODOLOGY.md"
+Changelog = "https://github.com/KushagraKanaujia/throttle/blob/main/CHANGELOG.md"
+Issues = "https://github.com/KushagraKanaujia/throttle/issues"
+Pilot = "https://www.throttle-pro.com/pilot"
+
 [project.scripts]
 throttle = "throttle.cli:main"
 

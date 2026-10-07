@@ -2,7 +2,7 @@
 
 **Find and prove inference savings for agent workloads on your own GPUs.** Throttle measures what your serving setup costs in dollars per million tokens, with a 95% confidence interval, tells you whether a config change really made it cheaper (and refuses to call a winner inside the noise or when the answers changed), and turns a verified win into a conservative dollar figure for the month.
 
-How Throttle decides: [docs/METHODOLOGY.md](docs/METHODOLOGY.md)
+How Throttle decides: [docs/METHODOLOGY.md](https://github.com/KushagraKanaujia/throttle/blob/main/docs/METHODOLOGY.md)
 
 Throttle is an open-source CLI for any OpenAI-compatible endpoint: vLLM,
 SGLang, Ollama, LMDeploy and similar servers. It is built for teams running
@@ -79,6 +79,8 @@ a recorded run.
 | --- | --- | --- | --- |
 | **Nothing** (same server, four checks in a row) | Local Ollama `llama3.2:3b` on a MacBook, \$1.50/hr GPU rate ASSUMED | \$8.77 → \$8.86 → \$11.26 → \$10.02 (swings of **+27.1%** and **−11.0%**) | **NO WINNER**: the −11.0% is inside the measured noise bound (89.1%) |
 | **One vLLM flag**: `max_num_seqs` 1 → 8 | A100 PCIe 80GB, vLLM 0.16.0, Qwen2.5-0.5B-Instruct, \$1.39/hr (RunPod rate) | **\$0.746 → \$0.234 (−68.6%)**, mean of 3 baseline vs 3 candidate positions | **Decision-eligible** six-position counterbalanced protocol. [Artifacts](https://github.com/KushagraKanaujia/throttle/tree/main/validation/golden-live-20260817) |
+| **1 GPU → 2 GPUs** (tensor parallel 2) | AMD MI300X (Hot Aisle), vLLM 0.23.1 ROCm, Qwen2.5-72B-Instruct BF16, \$2.99/GPU-hr list price ASSUMED | **\$1.67 → \$2.14 (+28%)**: 1.56x the throughput, but two GPUs per hour | **MORE EXPENSIVE** in 3 of 3 checks (noise bound under 1%). [Raw checks](https://github.com/KushagraKanaujia/throttle/tree/main/validation/hotaisle-mi300x-20261001) |
+| **vLLM on-the-fly FP8** (`--quantization fp8`) | Same MI300X, Qwen2.5-72B and 32B | **\$1.67 → \$0.88 (−47%)** on 72B, **\$0.77 → \$0.45 (−41%)** on 32B | **OUTPUT CHANGED**: nearly every 72B answer ran to the 256-token cap and the 32B answered "!!!!", so it is not a saving. A pre-quantized FP8 checkpoint was 32% cheaper on 72B with correct answers. [Raw checks and answer samples](https://github.com/KushagraKanaujia/throttle/tree/main/validation/hotaisle-mi300x-20261001) |
 
 The first row is why Throttle exists: with nothing changed, a single
 before/after comparison would have reported a 27% regression and then an 11%
@@ -132,11 +134,11 @@ recorded local run. Nothing here is a projection.
 
 | What | Result | Where it came from |
 | --- | --- | --- |
-| Config decision on a real GPU | `max_num_seqs` 1 → 8 on vLLM 0.16.0: **+189.5% to +246.2% throughput** (95% CI, point estimate +217.8%) | A100 80GB, Qwen2.5-0.5B-Instruct, six-position golden protocol, `decision_eligible: true`. [`validation/golden-live-20260817/`](validation/golden-live-20260817/) |
-| Cross-engine compatibility | vLLM, SGLang, Ollama and LMDeploy all measured end to end | RunPod GPUs, descriptive only (not decision-grade). [`validation/runpod-five-stack-20260819/`](validation/runpod-five-stack-20260819/) |
+| Config decision on a real GPU | `max_num_seqs` 1 → 8 on vLLM 0.16.0: **+189.5% to +246.2% throughput** (95% CI, point estimate +217.8%) | A100 80GB, Qwen2.5-0.5B-Instruct, six-position golden protocol, `decision_eligible: true`. [`validation/golden-live-20260817/`](https://github.com/KushagraKanaujia/throttle/tree/main/validation/golden-live-20260817/) |
+| Cross-engine compatibility | vLLM, SGLang, Ollama and LMDeploy all measured end to end | RunPod GPUs, descriptive only (not decision-grade). [`validation/runpod-five-stack-20260819/`](https://github.com/KushagraKanaujia/throttle/tree/main/validation/runpod-five-stack-20260819/) |
 | Agent session profile | A simulated 4-turn agent: 41.9% of wall-clock time spent waiting on the client, an estimated 54.3% of prompt tokens redundant prefill | Local Ollama `llama3.2:3b` on a MacBook (Apple M3 Pro, Metal), no datacenter GPU. The tool pauses are scripted at 1.5 s each. |
 | Proxy cache hit | Cold call **1.75 s**, then the same prompt from cache in **1.2 ms**, then a reworded prompt from cache in **9.5 ms** | Local Ollama `llama3.2:3b` on a MacBook (Apple M3 Pro, Metal), no datacenter GPU. 4 requests, 2 backend calls. |
-| Benchmark-harness cache on realistic traffic | 27.0% hit rate, total runtime 39.46 s → 28.28 s | Local Ollama `llama3.2:1b`, 73-prompt traffic sample. [`validation/CACHE_VALIDATION_SUMMARY.md`](validation/CACHE_VALIDATION_SUMMARY.md) |
+| Benchmark-harness cache on realistic traffic | 27.0% hit rate, total runtime 39.46 s → 28.28 s | Local Ollama `llama3.2:1b`, 73-prompt traffic sample. [`validation/CACHE_VALIDATION_SUMMARY.md`](https://github.com/KushagraKanaujia/throttle/blob/main/validation/CACHE_VALIDATION_SUMMARY.md) |
 
 The golden result is the **only** decision-eligible result in this repo. It
 applies to that exact model, engine, GPU and workload, and it is not a savings
@@ -144,7 +146,7 @@ projection. The cache and profiler numbers were measured on a laptop and show
 how the mechanism works. They do not predict hit rates or savings on your
 traffic. (The proxy cache row used the opt-in semantic tier,
 `--enable-embeddings`; the default proxy has no semantic tier.) See
-[RESULTS.md](RESULTS.md) for the full evidence and its limitations.
+[RESULTS.md](https://github.com/KushagraKanaujia/throttle/blob/main/RESULTS.md) for the full evidence and its limitations.
 
 ## Install
 
@@ -657,7 +659,7 @@ is ASSUMED, as you supplied it. `--json` prints a `savings_statement` record.
 
 `throttle check --fail-if-costlier PCT` exits 4 on a calibrated MORE
 EXPENSIVE and 5 on NOT CALIBRATED, so it can gate a serving-config change.
-See [docs/github-action.md](docs/github-action.md) for a GitHub Actions
+See [docs/github-action.md](https://github.com/KushagraKanaujia/throttle/blob/main/docs/github-action.md) for a GitHub Actions
 setup.
 
 ## Caching proxy
@@ -679,7 +681,7 @@ through these tiers, in this order:
 similarity from this model encodes topic, not polarity: "Is it safe to use
 eval in Python?" and "Is it dangerous to use eval in Python?" scored
 **0.9874**, well above the 0.95 threshold
-([`data/negation_pairs.json`](data/negation_pairs.json)). A guard rejects
+([`data/negation_pairs.json`](https://github.com/KushagraKanaujia/throttle/blob/main/data/negation_pairs.json)). A guard rejects
 embedding matches whose meaning flips on known negations, antonyms or version
 conflicts, but it cannot catch every opposite phrasing. Turn the semantic
 tier on only for traffic where a wrong cached answer is acceptable.
@@ -688,7 +690,7 @@ A cache hit is always under the same model and identical sampling
 parameters. Savings depend entirely on how often your traffic repeats itself.
 The proxy has been verified against Ollama. vLLM, SGLang and LMDeploy are
 expected to work but have not yet been verified through the proxy on a GPU.
-See [Proxy mode](#proxy-mode) below and [docs/PROXY_DEMO.md](docs/PROXY_DEMO.md).
+See [Proxy mode](#proxy-mode) below and [docs/PROXY_DEMO.md](https://github.com/KushagraKanaujia/throttle/blob/main/docs/PROXY_DEMO.md).
 
 ## Agent session profiler
 
@@ -824,7 +826,7 @@ port: 8080
 enable-cache: true
 ```
 
-See [.throttle.yaml.example](.throttle.yaml.example) for all available options. If PyYAML is not installed, Throttle runs normally without config file support.
+See [.throttle.yaml.example](https://github.com/KushagraKanaujia/throttle/blob/main/.throttle.yaml.example) for all available options. If PyYAML is not installed, Throttle runs normally without config file support.
 
 ### Quick Start (Local Testing)
 
@@ -1155,10 +1157,10 @@ throttle proxy --backend-url http://localhost:11434 --enable-cache --enable-embe
 ```
 If `--enable-embeddings` is passed without the extra installed, the proxy starts with embeddings marked `REQUESTED BUT UNAVAILABLE` and falls back to lexical-only matching rather than failing.
 
-**Threshold behavior**: cosine similarity from this model encodes topic, not polarity. At threshold 0.95, `"Is it safe to use eval in Python?"` vs `"Is it dangerous to use eval in Python?"` scores 0.9874 ([`data/negation_pairs.json`](data/negation_pairs.json)), above the threshold on similarity alone. This is a structural property of the embedding model, not something a higher threshold fixes, so the cache runs an explicit negation/antonym/version-conflict guard before accepting an embeddings-tier hit and skips the match if one is detected. The guard only knows the patterns it lists; an opposite question phrased another way can still be served the wrong cached answer, which is why this tier is opt-in.
+**Threshold behavior**: cosine similarity from this model encodes topic, not polarity. At threshold 0.95, `"Is it safe to use eval in Python?"` vs `"Is it dangerous to use eval in Python?"` scores 0.9874 ([`data/negation_pairs.json`](https://github.com/KushagraKanaujia/throttle/blob/main/data/negation_pairs.json)), above the threshold on similarity alone. This is a structural property of the embedding model, not something a higher threshold fixes, so the cache runs an explicit negation/antonym/version-conflict guard before accepting an embeddings-tier hit and skips the match if one is detected. The guard only knows the patterns it lists; an opposite question phrased another way can still be served the wrong cached answer, which is why this tier is opt-in.
 
 For detailed configuration, streaming behavior, error handling, and production deployment
-considerations, see [docs/PROXY_DEMO.md](docs/PROXY_DEMO.md).
+considerations, see [docs/PROXY_DEMO.md](https://github.com/KushagraKanaujia/throttle/blob/main/docs/PROXY_DEMO.md).
 
 ## Boundary and uncertainty rules
 
@@ -1386,7 +1388,7 @@ declared client load reached in every position. CUDA positions additionally
 require a pinned image digest and CUDA/driver versions. It evaluates
 order-balanced phase contrasts and retains the 5% completion-token guard across
 every position; a declared SLO must also hold in all six runs. See
-[the full protocol](docs/GOLDEN_PROTOCOL.md).
+[the full protocol](https://github.com/KushagraKanaujia/throttle/blob/main/docs/GOLDEN_PROTOCOL.md).
 
 Only when that complete gate passes and the order-balanced 95% interval
 excludes zero, the golden artifact and terminal add one clearly labelled,
@@ -1401,7 +1403,7 @@ has `decision_summary: null` and prints no recommendation.
 Throttle never provisions or reconfigures the accelerator/server. In this repository no
 server credentials or endpoint identifiers are retained. A sanitized completed
 six-position 1-versus-8 run is included under
-[`validation/golden-live-20260817`](validation/golden-live-20260817) as protocol
+[`validation/golden-live-20260817`](https://github.com/KushagraKanaujia/throttle/tree/main/validation/golden-live-20260817) as protocol
 evidence. It measures only its pinned model, accelerator, workload, and test window; it
 is not a universal performance, savings, or production recommendation.
 
@@ -1516,7 +1518,7 @@ offered concurrency. Reaching that client concurrency proves sufficient
 offered demand; it does not prove direct server-scheduler saturation.
 
 The deterministic evidence under
-[`validation/experimental-tuning-vllm-docs`](validation/experimental-tuning-vllm-docs)
+[`validation/experimental-tuning-vllm-docs`](https://github.com/KushagraKanaujia/throttle/tree/main/validation/experimental-tuning-vllm-docs)
 checks the full offline request/exporter/collector/analyzer/safety/serialization
 path against metric names and labels pinned to an official vLLM release. It is
 software compatibility evidence, not a live GPU benchmark, measured savings,
@@ -1588,8 +1590,8 @@ result store (`~/.throttle/results`, disable with `--no-result-store`). The prox
 through: it buffers each response, so it cannot measure TTFT.
 
 Remaining limitations and the current evidence boundary are listed in
-[Known gaps](docs/KNOWN_GAPS.md).
+[Known gaps](https://github.com/KushagraKanaujia/throttle/blob/main/docs/KNOWN_GAPS.md).
 
 ## License
 
-Throttle is released under the [MIT License](LICENSE).
+Throttle is released under the [MIT License](https://github.com/KushagraKanaujia/throttle/blob/main/LICENSE).

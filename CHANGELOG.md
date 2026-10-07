@@ -4,18 +4,7 @@ All notable changes to Throttle will be documented in this file.
 
 ## [Unreleased]
 
-### Changed
-- Throttle Pilot terms: the pilot is now 3 months, free, for a small group of
-  teams running agents on their own GPUs. We set Throttle up on your stack,
-  find the config changes that lower your cost per token, and prove each one.
-  After the pilot, pricing is based on the savings we verify together
-  (conservative end of the 95% interval). Updated in `throttle upgrade`, the
-  post-verdict nudge (same once-a-day rules), the first-run screen, the
-  console Pilot page and `/api/upgrade`, and the README. The earlier 2-week
-  terms are retired from public copy, and the retired-strings test now
-  rejects them.
-
-## [0.6.0] - 2026-10-06
+## [0.6.0] - 2026-10-07
 
 ### Added
 - `throttle savings`: a conservative, auditable verified-savings statement for a
@@ -43,6 +32,15 @@ All notable changes to Throttle will be documented in this file.
   records are unchanged.
 
 ### Changed
+- Throttle Pilot terms: the pilot is now 3 months, free, for a small group of
+  teams running agents on their own GPUs. We set Throttle up on your stack,
+  find the config changes that lower your cost per token, and prove each one.
+  After the pilot, pricing is based on the savings we verify together
+  (conservative end of the 95% interval). Updated in `throttle upgrade`, the
+  post-verdict nudge (same once-a-day rules), the first-run screen, the
+  console Pilot page and `/api/upgrade`, and the README. The earlier 2-week
+  terms are retired from public copy, and the retired-strings test now
+  rejects them.
 - Human CLI output is restyled; machine-readable output is not. `throttle check`
   opens with a one-line header (Throttle, version, endpoint, model), prints
   compact block progress lines and ends with a **verdict panel**: $/M with its
