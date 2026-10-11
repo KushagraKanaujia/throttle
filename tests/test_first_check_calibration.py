@@ -12,6 +12,7 @@ import re
 from pathlib import Path
 
 import httpx
+import pytest
 
 import throttle.check as check_module
 from throttle.cli import main
@@ -24,9 +25,17 @@ from test_check import (  # noqa: F401  (history is a fixture)
     FakeServer,
     constant,
     history,
+    rewrite_history,
     run_check,
     run_clocked,
 )
+
+
+@pytest.fixture(autouse=True)
+def not_in_ci(monkeypatch):
+    # Calibration is off in CI (CI / GITHUB_ACTIONS); these tests exercise it.
+    for name in check_module.CI_ENV_VARS:
+        monkeypatch.delenv(name, raising=False)
 
 CALIBRATED_LINE = re.compile(
     r"Calibrated \(noise bound (\d+\.\d)%\)\. Now change one setting and run the same "
@@ -71,6 +80,8 @@ def test_fresh_history_calibrates_in_one_command_and_judges_in_two(
     assert "baseline_id" not in saved[0]
     assert saved[1]["baseline_id"] == saved[0]["id"]
     assert saved[2]["baseline_id"] == saved[1]["id"]
+    # Each record says it came from one back-to-back calibration.
+    assert {r["calibration_group"] for r in saved} == {saved[0]["id"]}
     # Calibration runs print one plain line, not degrees of freedom.
     assert "Baseline 2 of 3 recorded; unchanged server, yet " in out
     assert "this is the noise Throttle is measuring." in out
@@ -190,6 +201,169 @@ def test_calibration_json_keeps_the_raw_detail(history, monkeypatch, capsys, tmp
     assert "t(0.975, df) x sqrt(2)" in calibration["noise"]["rule"]
     # The last repeat's own comparison is kept too, with its df reason.
     assert "1 degree(s) of freedom" in written["comparison"]["reason"]
+    # Run 1 had nothing to compare with.
+    assert calibration["first_comparison"] is None
+
+
+def test_calibration_json_keeps_run_one_against_the_real_baseline(
+    history, monkeypatch, capsys, tmp_path
+):
+    # One unchanged check from two days ago: stale, so run 1 is NOT CALIBRATED
+    # against it and the config is re-measured now.
+    run_check(monkeypatch, capsys, FakeServer(constant(0.01)), "--label", "a")
+    old_id = records(history)[0]["id"]
+    rewrite_history(history, lambda _i, r: r.update(created_at="2020-01-01T00:00:00Z"))
+    json_path = tmp_path / "c.json"
+    code, out = run_check(
+        monkeypatch, capsys, FakeServer(constant(0.01)), "--label", "a",
+        "--json", str(json_path), calibrate=True,
+    )
+    assert code == 0, out
+    assert len(records(history)) == 4
+    first = json.loads(json_path.read_text())["calibration"]["first_comparison"]
+    assert first["previous_id"] == old_id
+    assert first["verdict"] == "NOT CALIBRATED" and "old" in first["reason"]
+
+
+# --------------------------------------------------------------------------
+# Calibration never hides a real comparison, and respects every limit
+# --------------------------------------------------------------------------
+
+
+def test_calibration_fits_under_request_and_token_limits(history, monkeypatch, capsys):
+    # A default check here is 25 requests and up to 1,348 output tokens.
+    code, out = run_check(
+        monkeypatch, capsys, FakeServer(constant(0.01)), "--max-requests", "30",
+        calibrate=True,
+    )
+    assert code == 0, out
+    assert "calibrating" not in out and "calibrate  " not in out
+    assert len(records(history)) == 1
+    code, out = run_check(
+        monkeypatch, capsys, FakeServer(constant(0.01)), "--label", "t",
+        "--max-total-requested-tokens", "2000", calibrate=True,
+    )
+    assert "calibrating" not in out
+    assert len(records(history)) == 2
+
+
+def test_calibration_runs_only_as_many_repeats_as_the_limits_allow(
+    history, monkeypatch, capsys
+):
+    # Room for exactly 2 runs: it runs 2, says so, and stops.
+    code, out = run_check(
+        monkeypatch, capsys, FakeServer(constant(0.01)), "--max-requests", "60",
+        calibrate=True,
+    )
+    assert code == 0, out
+    assert "up to 2 times back to back" in out
+    assert "at most 50 requests and 2,696 output tokens in all (--max-requests 60" in out
+    assert "calibrating: run 2 of 2" in out and "run 3 of" not in out
+    assert len(records(history)) == 2
+    assert "Stopped calibrating after 2 run(s): another run would pass --max-requests 60" in out
+
+
+def test_no_calibration_after_a_config_change(history, monkeypatch, capsys):
+    for _ in range(2):
+        run_check(monkeypatch, capsys, FakeServer(constant(0.01)), "--label", "a")
+    code, out = run_check(
+        monkeypatch, capsys, FakeServer(constant(0.02)), "--label", "b",
+        "--config", "k=v", calibrate=True,
+    )
+    assert code == 0, out
+    assert len(records(history)) == 3  # one check, not a re-baseline of b
+    assert "calibrating" not in out and "calibrate  " not in out
+    assert "Calibrated (" not in out and "CALIBRATED  3 checks" not in out
+    assert "Verdict: NOT CALIBRATED" in out
+
+
+def test_no_calibration_with_against(history, monkeypatch, capsys):
+    run_check(monkeypatch, capsys, FakeServer(constant(0.01)), "--label", "a")
+    first = records(history)[0]["id"]
+    code, out = run_check(
+        monkeypatch, capsys, FakeServer(constant(0.01)), "--label", "a",
+        "--against", first, calibrate=True,
+    )
+    assert code == 0, out
+    assert "calibrating" not in out
+    assert len(records(history)) == 2
+
+
+def test_stale_baseline_then_config_change_is_not_rebaselined(history, monkeypatch, capsys):
+    for _ in range(3):
+        run_check(monkeypatch, capsys, FakeServer(constant(0.01)), "--label", "a")
+    rewrite_history(history, lambda _i, r: r.update(created_at="2020-01-01T00:00:00Z"))
+    code, out = run_check(
+        monkeypatch, capsys, FakeServer(constant(0.02)), "--label", "b", calibrate=True,
+    )
+    assert code == 0, out
+    assert len(records(history)) == 4
+    assert "calibrating" not in out and "Calibrated (" not in out
+    assert "Verdict: NOT CALIBRATED" in out and "old; run-to-run noise is only" in out
+
+
+def test_a_repeat_that_reaches_a_verdict_shows_it(history, monkeypatch, capsys, tmp_path):
+    real = check_module.compare_checks
+    calls = []
+
+    def compare(previous, current, history_records=()):
+        result = real(previous, current, history_records)
+        calls.append(result)
+        if len(calls) == 1:  # run 2 against run 1: pretend it was judged
+            result = {**result, "verdict": "MORE EXPENSIVE", "reason": "stand-in verdict"}
+        return result
+
+    monkeypatch.setattr(check_module, "compare_checks", compare)
+    json_path = tmp_path / "v.json"
+    code, out = run_check(
+        monkeypatch, capsys, FakeServer(constant(0.01)), "--json", str(json_path),
+        calibrate=True,
+    )
+    assert code == 0, out
+    assert len(records(history)) == 2
+    assert "Verdict: MORE EXPENSIVE, stand-in verdict." in out
+    assert "Calibrated (" not in out and "CALIBRATED  " not in flat(out)
+    written = json.loads(json_path.read_text())
+    assert written["comparison"]["verdict"] == "MORE EXPENSIVE"
+    assert written["calibration"]["stopped_early"] == "a repeat reached a verdict"
+
+
+@pytest.mark.parametrize("name, value", [("CI", "true"), ("GITHUB_ACTIONS", "true"), ("CI", "1")])
+def test_ci_runs_one_check(history, monkeypatch, capsys, name, value):
+    monkeypatch.setenv(name, value)
+    code, out = run_check(monkeypatch, capsys, FakeServer(constant(0.01)), calibrate=True)
+    assert code == 0, out
+    assert "calibrating" not in out
+    assert len(records(history)) == 1
+
+
+def test_ci_false_still_calibrates(history, monkeypatch, capsys):
+    monkeypatch.setenv("CI", "false")
+    code, out = run_check(monkeypatch, capsys, FakeServer(constant(0.01)), calibrate=True)
+    assert code == 0, out
+    assert len(records(history)) == 3
+
+
+def test_a_timed_out_repeat_stops_calibration_and_keeps_outputs(
+    history, monkeypatch, capsys, tmp_path
+):
+    # Run 1 (warm-up + 5 blocks of 4) is fast; from run 2 on every request
+    # takes 5 s, so run 2 hits the time left of a 3 s budget.
+    server = FakeServer(lambda block: 0.0 if block < 5 else 5.0)
+    json_path = tmp_path / "t.json"
+    code, out = run_check(
+        monkeypatch, capsys, server, "--max-elapsed-seconds", "3", "--json", str(json_path),
+        calibrate=True,
+    )
+    assert code == 0, out
+    assert len(records(history)) == 1
+    assert "Calibration run 2 failed: stopped at the time left of the " \
+        "--max-elapsed-seconds 3s budget (" in out
+    assert "Stopped calibrating after 1 run(s): run 2 failed" in out
+    assert "Run the same command again to record the other 2" in out
+    written = json.loads(json_path.read_text())
+    assert written["id"] == records(history)[0]["id"]
+    assert written["calibration"]["stopped_early"].startswith("run 2 failed")
 
 
 # --------------------------------------------------------------------------

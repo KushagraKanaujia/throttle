@@ -664,7 +664,12 @@ def add_check_arguments(parser: argparse.ArgumentParser) -> None:
         "measurement for this endpoint, config and workload, the first check runs "
         f"up to {MIN_CALIBRATION_DF + 1} times back to back (each recorded as its own "
         "check, all within --max-elapsed-seconds) so run-to-run noise is measured "
-        "in one command. Not done with --no-save or --fail-if-costlier",
+        "in one command, within --max-requests and --max-total-requested-tokens in "
+        "total. Not done with --no-save, --fail-if-costlier or --against, after a "
+        "config change, or when CI or GITHUB_ACTIONS is set to a true value (CI runs "
+        "one check). With --json, a calibrating command writes its last check plus a "
+        "'calibration' object (ids, noise, first_comparison: run 1 against the real "
+        "baseline)",
     )
     history.add_argument(
         "--fail-if-costlier",
@@ -1419,10 +1424,16 @@ async def _measure_agent(
         if block_index == 0 and started is not None and cap is not None and args.blocks > 1:
             projected = (_monotonic() - started) + wall * (args.blocks - 1)
             if projected > cap:
-                suggested = int(math.ceil(projected * 1.25 / 60.0) * 60)
+                used = max(0.0, args.max_elapsed_seconds - cap)  # earlier calibration runs
+                suggested = int(math.ceil((used + projected) * 1.25 / 60.0) * 60)
+                limit = (
+                    f"its {cap:.0f} s limit" if cap >= args.max_elapsed_seconds else
+                    f"the {cap:.0f} s left of the --max-elapsed-seconds "
+                    f"{args.max_elapsed_seconds:g} budget"
+                )
                 print(
                     f"  {st.warn('note')}    at this pace the check needs about "
-                    f"{projected:.0f} s, over its {cap:.0f} s limit, and a check stopped at "
+                    f"{projected:.0f} s, over {limit}, and a check stopped at "
                     "the limit records nothing. Rerun with --max-elapsed-seconds "
                     f"{suggested} (or fewer --turns)",
                     flush=True,
@@ -2579,17 +2590,51 @@ def calibrated_noise(
     return run_to_run_noise(records, record, upcoming, record["metric"])
 
 
+def config_changed(comparison: Mapping[str, Any]) -> bool:
+    """True when Throttle sees a config or workload change against the
+    baseline. A new Throttle version alone does not count: it is a change of
+    the measuring tool, not of the server."""
+
+    return any(
+        not str(change["key"]).startswith("throttle_version")
+        for change in comparison_changes(comparison)
+    )
+
+
 def needs_repeats(comparison: Mapping[str, Any] | None) -> bool:
-    """True for a FIRST CHECK, or a comparison that could not be judged only
-    because this workload has no recent repeat checks: NOT CALIBRATED for
-    lack of degrees of freedom or a stale baseline, or a baseline that ran a
-    different workload. Repeats of this config are what it is missing."""
+    """True for a FIRST CHECK, or a comparison of an UNCHANGED config that
+    could not be judged only for want of recent repeats (NOT CALIBRATED for
+    lack of degrees of freedom, or a stale baseline). Never after a visible
+    config or workload change: that check is a candidate to be judged, not a
+    baseline to re-measure, so it keeps the single-run guidance."""
 
     if comparison is None:
         return True
-    if comparison.get("workload_differs"):
-        return True
+    if config_changed(comparison):
+        return False
     return comparison.get("verdict") == VERDICT_NOT_CALIBRATED
+
+
+def judged(comparison: Mapping[str, Any] | None) -> bool:
+    """A comparison that reached a verdict (not NOT CALIBRATED, not a
+    different-workload NO WINNER)."""
+
+    return (
+        comparison is not None
+        and comparison.get("verdict") != VERDICT_NOT_CALIBRATED
+        and not comparison.get("workload_differs")
+    )
+
+
+CI_ENV_VARS = ("CI", "GITHUB_ACTIONS")
+_TRUTHY = frozenset({"1", "true", "yes", "on"})
+
+
+def running_in_ci() -> bool:
+    """CI or GITHUB_ACTIONS set to a truthy value: auto-calibration is off,
+    as with --no-calibrate, so a CI job runs and reports one check."""
+
+    return any(os.environ.get(name, "").strip().lower() in _TRUTHY for name in CI_ENV_VARS)
 
 
 def _lacks_noise_only(comparison: Mapping[str, Any] | None) -> bool:
@@ -2634,10 +2679,12 @@ def predicted_runs(
     endpoint: str,
     fingerprint: Mapping[str, Any],
     workload: Mapping[str, Any],
+    metric: str = "output",
+    max_runs: int = CALIBRATION_RUNS,
 ) -> int:
-    """How many checks this command will most likely run (1 to
-    CALIBRATION_RUNS), predicted before any traffic. Display only: the
-    decision to repeat is made after each check, from the real records."""
+    """How many checks this command will most likely run (1 to ``max_runs``),
+    predicted before any traffic. Display only: the decision to repeat is made
+    after each check, from the real records."""
 
     now = datetime.now(timezone.utc)
     window = timedelta(hours=CALIBRATION_WINDOW_HOURS)
@@ -2652,13 +2699,17 @@ def predicted_runs(
         return sum(
             1 for r in records
             if (_created(r) is not None and abs(now - _created(r)) <= window)  # type: ignore[operator]
-            and _usable_mean(r, r.get("metric", "output")) is not None
+            and _usable_mean(r, metric) is not None
             and key_of(r) == key
         )
 
     current_key = _planned_identity(endpoint, fingerprint, workload, __version__)
+    if baseline is not None and _planned_identity(
+        baseline.get("endpoint"), baseline["fingerprint"], baseline.get("workload") or {}, None
+    ) != _planned_identity(endpoint, fingerprint, workload, None):
+        return 1  # a config or workload change: judged, never re-baselined
     have = count(current_key)
-    extra = max(0, CALIBRATION_RUNS - 1 - have)
+    extra = max(0, min(CALIBRATION_RUNS, max_runs) - 1 - have)
     if baseline is not None and extra:
         base_created = _created(baseline)
         fresh = base_created is not None and abs(now - base_created) <= window
@@ -3039,11 +3090,27 @@ def handle_check(args: argparse.Namespace) -> int:
         return run_id, plan, workload
 
     run_id, plan, workload = new_workload()
+    run_requests = args.blocks * args.requests_per_block + args.warmup + probes
+    run_tokens = (
+        (args.blocks * args.requests_per_block + args.warmup) * args.max_tokens
+        + probes * TAG_PROBE_MAX_TOKENS
+    )
     # Self-calibration: a first check with no recent repeats of this config
     # runs its repeats back to back (each recorded as its own check). Not with
-    # --no-save (nothing to calibrate from) or --fail-if-costlier (a CI gate
-    # judges one change and must not silently triple its run time).
-    can_calibrate = not (args.no_calibrate or args.no_save or args.fail_if_costlier is not None)
+    # --no-save (nothing to calibrate from), --fail-if-costlier (a CI gate
+    # judges one change and must not silently triple its run time), --against
+    # (an explicit comparison), or in CI (CI / GITHUB_ACTIONS set). The repeats
+    # must fit under --max-requests and --max-total-requested-tokens in total:
+    # if fewer than 2 runs fit, there is no calibration.
+    max_runs = min(
+        CALIBRATION_RUNS,
+        args.max_requests // run_requests,
+        args.max_total_requested_tokens // max(run_tokens, 1),
+    )
+    can_calibrate = not (
+        args.no_calibrate or args.no_save or args.fail_if_costlier is not None
+        or args.against or running_in_ci()
+    ) and max_runs >= 2
     planned_fingerprint = {
         "model": args.model,
         "label": args.label,
@@ -3052,7 +3119,10 @@ def handle_check(args: argparse.Namespace) -> int:
         "user_config": user_config,
     }
     planned = (
-        predicted_runs(previous_records, baseline, chat_url, planned_fingerprint, workload)
+        predicted_runs(
+            previous_records, baseline, chat_url, planned_fingerprint, workload,
+            metric, max_runs,
+        )
         if can_calibrate else 1
     )
 
@@ -3122,9 +3192,12 @@ def handle_check(args: argparse.Namespace) -> int:
         print(
             f"  calibrate  no recent repeats of this {'agent ' if shape is not None else ''}"
             f"config: Throttle runs this check up to {planned} times back to back to "
-            "measure run-to-run noise, each recorded as its own check; all runs together "
-            f"stay within the {args.max_elapsed_seconds:g}s limit and the "
-            f"{_money(spend_ceiling)} worst case (--no-calibrate runs once)"
+            "measure run-to-run noise, each recorded as its own check: at most "
+            f"{planned * run_requests} requests and {planned * run_tokens:,} output tokens "
+            f"in all (--max-requests {args.max_requests}, --max-total-requested-tokens "
+            f"{args.max_total_requested_tokens:,}); all runs together stay within the "
+            f"{args.max_elapsed_seconds:g}s limit and the {_money(spend_ceiling)} worst "
+            "case (--no-calibrate runs once)"
         )
     print()
 
@@ -3241,10 +3314,13 @@ def handle_check(args: argparse.Namespace) -> int:
         try:
             return await asyncio.wait_for(run(run_id, plan, workload, cap), timeout=cap)
         except asyncio.TimeoutError:
-            raise CheckError(
-                f"stopped at the --max-elapsed-seconds ceiling ({args.max_elapsed_seconds:g}s) "
-                "before every block finished"
-            ) from None
+            limit = (
+                f"--max-elapsed-seconds ceiling ({args.max_elapsed_seconds:g}s)"
+                if cap >= args.max_elapsed_seconds else
+                f"time left of the --max-elapsed-seconds {args.max_elapsed_seconds:g}s "
+                f"budget ({cap:.0f}s)"
+            )
+            raise CheckError(f"stopped at the {limit} before every block finished") from None
 
     def measure(
         run_id: str | None, plan: list[Any], workload: dict[str, Any], cap: float
@@ -3309,6 +3385,10 @@ def handle_check(args: argparse.Namespace) -> int:
         record["baseline_id"] = baseline.get("id")
     have = same_config_count([*previous_records, record], record)
     calibrating = can_calibrate and needs_repeats(comparison) and have < CALIBRATION_RUNS
+    if calibrating:
+        # Marks every check this command records for calibration, so later
+        # tools can tell back-to-back repeats apart. Not part of any identity.
+        record["calibration_group"] = record["id"]
 
     headline = result[metric]
     print()
@@ -3555,6 +3635,14 @@ def handle_check(args: argparse.Namespace) -> int:
             command_started=command_started,
             first_duration=first_duration,
             have=have,
+            max_runs=max_runs,
+            run_requests=run_requests,
+            run_tokens=run_tokens,
+        )
+    if planned > 1:
+        print(
+            "calibrating: not needed after all: this check is compared with its "
+            "baseline instead (see above)"
         )
 
     bound = (comparison or {}).get("noise") or {}
@@ -3665,29 +3753,47 @@ def _finish_calibration(
     command_started: float,
     first_duration: float,
     have: int,
+    max_runs: int = CALIBRATION_RUNS,
+    run_requests: int = 0,
+    run_tokens: int = 0,
 ) -> int:
     """Run the remaining calibration checks of a first check back to back.
 
     Each repeat is measured, compared and recorded exactly as a separate
     ``throttle check`` of the same command would be (its own run id, its own
     baseline: the latest check of the endpoint and workload profile). All
-    repeats share the one --max-elapsed-seconds budget: a repeat starts only
-    when the slowest run so far fits in the time left, otherwise calibration
-    stops and says how many runs are still needed.
+    repeats share the one --max-elapsed-seconds budget and, in total, stay
+    under --max-requests and --max-total-requested-tokens (``max_runs``). A
+    repeat starts only when the slowest run so far fits in the time left;
+    otherwise, or when a repeat fails or times out, calibration stops, the
+    checks recorded so far stand, and the output says how many are still
+    needed. If a repeat reaches a real verdict, that verdict is shown.
     """
 
     metric = record["metric"]
     metric_label = METRIC_LABELS[metric]
+    group = record.get("calibration_group") or record["id"]
     run_records = [record]
     durations = [first_duration]
     last, last_comparison, last_baseline = record, comparison, baseline
-    stopped: tuple[float, float] | None = None
-    while have < CALIBRATION_RUNS and len(run_records) < CALIBRATION_RUNS:
-        total = min(CALIBRATION_RUNS, len(run_records) + CALIBRATION_RUNS - have)
+    stopped: str | None = None
+    while have < CALIBRATION_RUNS:
+        if len(run_records) >= max_runs:
+            stopped = (
+                f"another run would pass --max-requests {args.max_requests} or "
+                f"--max-total-requested-tokens {args.max_total_requested_tokens:,} "
+                f"(each run sends {run_requests} requests, up to {run_tokens:,} output tokens)"
+            )
+            break
+        total = min(max_runs, len(run_records) + CALIBRATION_RUNS - have)
         remaining = args.max_elapsed_seconds - (_monotonic() - command_started)
         estimate = max(durations)
         if estimate > remaining:
-            stopped = (estimate, remaining)
+            stopped = (
+                f"the next run would take about {estimate:.0f} s, but only "
+                f"{max(remaining, 0):.0f} s of the --max-elapsed-seconds "
+                f"{args.max_elapsed_seconds:g} limit is left"
+            )
             break
         number = len(run_records) + 1
         left = estimate * (total - len(run_records))
@@ -3702,15 +3808,11 @@ def _finish_calibration(
             repeat = measure(run_id, plan, workload, remaining)
         except CheckError as exc:
             print()
-            print(f"Calibration run {number} failed: {exc}", file=sys.stderr)
-            print(
-                f"It was not recorded. The {len(run_records)} earlier run(s) are saved "
-                f"({', '.join(r['id'] for r in run_records)}); run the same command again "
-                "to continue calibrating.",
-                file=sys.stderr,
-            )
-            return EXIT_FAILED
+            print(f"Calibration run {number} failed: {exc}. It was not recorded.")
+            stopped = f"run {number} failed ({exc})"
+            break
         durations.append(_monotonic() - started)
+        repeat["calibration_group"] = group
         repeat_baseline = pick_baseline(records)
         repeat_comparison = (
             compare_checks(repeat_baseline, repeat, records) if repeat_baseline else None
@@ -3730,10 +3832,34 @@ def _finish_calibration(
             f"  run {number} of {total}  {st.bold(_money(headline['mean']))}/M {metric_label} "
             + st.dim(f"({_ci_text(headline)}) [MEASURED]")
         )
-        print(f"  noise   {_repeat_line(repeat_comparison, have)}")
-        print()
         run_records.append(repeat)
         last, last_comparison, last_baseline = repeat, repeat_comparison, repeat_baseline
+        if judged(repeat_comparison):
+            # A real verdict is never hidden behind "calibrated".
+            assert repeat_comparison is not None
+            print(
+                f"  Verdict: {st.verdict(repeat_comparison['verdict'])}, "
+                f"{repeat_comparison['reason']}."
+            )
+            print()
+            bound = (repeat_comparison.get("noise") or {})
+            hint = noisy_machine_hint(
+                run_records, bound.get("floor_percent") if bound.get("calibrated") else None
+            )
+            if hint:
+                print(f"  hint    {hint}.")
+            print(verdict_panel(st, repeat, repeat_comparison, repeat_baseline, args,
+                                saved=path is not None))
+            print(st.dim(f"Saved as checks {', '.join(r['id'] for r in run_records)} in {path}"))
+            repeat["calibration"] = {
+                "ids": [r["id"] for r in run_records],
+                "first_comparison": comparison,
+                "back_to_back": True,
+                "stopped_early": "a repeat reached a verdict",
+            }
+            return _write_outputs(args, repeat, repeat_comparison)
+        print(f"  noise   {_repeat_line(repeat_comparison, have)}")
+        print()
 
     noise = calibrated_noise(records, last)
     bound = noise["floor_percent"] if noise["calibrated"] else None
@@ -3742,16 +3868,15 @@ def _finish_calibration(
         "bound_percent": bound,
         "ids": [r["id"] for r in run_records],
         "noise": noise,
+        "first_comparison": comparison,
         "back_to_back": True,
+        "stopped_early": stopped,
     }
     if stopped is not None:
-        estimate, remaining = stopped
         print(
-            f"Stopped calibrating after {len(run_records)} run(s): the next run would take "
-            f"about {estimate:.0f} s, but only {max(remaining, 0):.0f} s of the "
-            f"--max-elapsed-seconds {args.max_elapsed_seconds:g} limit is left. Run the "
+            f"Stopped calibrating after {len(run_records)} run(s): {stopped}. Run the "
             f"same command again to record the other {CALIBRATION_RUNS - have} (it picks "
-            "up these checks), or raise --max-elapsed-seconds."
+            "up these checks), or raise the limit."
         )
     hint = noisy_machine_hint(run_records, bound)
     if hint:
@@ -3763,19 +3888,10 @@ def _finish_calibration(
     print(st.dim(
         f"Saved as checks {', '.join(calibration['ids'])} in {path}"
     ))
-    if not args.share:
-        print(st.dim(f"Share this result (no traffic): throttle check --share-id {last['id']}"))
     last["calibration"] = calibration
-    if args.json_output:
-        try:
-            args.json_output.write_text(json.dumps(last, indent=2, sort_keys=True) + "\n")
-        except OSError as exc:
-            print(f"Error: could not write {args.json_output}: {exc}", file=sys.stderr)
-            return EXIT_FAILED
-        print(f"JSON written to {args.json_output}")
-    if args.share:
-        print()
-        _print_share(last, last_comparison)
+    code = _write_outputs(args, last, last_comparison)
+    if code != EXIT_OK:
+        return code
     if bound is None and stopped is None:
         print(
             f"Not calibrated yet ({have} of {CALIBRATION_RUNS} checks of this config: "
@@ -3787,4 +3903,27 @@ def _finish_calibration(
             f"Calibrated (noise bound {bound:.1f}%). Now change one setting and run the "
             "same command again for a verdict."
         )
+    return EXIT_OK
+
+
+def _write_outputs(
+    args: argparse.Namespace, record: Mapping[str, Any], comparison: Mapping[str, Any] | None
+) -> int:
+    """Share hint, --json and --share for the last check a calibrating command
+    saved."""
+
+    if not args.share:
+        print(style_module.Style().dim(
+            f"Share this result (no traffic): throttle check --share-id {record['id']}"
+        ))
+    if args.json_output:
+        try:
+            args.json_output.write_text(json.dumps(record, indent=2, sort_keys=True) + "\n")
+        except OSError as exc:
+            print(f"Error: could not write {args.json_output}: {exc}", file=sys.stderr)
+            return EXIT_FAILED
+        print(f"JSON written to {args.json_output}")
+    if args.share:
+        print()
+        _print_share(record, comparison)
     return EXIT_OK

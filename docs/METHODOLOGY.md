@@ -107,10 +107,14 @@ again without changing anything.
 So that a new user does not need four separate commands, a first check
 calibrates itself (`check._finish_calibration`). After the first run of a
 `throttle check` command, if the comparison could not be judged for want of
-repeats (no baseline yet, NOT CALIBRATED, or a baseline that ran a different
-workload) and fewer than 3 checks of this exact identity exist within 24
+repeats (no baseline yet, or NOT CALIBRATED against a baseline of the same
+config) and fewer than 3 checks of this exact identity exist within 24
 hours, the same command immediately runs the missing repeats, **back to
-back**, up to 3 checks in total. Nothing about the statistics changes:
+back**, up to 3 checks in total. After a visible config or workload change
+it never calibrates: that check is a candidate to be judged, not a new
+baseline (a new Throttle version alone does not count as a change). If a
+repeat does reach a verdict, that verdict is shown, not "calibrated".
+Nothing about the statistics changes:
 
 - Each repeat is a complete, ordinary check: its own run id (so a prefix
   cache cannot carry over), its own warm-up, blocks and record, compared with
@@ -124,9 +128,28 @@ back**, up to 3 checks in total. Nothing about the statistics changes:
   starts only if the slowest run so far fits in the time left; otherwise
   calibration stops, says how many checks are still needed, and running the
   same command again continues from the history.
-- It is not done with `--no-save` (nothing to calibrate from) or
-  `--fail-if-costlier` (a CI gate judges one change), and `--no-calibrate`
-  turns it off.
+- The repeats also fit, in total, under `--max-requests` and
+  `--max-total-requested-tokens`: the run count is capped to what fits, and
+  with room for fewer than 2 runs there is no calibration. The `calibrate`
+  line prints the totals.
+- A repeat that fails or hits the time left stops calibration the same way;
+  the checks already recorded stand, and `--json` / `--share` still cover the
+  last of them.
+- It is not done with `--no-save` (nothing to calibrate from),
+  `--fail-if-costlier` (a CI gate judges one change), `--against` (an
+  explicit comparison), or when the `CI` or `GITHUB_ACTIONS` environment
+  variable is set to a true value (`1`, `true`, `yes`, `on`): a CI job runs
+  and reports one check. `--no-calibrate` turns it off anywhere.
+- Every check recorded by one calibrating command carries
+  `calibration_group` (the id of its first check), so back-to-back repeats can
+  be told apart later. It is not part of any identity or verdict.
+- With `--json`, a calibrating command writes its last check, whose
+  `comparison` is that repeat against the one before it, plus a
+  `calibration` object: `ids` (the checks it recorded), `have` (checks of
+  this config within 24 h), `bound_percent` and `noise` (the bound the next
+  check is judged with), `first_comparison` (run 1 against the real prior
+  baseline, or null for a first check), `back_to_back` and `stopped_early`
+  (null, or why it stopped).
 
 What back to back means for the bound: the three repeats are taken minutes
 apart, so the bound reflects this machine's noise over minutes, not over the
