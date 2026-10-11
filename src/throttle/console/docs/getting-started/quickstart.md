@@ -44,6 +44,6 @@ throttle demo
 
 ## What happens next
 
-The first check prints your cost per million output tokens with a 95% confidence interval and saves it. Run the same command two more times without changing anything: those repeats measure your machine's run-to-run noise. Then change one setting and run it again to get a verdict.
+The first check prints your cost per million output tokens with a 95% confidence interval and saves it. With no recent history it repeats itself 3 times back to back (a few minutes on a laptop): those repeats measure your machine's run-to-run noise. Then change one setting and run the same command again to get a verdict. Three steps: run once to calibrate, change one setting, run again.
 
 - **[Your first cost check](first-check.md)**: Walk through a full before/after comparison, step by step.

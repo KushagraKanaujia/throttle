@@ -129,11 +129,16 @@ def run_check(
     rate: str = "2.00",
     url: str = URL,
     model: str | None = "mock-model",
+    calibrate: bool = False,
 ) -> tuple[int, str]:
+    """One `throttle check` (with --no-calibrate unless calibrate=True, so each
+    call records exactly one check, as these single-check tests expect)."""
+
     monkeypatch.setattr(check_module, "_TRANSPORT", httpx.MockTransport(server.handle))
     code = main(
         [
             "check",
+            *([] if calibrate else ["--no-calibrate"]),
             "--url",
             url,
             *(["--model", model] if model else []),
@@ -431,6 +436,7 @@ def test_dollars_per_million_match_hand_computed_values(history, monkeypatch, ca
         "check", "--url", URL, "--model", "mock-model", "--gpu-hourly-rate", "2.00",
         "--blocks", "3", "--requests-per-block", "4", "--concurrency", "2",
         "--warmup", "0", "--monthly-tokens", "500M", "--json", str(json_path),
+        "--no-calibrate",
     ])
     captured = capsys.readouterr()
     out = captured.out + captured.err
@@ -623,12 +629,10 @@ def test_relabelled_rerun_with_drift_is_not_calibrated(history, monkeypatch, cap
     )
     assert code == 0, out
     assert "Verdict: CHEAPER" not in out and "Verdict: MORE EXPENSIVE" not in out
-    assert (
-        "Verdict: NOT CALIBRATED \u2014 run-to-run noise unknown. Two checks at "
-        "different times can differ from load alone. Run 'throttle check' at least "
-        "3 times without changing anything (within 24 h) to measure your noise, or "
-        "use 'throttle golden' for a counterbalanced decision."
-    ) in out
+    # One plain line instead of degrees of freedom (detail stays in --json).
+    assert "Verdict: NOT CALIBRATED (run-to-run noise not measured yet)." in out
+    assert "Baseline 1 of 3 recorded; the config changed since the last check." in out
+    assert "degree(s) of freedom" not in out and "t x sqrt(2)" not in out
     assert "change  -$" in out  # the measured change is still shown
     assert "before  $" in out and "now     $" in out and out.count("95% CI $") >= 3
     assert "per month at 1B" not in out  # no projected saving headline
@@ -737,7 +741,7 @@ def run_clocked(
     code = main([
         "check", "--url", URL, "--model", "mock-model", "--gpu-hourly-rate", rate,
         "--blocks", "3", "--requests-per-block", "4", "--concurrency", "2",
-        "--warmup", "0", *extra,
+        "--warmup", "0", "--no-calibrate", *extra,
     ])
     captured = capsys.readouterr()
     return code, captured.out + captured.err
@@ -765,7 +769,16 @@ def test_three_unchanged_checks_are_not_calibrated_until_two_earlier_repeats(
     for out in outputs[1:]:
         assert "Verdict: NOT CALIBRATED" in out
         assert "CHEAPER" not in out and "MORE EXPENSIVE" not in out
-    assert "1 degree(s) of freedom from repeat checks within 24 h, 2 needed" in outputs[2]
+    assert "Baseline 2 of 3 recorded; unchanged server, yet" in outputs[1]
+    assert "Next: run 1 more unchanged check(s) to calibrate noise" in outputs[1]
+    assert "Baseline 3 of 3 recorded; unchanged server, yet" in outputs[2]
+    assert "Next: noise is calibrated from the next check" in outputs[2]
+    assert "degree(s) of freedom" not in outputs[2]
+    # The full reason is kept in the record a --json run writes.
+    record = check_module.load_history(history)[0][-1]
+    _, comparison = check_module.judge_recorded(check_module.load_history(history)[0], 2)
+    assert "1 degree(s) of freedom from repeat checks within 24 h, 2 needed" in comparison["reason"]
+    assert record["id"]
     code, out = run_clocked(monkeypatch, capsys, 10.1, "--label", "same")
     assert code == 0, out
     assert "Verdict: NO WINNER" in out

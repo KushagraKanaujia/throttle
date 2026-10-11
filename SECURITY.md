@@ -18,7 +18,7 @@ If you discover a security vulnerability in Throttle, please report it privately
 
 ### How to Report
 
-Email security reports to: **kushthrottle@gmail.com**
+Email security reports to: **kush@throttle-pro.com**
 
 Include in your report:
 - Description of the vulnerability

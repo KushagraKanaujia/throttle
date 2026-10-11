@@ -110,14 +110,15 @@ Get your first $/M-token number (3 commands):
      with or without /v1). The hourly rate is what your GPU(s) cost you:
        throttle cost --url http://localhost:11434 --model llama3.2:3b --gpu-hourly-rate 1.50
 
-  3. Catch cost drift: record today's config three times (the repeats measure
-     run-to-run noise), change one server setting, check again. Each check is compared
-     with the last one for that endpoint (95% CI and noise bound; overlap is NO WINNER,
-     fewer than 3 recent repeats is NOT CALIBRATED). --config only records what you changed:
-       throttle check --url http://localhost:11434 --model llama3.2:3b --gpu-hourly-rate 1.50 --label before
-       (run it two more times, unchanged)
-       (change a setting, e.g. restart Ollama with OLLAMA_NUM_PARALLEL=4, then:)
-       throttle check --url http://localhost:11434 --model llama3.2:3b --gpu-hourly-rate 1.50 --label after --config OLLAMA_NUM_PARALLEL=4
+  3. Get a verdict on a config change, in three steps:
+     a. Run once to calibrate. The first check repeats itself 3 times back to back to
+        measure run-to-run noise (a few minutes on a laptop; --no-calibrate runs once):
+          throttle check --url http://localhost:11434 --model llama3.2:3b --gpu-hourly-rate 1.50 --label before
+     b. Change one setting (Ollama on macOS: quit the Ollama app, then run
+        OLLAMA_NUM_PARALLEL=4 ollama serve in another terminal).
+     c. Run again for the verdict (CHEAPER / MORE EXPENSIVE only beyond the noise and
+        the 95% CIs; otherwise NO WINNER). --config only records what you changed:
+          throttle check --url http://localhost:11434 --model llama3.2:3b --gpu-hourly-rate 1.50 --label after --config OLLAMA_NUM_PARALLEL=4
 
 Other commands: plan / smoke / benchmark / golden (capped, evidence-labelled runs),
 measure + compare (repeated trials to JSON), watch (read vLLM /metrics),
@@ -809,8 +810,8 @@ def build_parser() -> argparse.ArgumentParser:
     )
     golden_report.add_argument(
         "--operator-email",
-        default="kushthrottle@gmail.com",
-        help="operator email for report footer (default: 'kushthrottle@gmail.com')",
+        default="kush@throttle-pro.com",
+        help="operator email for report footer (default: 'kush@throttle-pro.com')",
     )
 
     demo = subparsers.add_parser(
@@ -3430,14 +3431,13 @@ def _handle_cost(args: argparse.Namespace) -> int:
     )
     print("  Your $/M under real traffic depends on concurrency and prompt mix.")
     print()
-    print("Next step: record this config with `throttle check`, then run it again after each")
-    print("serving-config change. Each check is compared with the previous one (95% CI across")
-    print("blocks; overlapping intervals are reported as NO WINNER):")
+    print("Next step, for a verdict on a config change: 1. run `throttle check` once to")
+    print("calibrate (it repeats itself 3 times to measure run-to-run noise), 2. change one")
+    print("setting, 3. run it again with a new --label (e.g. --label after) for the verdict:")
     print(
         f"  throttle check --url {args.endpoint_url} --model {args.model} "
         f"--gpu-hourly-rate {args.gpu_hourly_rate:g} --label before"
     )
-    print("  After you change the server, rerun it with a new --label (e.g. --label after)")
     print("  and --config KEY=VALUE for the setting you changed.")
     print("  check sends its own fixed workload (built-in prompts, concurrency 2, 5 blocks),")
     print("  so its $/M will not match the figure above. Compare check with check, not with cost.")
@@ -4649,10 +4649,11 @@ def _render_watch_snap(snap) -> None:
 WELCOME_TAGLINE = "Find and prove inference savings on your own GPUs."
 WELCOME_STEPS = (
     ("Install Ollama: ollama pull llama3.2:3b", "or use your vLLM / SGLang OpenAI-compatible URL.", ()),
-    ("Measure $/M tokens, with a 95% CI and a verdict:", None, (
+    ("Run once to calibrate (a few minutes on a laptop):", None, (
         "throttle check --url http://localhost:11434 \\",
         "    --model llama3.2:3b --gpu-hourly-rate 1.50",
     )),
+    ("Change one setting, then run it again for a verdict.", None, ()),
     ("For agent traffic (multi-turn sessions, tool results):", None, (
         "throttle check --workload agent \\",
         "    --url http://localhost:11434 \\",

@@ -403,8 +403,12 @@ def test_no_args_prints_three_command_start_and_exits_zero(capsys, monkeypatch):
     assert "Throttle " + __version__ in out
     assert "Find and prove inference savings on your own GPUs." in out
     assert "1. Install Ollama" in out and "vLLM / SGLang" in out
-    assert "2. Measure $/M tokens" in out and "throttle check --url http://localhost:11434" in out
-    assert "3. For agent traffic" in out and "throttle check --workload agent" in out
+    # One path, no promise of a verdict from the first run: run once to
+    # calibrate, change one setting, run again.
+    assert "2. Run once to calibrate" in out and "throttle check --url http://localhost:11434" in out
+    assert "3. Change one setting, then run it again for a verdict." in out
+    assert "and a verdict:" not in out
+    assert "4. For agent traffic" in out and "throttle check --workload agent" in out
     assert "Throttle Pilot" in out and "Free for 3 months for a small group of teams." in out
     assert "throttle upgrade" in out
     for retired in ("2 weeks", "20%", "$500", "floor"):

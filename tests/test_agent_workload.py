@@ -18,6 +18,7 @@ import pytest
 import throttle.check as check_module
 import throttle.config as config_module
 from throttle import agent_workload
+from throttle.style import strip_ansi
 from throttle.cli import main
 
 URL = "http://127.0.0.1:8000"
@@ -92,7 +93,8 @@ def run_check(monkeypatch, capsys, server, *extra: str) -> tuple[int, str]:
     monkeypatch.setattr(check_module, "_TRANSPORT", httpx.MockTransport(server.handle))
     code = main([
         "check", "--url", URL, "--model", "mock-model", "--gpu-hourly-rate", "2.00",
-        "--blocks", str(BLOCKS), "--warmup", "1", "--max-tokens", "16", *extra,
+        "--blocks", str(BLOCKS), "--warmup", "1", "--max-tokens", "16", "--no-calibrate",
+        *extra,
     ])
     captured = capsys.readouterr()
     return code, captured.out + captured.err
@@ -272,16 +274,28 @@ def test_workload_shape_is_recorded(history, monkeypatch, capsys):
 def test_agent_and_default_checks_are_never_compared(history, monkeypatch, capsys):
     code, out = run_check(monkeypatch, capsys, AgentFakeServer())
     assert code == 0, out
+    default_id = records(history)[-1]["id"]
+    # The first agent check of an endpoint is its own baseline: it is never
+    # judged against the default-workload check, and no raw hashes are shown.
     code, out = run_check(
         monkeypatch, capsys, AgentFakeServer(), *AGENT_ARGS, "--fail-if-costlier", "0"
     )
-    assert "Verdict: NO WINNER, the workload differs (" in out
-    assert "workload_shape" in out
-    assert "The workload profile changed (default -> agent: 3 turns" in out
-    assert "change  not computed" in out
-    assert code == check_module.EXIT_NOT_CALIBRATED, out
+    assert code == 0, out
+    assert "This is the first agent check for this endpoint" in out
+    panel = " ".join(" ".join(line.strip().strip("\u2502|").split()) for line in strip_ansi(out).splitlines())
+    assert "FIRST AGENT CHECK" in panel and "baseline for agent traffic" in panel
+    assert "workload differs" not in out and "prompts_sha256" not in out
+    assert "baseline_id" not in records(history)[-1]
+    # A default check after it is compared with the default check, not the agent one.
+    code, out = run_check(monkeypatch, capsys, AgentFakeServer(), "--fail-if-costlier", "0")
+    assert f"Compared with check {default_id}" in out
+    assert records(history)[-1]["baseline_id"] == default_id
+    assert "workload differs" not in out
+    # The console/savings re-judging agrees: the agent check had no baseline.
+    agent_index = len(records(history)) - 2
+    assert check_module.judge_recorded(records(history), agent_index) == (None, None)
     # Nor are two agent checks of different shapes.
-    previous, current = records(history)[-1], dict(records(history)[-1])
+    previous, current = records(history)[agent_index], dict(records(history)[agent_index])
     current["workload"] = dict(current["workload"])
     current["workload"]["workload_shape"] = dict(
         current["workload"]["workload_shape"], turns=TURNS + 1

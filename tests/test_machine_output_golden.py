@@ -74,7 +74,7 @@ def _check(monkeypatch, capsys, delay: float, *extra: str) -> str:
     code = main([
         "check", "--url", URL, "--model", "mock-model", "--gpu-hourly-rate", "2.00",
         "--blocks", "5", "--requests-per-block", str(REQUESTS_PER_BLOCK),
-        "--concurrency", "2", "--warmup", str(WARMUP), *extra,
+        "--concurrency", "2", "--warmup", str(WARMUP), "--no-calibrate", *extra,
     ])
     out = capsys.readouterr().out
     assert code == 0, out

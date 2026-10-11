@@ -221,7 +221,7 @@ def test_upgrade_plans_and_offline_qr_codes(client: Client) -> None:
     assert list(plans) == ["pilot"]
     pilot = plans["pilot"]
     assert pilot["url"] == "https://throttle-pro.com"
-    assert pilot["email"] == "kushthrottle@gmail.com" and pilot["subject"] == "Throttle pilot"
+    assert pilot["email"] == "kush@throttle-pro.com" and pilot["subject"] == "Throttle pilot"
     assert pilot["price"] == "Free for 3 months"
     assert "a small group of teams" in pilot["note"]
     assert "pricing is based on the savings we verify together" in pilot["note"]

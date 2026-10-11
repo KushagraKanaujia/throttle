@@ -26,5 +26,5 @@ your results.
 ## Apply
 
 - **[throttle-pro.com/pilot](https://throttle-pro.com/pilot)**
-- Email **kushthrottle@gmail.com** with the subject "Throttle pilot".
+- Email **kush@throttle-pro.com** with the subject "Throttle pilot".
 - From the terminal: `throttle upgrade` prints these terms and a QR code.

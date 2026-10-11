@@ -102,6 +102,38 @@ figure. With `--fail-if-costlier`, it exits 5 (`EXIT_NOT_CALIBRATED`) so CI
 can treat it as a warning or a failure. The fix is to run the same check
 again without changing anything.
 
+### Calibration repeats run back to back
+
+So that a new user does not need four separate commands, a first check
+calibrates itself (`check._finish_calibration`). After the first run of a
+`throttle check` command, if the comparison could not be judged for want of
+repeats (no baseline yet, NOT CALIBRATED, or a baseline that ran a different
+workload) and fewer than 3 checks of this exact identity exist within 24
+hours, the same command immediately runs the missing repeats, **back to
+back**, up to 3 checks in total. Nothing about the statistics changes:
+
+- Each repeat is a complete, ordinary check: its own run id (so a prefix
+  cache cannot carry over), its own warm-up, blocks and record, compared with
+  the check before it and appended to the history exactly as a separate
+  `throttle check` would be.
+- The noise bound printed at the end ("Calibrated (noise bound X%)") is
+  `run_to_run_noise` over those checks, the same number the next check (after
+  your change) is judged with.
+- All repeats share the one `--max-elapsed-seconds` budget, so the worst-case
+  GPU time on the limits line still holds for the whole command. A repeat
+  starts only if the slowest run so far fits in the time left; otherwise
+  calibration stops, says how many checks are still needed, and running the
+  same command again continues from the history.
+- It is not done with `--no-save` (nothing to calibrate from) or
+  `--fail-if-costlier` (a CI gate judges one change), and `--no-calibrate`
+  turns it off.
+
+What back to back means for the bound: the three repeats are taken minutes
+apart, so the bound reflects this machine's noise over minutes, not over the
+hours that may pass before your next check. The 24 hour window still
+applies, and if your after check runs much later under a different load, a
+fresh baseline check right before it is the stricter test.
+
 ### How `--workload agent` makes the traffic agent-shaped
 
 The default check sends single-turn built-in prompts, each tagged so that a
@@ -173,7 +205,9 @@ worst-case GPU time at your rate. At \$2.49/hr the worst case is \$0.21.
 
 ### The limits line
 
-Before any traffic, `check.handle_check` prints a line of this form, and
+Before any traffic, `check.handle_check` prints a line of this form (when
+the first check will calibrate itself, a `calibrate` line under it says the
+repeats share the same time and spend limit), and
 `check._limit_problem` refuses the check (exit 2, nothing sent) if any limit
 is exceeded:
 
@@ -221,8 +255,11 @@ same server.
 
 A directional verdict needs calibration: at least 3 checks of the baseline
 config plus 1 of the candidate (or 2 + 2), all within 24 hours. That is at
-least 4 checks, so at most 4 x 300 s = 20 minutes of endpoint time in the
-worst case, at the concurrency you chose.
+least 4 checks, but only 2 commands: the first command runs the 3 baseline
+checks back to back within one `--max-elapsed-seconds` budget (300 s by
+default), and the second command, after your change, is the candidate. So at
+most 2 x 300 s = 10 minutes of endpoint time in the worst case, at the
+concurrency you chose.
 
 ### Where to run it
 
@@ -301,7 +338,10 @@ counted as real cost.
 ### The baseline
 
 By default the baseline is the most recent recorded check of the same
-endpoint URL (`check.handle_check`). `--against CHECK_ID` picks another one.
+endpoint URL and the same workload profile (`check.latest_baseline`): an
+agent check is compared only with agent checks and a default check only with
+default checks, so the first `--workload agent` check of an endpoint is its
+own baseline. `--against CHECK_ID` picks another one.
 The comparison prints every fingerprint difference Throttle can see
 (`check.diff_fingerprints`): model, label, GPU rate, the vLLM `*_info` labels
 from `/metrics`, whether the model is listed at `/v1/models`, and your
