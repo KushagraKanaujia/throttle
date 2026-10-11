@@ -4,6 +4,8 @@ All notable changes to Throttle will be documented in this file.
 
 ## [Unreleased]
 
+## [0.6.2] - 2026-10-11
+
 ### Changed
 - `throttle check` calibrates itself: when there is no recent noise measurement for this endpoint, config and workload, the first check runs up to 3 times back to back (each recorded as its own check, all within `--max-elapsed-seconds`) and ends with "Calibrated (noise bound X%). Now change one setting and run the same command again for a verdict." A fresh install reaches a calibrated baseline in one command and a verdict in two. `--no-calibrate` keeps the single run. It never calibrates after a config change, with `--against`, `--no-save` or `--fail-if-costlier`, or when `CI` / `GITHUB_ACTIONS` is set; the repeats fit under `--max-requests` and `--max-total-requested-tokens` in total; a failed or timed-out repeat stops calibration and keeps the checks already saved. `--json` adds a `calibration` object (with `first_comparison`), and each calibration check records `calibration_group`. Statistics are unchanged.
 - Calibration runs print one plain line ("Baseline 2 of 3 recorded; unchanged server, yet -54.1% vs the last check: this is the noise Throttle is measuring.") instead of degrees of freedom; the full reason stays in `--json`.
