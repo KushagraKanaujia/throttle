@@ -147,11 +147,23 @@ OUTPUT_SHIFT_PERCENT = 10.0
 # Share of requests that stopped at max_tokens (finish_reason "length").
 MAX_TOKENS_HIT_SHIFT_POINTS = 20.0
 
+# Self-calibrating first check: checks of one unchanged config needed so the
+# next check (after a change) gets MIN_CALIBRATION_DF degrees of freedom.
+CALIBRATION_RUNS = MIN_CALIBRATION_DF + 1
+# Display only: above these, a plain hint says the machine is too noisy.
+NOISY_BOUND_PERCENT = 50.0
+NOISY_BLOCK_RATIO = 5.0
+# Wall clock for the whole command (calibration repeats share one
+# --max-elapsed-seconds budget). Bound at import so tests that replace
+# ``time`` with a fake clock do not affect it.
+_monotonic = time.monotonic
+
 NOT_CALIBRATED_MESSAGE = (
     "Verdict: NOT CALIBRATED \u2014 run-to-run noise unknown. Two checks at "
     "different times can differ from load alone. Run 'throttle check' at least "
-    "3 times without changing anything (within 24 h) to measure your noise, or "
-    "use 'throttle golden' for a counterbalanced decision."
+    "3 times without changing anything (within 24 h) to measure your noise "
+    "(a first check does this by itself), or use 'throttle golden' for a "
+    "counterbalanced decision."
 )
 
 METRIC_LABELS = {
@@ -336,9 +348,14 @@ CHECK_DESCRIPTION = (
     "also needs a run-to-run noise bound (t x sqrt(2) x SD) estimated from\n"
     "repeat checks of an unchanged config in the last 24 h, and a measured\n"
     "change larger than it. Until there are 3 such earlier checks (2 df), or\n"
-    "when the baseline is more than 24 h old, the verdict is NOT CALIBRATED:\n"
-    "run the same check a few more times without changing anything. A change\n"
-    "in the ASSUMED GPU rate alone is never a verdict."
+    "when the baseline is more than 24 h old, the verdict is NOT CALIBRATED.\n"
+    "So a first check calibrates itself: with no recent repeats of this config\n"
+    "it runs up to 3 times back to back (each recorded as its own check, all\n"
+    "within --max-elapsed-seconds). --no-calibrate runs once. A change in the\n"
+    "ASSUMED GPU rate alone is never a verdict.\n"
+    "\n"
+    "The path: 1. run it once (it calibrates)  2. change one setting\n"
+    "3. run the same command again for a verdict."
 )
 
 CHECK_EPILOG = (
@@ -639,6 +656,20 @@ def add_check_arguments(parser: argparse.ArgumentParser) -> None:
         "--no-save",
         action="store_true",
         help="compare but do not add this check to history",
+    )
+    history.add_argument(
+        "--no-calibrate",
+        action="store_true",
+        help="run one check only. By default, when there is no recent noise "
+        "measurement for this endpoint, config and workload, the first check runs "
+        f"up to {MIN_CALIBRATION_DF + 1} times back to back (each recorded as its own "
+        "check, all within --max-elapsed-seconds) so run-to-run noise is measured "
+        "in one command, within --max-requests and --max-total-requested-tokens in "
+        "total. Not done with --no-save, --fail-if-costlier or --against, after a "
+        "config change, or when CI or GITHUB_ACTIONS is set to a true value (CI runs "
+        "one check). With --json, a calibrating command writes its last check plus a "
+        "'calibration' object (ids, noise, first_comparison: run 1 against the real "
+        "baseline)",
     )
     history.add_argument(
         "--fail-if-costlier",
@@ -1322,9 +1353,16 @@ async def _measure_agent(
     shape: agent_workload.AgentShape,
     run_id: str,
     workload: dict[str, Any],
+    *,
+    started: float | None = None,
+    cap: float | None = None,
 ) -> list[dict[str, Any]]:
     """Warm the run's system prefix, then measure ``args.blocks`` blocks of
-    concurrent sessions. Fills the measured fields of ``workload``."""
+    concurrent sessions. Fills the measured fields of ``workload``.
+
+    With ``started`` (a _monotonic() reading) and ``cap`` (seconds), block 1
+    projects the run's total time and says so when it will pass the cap, since
+    a check stopped at the cap records nothing."""
 
     metric_label = METRIC_LABELS[args.metric]
     if args.warmup:
@@ -1383,6 +1421,23 @@ async def _measure_agent(
             ),
             flush=True,
         )
+        if block_index == 0 and started is not None and cap is not None and args.blocks > 1:
+            projected = (_monotonic() - started) + wall * (args.blocks - 1)
+            if projected > cap:
+                used = max(0.0, args.max_elapsed_seconds - cap)  # earlier calibration runs
+                suggested = int(math.ceil((used + projected) * 1.25 / 60.0) * 60)
+                limit = (
+                    f"its {cap:.0f} s limit" if cap >= args.max_elapsed_seconds else
+                    f"the {cap:.0f} s left of the --max-elapsed-seconds "
+                    f"{args.max_elapsed_seconds:g} budget"
+                )
+                print(
+                    f"  {st.warn('note')}    at this pace the check needs about "
+                    f"{projected:.0f} s, over {limit}, and a check stopped at "
+                    "the limit records nothing. Rerun with --max-elapsed-seconds "
+                    f"{suggested} (or fewer --turns)",
+                    flush=True,
+                )
     requests = args.blocks * args.requests_per_block
     recorded = workload["workload_shape"]
     recorded["mean_prompt_tokens_per_turn"] = sum(sum(t) for t in by_turn) / requests
@@ -1898,7 +1953,10 @@ def _signed_money(value: float) -> str:
 def _ci_text(summary: Mapping[str, Any]) -> str:
     if summary.get("ci_low") is None:
         return "no CI (fewer than 2 blocks)"
-    return f"95% CI {_money(summary['ci_low'])} to {_money(summary['ci_high'])}"
+    # A cost cannot be negative: the printed lower bound is floored at $0
+    # (the record and --json keep the raw t interval).
+    low = "$0.00" if summary["ci_low"] <= 0 else _money(summary["ci_low"])
+    return f"95% CI {low} to {_money(summary['ci_high'])}"
 
 
 def _tokens_text(count: int) -> str:
@@ -2438,6 +2496,31 @@ def _share_recorded(directory: Path, endpoint_filter: str | None, check_id: str 
     return EXIT_OK
 
 
+def workload_profile(record: Mapping[str, Any]) -> str:
+    """'agent' or 'default': which workload profile a check ran."""
+
+    shape = workload_value(record, "workload_shape")
+    if isinstance(shape, dict) and shape.get("profile"):
+        return str(shape["profile"])
+    return agent_workload.PROFILE_DEFAULT
+
+
+def latest_baseline(
+    records: Sequence[Mapping[str, Any]], endpoint: Any, profile: str
+) -> Mapping[str, Any] | None:
+    """The latest check of this endpoint with the same workload profile.
+
+    An agent check is never judged against a default check (or the reverse):
+    the first agent check of an endpoint is its own baseline.
+    """
+
+    same = [
+        r for r in records
+        if r.get("endpoint") == endpoint and workload_profile(r) == profile
+    ]
+    return same[-1] if same else None
+
+
 def judge_recorded(
     records: Sequence[Mapping[str, Any]], index: int
 ) -> tuple[Mapping[str, Any] | None, dict[str, Any] | None]:
@@ -2455,8 +2538,7 @@ def judge_recorded(
     if isinstance(wanted, str):
         baseline = next((r for r in reversed(earlier) if r.get("id") == wanted), None)
     if baseline is None:
-        same = [r for r in earlier if r.get("endpoint") == record.get("endpoint")]
-        baseline = same[-1] if same else None
+        baseline = latest_baseline(earlier, record.get("endpoint"), workload_profile(record))
     comparison = compare_checks(baseline, record, earlier) if baseline else None
     return baseline, comparison
 
@@ -2464,6 +2546,237 @@ def judge_recorded(
 # --------------------------------------------------------------------------
 # Command
 # --------------------------------------------------------------------------
+
+
+def same_config_count(
+    records: Sequence[Mapping[str, Any]], record: Mapping[str, Any]
+) -> int:
+    """Usable checks of ``record``'s exact config identity (endpoint,
+    fingerprint, workload, Throttle version) within the calibration window of
+    it, ``record`` included when it is in ``records``."""
+
+    key = _config_identity(record)
+    now = _created(record) or datetime.now(timezone.utc)
+    window = timedelta(hours=CALIBRATION_WINDOW_HOURS)
+    count = 0
+    seen: set[Any] = set()
+    for other in records:
+        other_id = other.get("id")
+        if isinstance(other_id, str):
+            if other_id in seen:
+                continue
+            seen.add(other_id)
+        created = _created(other)
+        if (
+            created is not None and abs(now - created) <= window
+            and _usable_mean(other, record["metric"]) is not None
+            and _config_identity(other) == key
+        ):
+            count += 1
+    return count
+
+
+def calibrated_noise(
+    records: Sequence[Mapping[str, Any]], record: Mapping[str, Any]
+) -> dict[str, Any]:
+    """The run-to-run noise the NEXT check after ``record`` would be judged
+    with, from ``record``'s own same-config group (``record`` included).
+
+    The same rule as every verdict (run_to_run_noise), seen from a check that
+    has not run yet: a stand-in for it with no id, at ``record``'s time.
+    """
+
+    upcoming = {**record, "id": None}
+    return run_to_run_noise(records, record, upcoming, record["metric"])
+
+
+def config_changed(comparison: Mapping[str, Any]) -> bool:
+    """True when Throttle sees a config or workload change against the
+    baseline. A new Throttle version alone does not count: it is a change of
+    the measuring tool, not of the server."""
+
+    return any(
+        not str(change["key"]).startswith("throttle_version")
+        for change in comparison_changes(comparison)
+    )
+
+
+def needs_repeats(comparison: Mapping[str, Any] | None) -> bool:
+    """True for a FIRST CHECK, or a comparison of an UNCHANGED config that
+    could not be judged only for want of recent repeats (NOT CALIBRATED for
+    lack of degrees of freedom, or a stale baseline). Never after a visible
+    config or workload change: that check is a candidate to be judged, not a
+    baseline to re-measure, so it keeps the single-run guidance."""
+
+    if comparison is None:
+        return True
+    if config_changed(comparison):
+        return False
+    return comparison.get("verdict") == VERDICT_NOT_CALIBRATED
+
+
+def judged(comparison: Mapping[str, Any] | None) -> bool:
+    """A comparison that reached a verdict (not NOT CALIBRATED, not a
+    different-workload NO WINNER)."""
+
+    return (
+        comparison is not None
+        and comparison.get("verdict") != VERDICT_NOT_CALIBRATED
+        and not comparison.get("workload_differs")
+    )
+
+
+CI_ENV_VARS = ("CI", "GITHUB_ACTIONS")
+_TRUTHY = frozenset({"1", "true", "yes", "on"})
+
+
+def running_in_ci() -> bool:
+    """CI or GITHUB_ACTIONS set to a truthy value: auto-calibration is off,
+    as with --no-calibrate, so a CI job runs and reports one check."""
+
+    return any(os.environ.get(name, "").strip().lower() in _TRUTHY for name in CI_ENV_VARS)
+
+
+def _lacks_noise_only(comparison: Mapping[str, Any] | None) -> bool:
+    """NOT CALIBRATED only because run-to-run noise has too few repeats (not
+    because the baseline is stale): shown as one plain line, not df detail."""
+
+    if comparison is None or comparison.get("verdict") != VERDICT_NOT_CALIBRATED:
+        return False
+    noise = comparison.get("noise") or {}
+    age = comparison.get("baseline_age_seconds")
+    return (
+        noise.get("calibrated") is False
+        and age is not None and abs(age) <= CALIBRATION_WINDOW_HOURS * 3600
+    )
+
+
+def _planned_identity(
+    endpoint: Any, fingerprint: Mapping[str, Any], workload: Mapping[str, Any], version: Any
+) -> str:
+    """_config_identity without the server-reported settings, which are only
+    known after the check has run: used to predict, before any traffic, how
+    many calibration runs a check will need (display only)."""
+
+    flat = {
+        k: v for k, v in flatten_fingerprint(fingerprint).items()
+        if not k.startswith(("server.", "vllm."))
+    }
+    stand_in = {"workload": workload}
+    return json.dumps(
+        [
+            endpoint, flat,
+            {field: workload_value(stand_in, field) for field in WORKLOAD_IDENTITY_FIELDS},
+            version,
+        ],
+        sort_keys=True,
+    )
+
+
+def predicted_runs(
+    records: Sequence[Mapping[str, Any]],
+    baseline: Mapping[str, Any] | None,
+    endpoint: str,
+    fingerprint: Mapping[str, Any],
+    workload: Mapping[str, Any],
+    metric: str = "output",
+    max_runs: int = CALIBRATION_RUNS,
+) -> int:
+    """How many checks this command will most likely run (1 to ``max_runs``),
+    predicted before any traffic. Display only: the decision to repeat is made
+    after each check, from the real records."""
+
+    now = datetime.now(timezone.utc)
+    window = timedelta(hours=CALIBRATION_WINDOW_HOURS)
+
+    def key_of(record: Mapping[str, Any]) -> str:
+        return _planned_identity(
+            record.get("endpoint"), record["fingerprint"], record.get("workload") or {},
+            record.get("throttle_version"),
+        )
+
+    def count(key: str) -> int:
+        return sum(
+            1 for r in records
+            if (_created(r) is not None and abs(now - _created(r)) <= window)  # type: ignore[operator]
+            and _usable_mean(r, metric) is not None
+            and key_of(r) == key
+        )
+
+    current_key = _planned_identity(endpoint, fingerprint, workload, __version__)
+    if baseline is not None and _planned_identity(
+        baseline.get("endpoint"), baseline["fingerprint"], baseline.get("workload") or {}, None
+    ) != _planned_identity(endpoint, fingerprint, workload, None):
+        return 1  # a config or workload change: judged, never re-baselined
+    have = count(current_key)
+    extra = max(0, min(CALIBRATION_RUNS, max_runs) - 1 - have)
+    if baseline is not None and extra:
+        base_created = _created(baseline)
+        fresh = base_created is not None and abs(now - base_created) <= window
+        stand_in = {"workload": workload}
+        same_workload = all(
+            workload_value(baseline, f) == workload_value(stand_in, f)
+            for f in WORKLOAD_IDENTITY_FIELDS
+        )
+        base_key = key_of(baseline)
+        if base_key == current_key:
+            df = max(0, have - 1)
+        else:
+            df = max(0, count(base_key) - 1) + max(0, have - 1)
+        if fresh and same_workload and df >= MIN_CALIBRATION_DF:
+            extra = 0  # this check will be judged: nothing to calibrate
+    return 1 + extra
+
+
+def noisy_machine_hint(
+    records: Sequence[Mapping[str, Any]], bound_percent: float | None
+) -> str | None:
+    """One plain line when the machine is too noisy for a verdict: blocks of
+    these checks varied more than NOISY_BLOCK_RATIO x, or the run-to-run noise
+    bound is above NOISY_BOUND_PERCENT. Display only."""
+
+    walls = [
+        float(b["wall_clock_seconds"]) for r in records for b in (r.get("blocks") or [])
+        if isinstance(b, dict) and _is_number(b.get("wall_clock_seconds"))
+        and b["wall_clock_seconds"] > 0
+    ]
+    spread = max(walls) / min(walls) if walls else 1.0
+    noisy_blocks = spread > NOISY_BLOCK_RATIO
+    noisy_bound = bound_percent is not None and bound_percent > NOISY_BOUND_PERCENT
+    if not (noisy_blocks or noisy_bound):
+        return None
+    evidence = []
+    if noisy_blocks:
+        evidence.append(f"blocks took {min(walls):.1f} s to {max(walls):.1f} s")
+    if noisy_bound:
+        evidence.append(f"run-to-run noise bound {bound_percent:.0f}%")
+    return (
+        "this machine is too noisy for a verdict (" + ", ".join(evidence) + "): "
+        "only a change bigger than the noise could ever be called. Close other "
+        "apps and run again, or point Throttle at a dedicated GPU server"
+    )
+
+
+def _repeat_line(
+    comparison: Mapping[str, Any] | None, have: int
+) -> str:
+    """The one plain line a calibration check prints instead of df detail."""
+
+    if comparison is None:
+        return f"Baseline {have} of {CALIBRATION_RUNS} recorded."
+    pct = comparison.get("delta_percent")
+    if comparison.get("workload_differs"):
+        gap = "the last check ran a different workload, so it is not compared"
+    elif comparison_changes(comparison):
+        gap = "the config changed since the last check"
+    elif pct is not None:
+        gap = (
+            f"unchanged server, yet {pct:+.1f}% vs the last check: this is the "
+            "noise Throttle is measuring"
+        )
+    else:
+        gap = "unchanged server"
+    return f"Baseline {have} of {CALIBRATION_RUNS} recorded; {gap}."
 
 
 def _calibration_next_step(comparison: Mapping[str, Any]) -> str:
@@ -2492,8 +2805,13 @@ def verdict_panel(
     args: argparse.Namespace,
     *,
     saved: bool,
+    calibration: Mapping[str, Any] | None = None,
 ) -> str:
     """The closing panel of `throttle check`: number, verdict, delta, next step.
+
+    With ``calibration`` (a first check that ran its repeats back to back) the
+    panel reports the calibrated baseline instead of the last repeat's
+    comparison with the one before it.
 
     Human output only. Everything here is already printed in full above it;
     the panel is the summary a reader looks at first.
@@ -2507,8 +2825,40 @@ def verdict_panel(
         f"{st.bold(big)}  {st.dim(_ci_text(headline) + ' [MEASURED]')}",
     ]
     monthly_tokens = args.monthly_tokens
+    agent = workload_profile(record) == agent_workload.PROFILE_AGENT
+    if calibration is not None:
+        have = calibration["have"]
+        bound = calibration.get("bound_percent")
+        if bound is not None:
+            rows.append(
+                f"{st.bold('CALIBRATED')}  "
+                + st.dim(
+                    f"{have} checks of this {'agent ' if agent else ''}config; "
+                    f"run-to-run noise bound {bound:.1f}%"
+                )
+            )
+            next_step = "change one setting, then run the same command again for a verdict"
+        else:
+            rows.append(
+                f"{st.bold('NOT CALIBRATED YET')}  "
+                + st.dim(f"baseline {have} of {CALIBRATION_RUNS} recorded")
+            )
+            next_step = "run the same command again, unchanged, to finish calibrating"
+        if monthly_tokens and headline.get("mean") is not None:
+            volume = monthly_tokens / 1_000_000
+            rows.append((
+                f"monthly   {_money(headline['mean'] * volume)} at "
+                f"{_tokens_text(monthly_tokens)} {metric_label} [PROJECTED]", ()
+            ))
+        checks = ", ".join(calibration["ids"]) if saved else "not saved"
+        rows.append((f"checks    {checks}", (), "          "))
+        rows.append((f"next      {next_step}", ("2",), "          "))
+        return st.panel(rows, title="Verdict")
     if comparison is None:
         rows.append(
+            f"{st.bold('FIRST AGENT CHECK')}  "
+            + st.dim("nothing to compare with yet; this is the baseline for agent traffic")
+            if agent else
             f"{st.bold('FIRST CHECK')}  "
             + st.dim("nothing to compare with yet; this check is the baseline")
         )
@@ -2524,7 +2874,11 @@ def verdict_panel(
     else:
         verdict = comparison["verdict"]
         inner = st.width - 4
-        first, *rest = st.wrap(comparison["reason"] + ".", inner - len(verdict) - 2) or [""]
+        reason = (
+            "run-to-run noise not measured yet (needs 3 checks of one unchanged config)"
+            if _lacks_noise_only(comparison) else comparison["reason"]
+        )
+        first, *rest = st.wrap(reason + ".", inner - len(verdict) - 2) or [""]
         rows.append(f"{st.verdict(verdict)}  {first}")
         if rest:
             rows.append((" ".join(rest), ()))
@@ -2660,7 +3014,8 @@ def handle_check(args: argparse.Namespace) -> int:
             f"{directory / HISTORY_FILENAME}; they are not used as a baseline or "
             "for calibration"
         )
-    baseline: dict[str, Any] | None = None
+    profile = agent_workload.PROFILE_AGENT if shape is not None else agent_workload.PROFILE_DEFAULT
+    against: Mapping[str, Any] | None = None
     if args.against:
         matches = [r for r in previous_records if r.get("id") == args.against]
         if not matches:
@@ -2670,60 +3025,106 @@ def handle_check(args: argparse.Namespace) -> int:
                 file=sys.stderr,
             )
             return EXIT_USAGE
-        baseline = matches[-1]
-    else:
-        same = [r for r in previous_records if r.get("endpoint") == chat_url]
-        baseline = same[-1] if same else None
+        against = matches[-1]
+
+    def pick_baseline(records: Sequence[Mapping[str, Any]]) -> Mapping[str, Any] | None:
+        # The latest check of this endpoint with the same workload profile, so
+        # an agent check is never judged against a default one (or the reverse).
+        return against if against is not None else latest_baseline(records, chat_url, profile)
+
+    baseline = pick_baseline(previous_records)
 
     user_config = dict(args.config_pairs or [])
     metric = args.metric
     metric_label = METRIC_LABELS[metric]
-    run_id = new_run_id() if cache_mode == CACHE_MODE_COLD else None
-    plan = (
-        measured_prompts(prompts, args.blocks, args.requests_per_block, cache_mode, run_id)
-        if shape is None else []
+
+    def new_workload() -> tuple[str | None, list[Any], dict[str, Any]]:
+        """A fresh run id, measured prompts and workload record for one check."""
+
+        run_id = new_run_id() if cache_mode == CACHE_MODE_COLD else None
+        plan = (
+            measured_prompts(prompts, args.blocks, args.requests_per_block, cache_mode, run_id)
+            if shape is None else []
+        )
+        workload = _agent_workload_record(args, shape, run_id) if shape is not None else {
+            # Hash of the prompt file itself (the same canonical hash smoke,
+            # benchmark and golden record), not of the tagged prompts: the tags
+            # change every run, the workload does not.
+            "prompts_sha256": canonical_workload_hash(prompts),
+            "prompt_cache_mode": cache_mode,
+            "prompt_nonce": (
+                {
+                    "run_id": run_id,
+                    "format": NONCE_FORMAT,
+                    "warmup_format": WARMUP_NONCE_FORMAT,
+                    "placement": "start of the first user message",
+                    "index": "measured request number across blocks, from 0",
+                    # Filled in after the probes: prompt tokens of each base
+                    # prompt sent untagged, and the tag tokens subtracted.
+                    "untagged_prompt_tokens": None,
+                    "tag_input_tokens": None,
+                    "tag_input_tokens_per_request": None,
+                    "input_tokens": (
+                        "net of the tag: each distinct base prompt is sent once "
+                        "untagged (unmeasured, max_tokens "
+                        f"{TAG_PROBE_MAX_TOKENS}) and blocks count those prompt tokens"
+                    ),
+                }
+                if run_id
+                else None
+            ),
+            # Hash of every measured request's messages in send order, so the
+            # exact traffic can be rebuilt from the prompt file and run_id.
+            "sent_prompts_sha256": canonical_workload_hash(
+                tuple(tuple(m) for row in plan for m in row)
+            ),
+            "prompt_count": len(prompts),
+            "prompts_source": str(args.prompts) if args.prompts else "built-in",
+            "blocks": args.blocks,
+            "requests_per_block": args.requests_per_block,
+            "concurrency": args.concurrency,
+            "max_tokens": args.max_tokens,
+            "warmup_requests": args.warmup,
+            "temperature": 0,
+        }
+        return run_id, plan, workload
+
+    run_id, plan, workload = new_workload()
+    run_requests = args.blocks * args.requests_per_block + args.warmup + probes
+    run_tokens = (
+        (args.blocks * args.requests_per_block + args.warmup) * args.max_tokens
+        + probes * TAG_PROBE_MAX_TOKENS
     )
-    workload = _agent_workload_record(args, shape, run_id) if shape is not None else {
-        # Hash of the prompt file itself (the same canonical hash smoke,
-        # benchmark and golden record), not of the tagged prompts: the tags
-        # change every run, the workload does not.
-        "prompts_sha256": canonical_workload_hash(prompts),
-        "prompt_cache_mode": cache_mode,
-        "prompt_nonce": (
-            {
-                "run_id": run_id,
-                "format": NONCE_FORMAT,
-                "warmup_format": WARMUP_NONCE_FORMAT,
-                "placement": "start of the first user message",
-                "index": "measured request number across blocks, from 0",
-                # Filled in after the probes: prompt tokens of each base
-                # prompt sent untagged, and the tag tokens subtracted.
-                "untagged_prompt_tokens": None,
-                "tag_input_tokens": None,
-                "tag_input_tokens_per_request": None,
-                "input_tokens": (
-                    "net of the tag: each distinct base prompt is sent once "
-                    "untagged (unmeasured, max_tokens "
-                    f"{TAG_PROBE_MAX_TOKENS}) and blocks count those prompt tokens"
-                ),
-            }
-            if run_id
-            else None
-        ),
-        # Hash of every measured request's messages in send order, so the
-        # exact traffic can be rebuilt from the prompt file and run_id.
-        "sent_prompts_sha256": canonical_workload_hash(
-            tuple(tuple(m) for row in plan for m in row)
-        ),
-        "prompt_count": len(prompts),
-        "prompts_source": str(args.prompts) if args.prompts else "built-in",
-        "blocks": args.blocks,
-        "requests_per_block": args.requests_per_block,
-        "concurrency": args.concurrency,
-        "max_tokens": args.max_tokens,
-        "warmup_requests": args.warmup,
-        "temperature": 0,
+    # Self-calibration: a first check with no recent repeats of this config
+    # runs its repeats back to back (each recorded as its own check). Not with
+    # --no-save (nothing to calibrate from), --fail-if-costlier (a CI gate
+    # judges one change and must not silently triple its run time), --against
+    # (an explicit comparison), or in CI (CI / GITHUB_ACTIONS set). The repeats
+    # must fit under --max-requests and --max-total-requested-tokens in total:
+    # if fewer than 2 runs fit, there is no calibration.
+    max_runs = min(
+        CALIBRATION_RUNS,
+        args.max_requests // run_requests,
+        args.max_total_requested_tokens // max(run_tokens, 1),
+    )
+    can_calibrate = not (
+        args.no_calibrate or args.no_save or args.fail_if_costlier is not None
+        or args.against or running_in_ci()
+    ) and max_runs >= 2
+    planned_fingerprint = {
+        "model": args.model,
+        "label": args.label,
+        "gpu_hourly_rate_usd": args.gpu_hourly_rate,
+        **({"gpu_count": args.gpus} if args.gpus else {}),
+        "user_config": user_config,
     }
+    planned = (
+        predicted_runs(
+            previous_records, baseline, chat_url, planned_fingerprint, workload,
+            metric, max_runs,
+        )
+        if can_calibrate else 1
+    )
 
     st = style_module.Style()
     sep = st.dim(f" {st.dot} ")
@@ -2787,14 +3188,28 @@ def handle_check(args: argparse.Namespace) -> int:
         f"{args.max_elapsed_seconds:g}s; worst-case GPU time "
         f"{_money(spend_ceiling)} [ASSUMED rate] (ceiling {_money(args.max_estimated_spend)})"
     )
+    if planned > 1:
+        print(
+            f"  calibrate  no recent repeats of this {'agent ' if shape is not None else ''}"
+            f"config: Throttle runs this check up to {planned} times back to back to "
+            "measure run-to-run noise, each recorded as its own check: at most "
+            f"{planned * run_requests} requests and {planned * run_tokens:,} output tokens "
+            f"in all (--max-requests {args.max_requests}, --max-total-requested-tokens "
+            f"{args.max_total_requested_tokens:,}); all runs together stay within the "
+            f"{args.max_elapsed_seconds:g}s limit and the {_money(spend_ceiling)} worst "
+            "case (--no-calibrate runs once)"
+        )
     print()
 
-    async def run() -> tuple[dict[str, Any], dict[str, Any], list[dict[str, Any]]]:
+    async def run(
+        run_id: str | None, plan: list[Any], workload: dict[str, Any], cap: float
+    ) -> tuple[dict[str, Any], dict[str, Any], list[dict[str, Any]]]:
         async with httpx.AsyncClient(
             transport=_TRANSPORT,
             timeout=httpx.Timeout(args.request_timeout),
             limits=httpx.Limits(max_connections=max(args.concurrency, 1) + 2),
         ) as client:
+            started = _monotonic()
             models = await _fetch_models(client, _models_url(chat_url), headers, args.model)
             if args.no_metrics:
                 metrics: dict[str, Any] = {"status": "skipped (--no-metrics)"}
@@ -2805,7 +3220,8 @@ def handle_check(args: argparse.Namespace) -> int:
             if shape is not None:
                 assert run_id is not None
                 blocks = await _measure_agent(
-                    client, chat_url, headers, args, shape, run_id, workload
+                    client, chat_url, headers, args, shape, run_id, workload,
+                    started=started, cap=cap,
                 )
                 return models, metrics, blocks
             if args.warmup:
@@ -2892,61 +3308,93 @@ def handle_check(args: argparse.Namespace) -> int:
                 )
             return models, metrics, blocks
 
-    async def bounded() -> tuple[dict[str, Any], dict[str, Any], list[dict[str, Any]]]:
+    async def bounded(
+        run_id: str | None, plan: list[Any], workload: dict[str, Any], cap: float
+    ) -> tuple[dict[str, Any], dict[str, Any], list[dict[str, Any]]]:
         try:
-            return await asyncio.wait_for(run(), timeout=args.max_elapsed_seconds)
+            return await asyncio.wait_for(run(run_id, plan, workload, cap), timeout=cap)
         except asyncio.TimeoutError:
-            raise CheckError(
-                f"stopped at the --max-elapsed-seconds ceiling ({args.max_elapsed_seconds:g}s) "
-                "before every block finished"
-            ) from None
+            limit = (
+                f"--max-elapsed-seconds ceiling ({args.max_elapsed_seconds:g}s)"
+                if cap >= args.max_elapsed_seconds else
+                f"time left of the --max-elapsed-seconds {args.max_elapsed_seconds:g}s "
+                f"budget ({cap:.0f}s)"
+            )
+            raise CheckError(f"stopped at the {limit} before every block finished") from None
 
+    def measure(
+        run_id: str | None, plan: list[Any], workload: dict[str, Any], cap: float
+    ) -> dict[str, Any]:
+        """Run one check and build its record (not saved). Raises CheckError."""
+
+        models, metrics, blocks = asyncio.run(bounded(run_id, plan, workload, cap))
+        result = {
+            key: summarize([block["dollars_per_million"][key] for block in blocks])
+            for key in METRIC_LABELS
+        }
+        created = datetime.now(timezone.utc)
+        fingerprint = {
+            "model": args.model,
+            "label": args.label,
+            "gpu_hourly_rate_usd": args.gpu_hourly_rate,
+            "gpu_hourly_rate_source": "ASSUMED (user-supplied --gpu-hourly-rate)",
+            **({"gpu_count": args.gpus} if args.gpus else {}),
+            "user_config": user_config,
+            "server_models": models,
+            "server_metrics": metrics,
+        }
+        identity = hashlib.sha256(
+            json.dumps([chat_url, created.isoformat(), fingerprint], sort_keys=True, default=str).encode()
+        ).hexdigest()[:8]
+        return {
+            "record_type": RECORD_TYPE,
+            "record_version": RECORD_VERSION,
+            "id": f"{created.strftime('%Y%m%dT%H%M%SZ')}-{identity}",
+            "created_at": created.isoformat().replace("+00:00", "Z"),
+            "throttle_version": __version__,
+            "endpoint": chat_url,
+            "metric": metric,
+            "fingerprint": fingerprint,
+            "workload": workload,
+            "blocks": blocks,
+            "result": result,
+            "monthly_tokens": args.monthly_tokens,
+        }
+
+    command_started = _monotonic()
+    if planned > 1:
+        print(
+            f"calibrating: run 1 of {planned} (the time left is estimated once this "
+            "run finishes)",
+            flush=True,
+        )
     try:
-        models, metrics, blocks = asyncio.run(bounded())
+        record = measure(run_id, plan, workload, args.max_elapsed_seconds)
     except CheckError as exc:
         print()
         print(f"Check failed: {exc}", file=sys.stderr)
         print("Nothing was recorded.", file=sys.stderr)
         return EXIT_FAILED
+    first_duration = _monotonic() - command_started
+    fingerprint = record["fingerprint"]
+    result = record["result"]
 
-    result = {
-        key: summarize([block["dollars_per_million"][key] for block in blocks])
-        for key in METRIC_LABELS
-    }
-    created = datetime.now(timezone.utc)
-    fingerprint = {
-        "model": args.model,
-        "label": args.label,
-        "gpu_hourly_rate_usd": args.gpu_hourly_rate,
-        "gpu_hourly_rate_source": "ASSUMED (user-supplied --gpu-hourly-rate)",
-        **({"gpu_count": args.gpus} if args.gpus else {}),
-        "user_config": user_config,
-        "server_models": models,
-        "server_metrics": metrics,
-    }
-    identity = hashlib.sha256(
-        json.dumps([chat_url, created.isoformat(), fingerprint], sort_keys=True, default=str).encode()
-    ).hexdigest()[:8]
-    record: dict[str, Any] = {
-        "record_type": RECORD_TYPE,
-        "record_version": RECORD_VERSION,
-        "id": f"{created.strftime('%Y%m%dT%H%M%SZ')}-{identity}",
-        "created_at": created.isoformat().replace("+00:00", "Z"),
-        "throttle_version": __version__,
-        "endpoint": chat_url,
-        "metric": metric,
-        "fingerprint": fingerprint,
-        "workload": workload,
-        "blocks": blocks,
-        "result": result,
-        "monthly_tokens": args.monthly_tokens,
-    }
+    comparison: dict[str, Any] | None = None
+    if baseline is not None:
+        comparison = compare_checks(baseline, record, previous_records)
+        record["baseline_id"] = baseline.get("id")
+    have = same_config_count([*previous_records, record], record)
+    calibrating = can_calibrate and needs_repeats(comparison) and have < CALIBRATION_RUNS
+    if calibrating:
+        # Marks every check this command records for calibration, so later
+        # tools can tell back-to-back repeats apart. Not part of any identity.
+        record["calibration_group"] = record["id"]
 
     headline = result[metric]
     print()
     print(st.bold("Config fingerprint"))
-    print(f"  /v1/models  {models['status']}")
-    print(f"  /metrics    {metrics['status']}")
+    print(f"  /v1/models  {fingerprint['server_models']['status']}")
+    print(f"  /metrics    {fingerprint['server_metrics']['status']}")
     for key, value in flatten_fingerprint(fingerprint).items():
         print(f"    {key} = {value}")
     print()
@@ -2966,7 +3414,7 @@ def handle_check(args: argparse.Namespace) -> int:
         f"measured tokens, at concurrency {args.concurrency}. Cost at a different "
         "production concurrency will differ."
     )
-    recorded_shape = workload.get("workload_shape")
+    recorded_shape = record["workload"].get("workload_shape")
     if recorded_shape:
         by_turn = ", ".join(
             f"{tokens:.0f}" for tokens in recorded_shape["mean_prompt_tokens_by_turn"]
@@ -2987,7 +3435,7 @@ def handle_check(args: argparse.Namespace) -> int:
         low = headline["ci_low"]
         high = headline["ci_high"]
         range_text = (
-            f" (95% CI {_money(low * volume)} to {_money(high * volume)})"
+            f" (95% CI {'$0.00' if low <= 0 else _money(low * volume)} to {_money(high * volume)})"
             if low is not None
             else ""
         )
@@ -2997,14 +3445,17 @@ def handle_check(args: argparse.Namespace) -> int:
             "[PROJECTED: MEASURED $/M x ASSUMED volume]"
         )
 
-    comparison: dict[str, Any] | None = None
     print()
     if baseline is None:
-        print("Compared with: nothing yet. This is the first check for this endpoint;")
-        print("the next check will be compared against it.")
+        if profile == agent_workload.PROFILE_AGENT:
+            print("Compared with: nothing yet. This is the first agent check for this "
+                  "endpoint: the baseline")
+            print("for agent traffic (default-workload checks are never compared with it).")
+        else:
+            print("Compared with: nothing yet. This is the first check for this endpoint;")
+            print("the next check will be compared against it.")
     else:
-        comparison = compare_checks(baseline, record, previous_records)
-        record["baseline_id"] = baseline.get("id")
+        assert comparison is not None
         base_fp = baseline["fingerprint"]
         age = comparison.get("baseline_age_seconds")
         age_text = f", {_age_text(age)} ago" if age is not None else ", age unknown"
@@ -3079,7 +3530,23 @@ def handle_check(args: argparse.Namespace) -> int:
                 "cut is set aside)."
             )
         noise = comparison.get("noise")
-        if noise is not None:
+        plain_noise = _lacks_noise_only(comparison)
+        if noise is not None and plain_noise:
+            # One plain line instead of degrees of freedom and t x sqrt(2):
+            # the detail stays in the record (--json).
+            follow = (
+                " Repeating it now to measure run-to-run noise." if calibrating
+                else f" Next: {_calibration_next_step(comparison)}."
+            )
+            print(f"  noise   {_repeat_line(comparison, have)}{follow}")
+            if noise["stale_or_undated_checks_ignored"]:
+                print(
+                    f"          ignored {noise['stale_or_undated_checks_ignored']} check(s) "
+                    f"older than {noise['window_hours']:g} h or undated"
+                )
+            for hint in noise["hints"]:
+                print(f"  hint    {hint}")
+        elif noise is not None:
             window = f"{noise['window_hours']:g} h"
             if noise["calibrated"]:
                 print(
@@ -3135,7 +3602,12 @@ def handle_check(args: argparse.Namespace) -> int:
                     f"{_tokens_text(args.monthly_tokens)} {metric_label}   "
                     f"[PROJECTED: MEASURED $/M x ASSUMED volume{rate_note}]"
                 )
-        if comparison["verdict"] == VERDICT_NOT_CALIBRATED:
+        if plain_noise:
+            print(
+                f"  Verdict: {st.verdict(VERDICT_NOT_CALIBRATED)} (run-to-run noise not "
+                "measured yet)."
+            )
+        elif comparison["verdict"] == VERDICT_NOT_CALIBRATED:
             print(f"  why     {comparison['reason']}.")
             print("  " + NOT_CALIBRATED_MESSAGE.replace(
                 VERDICT_NOT_CALIBRATED, st.verdict(VERDICT_NOT_CALIBRATED), 1
@@ -3143,15 +3615,42 @@ def handle_check(args: argparse.Namespace) -> int:
         else:
             print(f"  Verdict: {st.verdict(comparison['verdict'])}, {comparison['reason']}.")
 
-    record["comparison"] = comparison
     print()
     path: Path | None = None
     if not args.no_save:
         try:
-            path = append_history(directory, {k: v for k, v in record.items() if k != "comparison"})
+            path = append_history(directory, record)
         except OSError as exc:
             print(f"Error: could not save the check to {directory}: {exc}", file=sys.stderr)
             return EXIT_FAILED
+    record["comparison"] = comparison
+
+    if calibrating:
+        return _finish_calibration(
+            args, st, directory, path, record, comparison, baseline,
+            [*previous_records, {k: v for k, v in record.items() if k != "comparison"}],
+            pick_baseline=pick_baseline,
+            new_workload=new_workload,
+            measure=measure,
+            command_started=command_started,
+            first_duration=first_duration,
+            have=have,
+            max_runs=max_runs,
+            run_requests=run_requests,
+            run_tokens=run_tokens,
+        )
+    if planned > 1:
+        print(
+            "calibrating: not needed after all: this check is compared with its "
+            "baseline instead (see above)"
+        )
+
+    bound = (comparison or {}).get("noise") or {}
+    hint = noisy_machine_hint(
+        [record], bound.get("floor_percent") if bound.get("calibrated") else None
+    )
+    if hint:
+        print(f"  hint    {hint}.")
     print(verdict_panel(st, record, comparison, baseline, args, saved=path is not None))
     if args.no_save:
         print("Not saved (--no-save).")
@@ -3235,4 +3734,196 @@ def handle_check(args: argparse.Namespace) -> int:
             file=sys.stderr,
         )
         return EXIT_NOT_CALIBRATED
+    return EXIT_OK
+
+
+def _finish_calibration(
+    args: argparse.Namespace,
+    st: "style_module.Style",
+    directory: Path,
+    path: Path | None,
+    record: dict[str, Any],
+    comparison: dict[str, Any] | None,
+    baseline: Mapping[str, Any] | None,
+    records: list[Mapping[str, Any]],
+    *,
+    pick_baseline: Any,
+    new_workload: Any,
+    measure: Any,
+    command_started: float,
+    first_duration: float,
+    have: int,
+    max_runs: int = CALIBRATION_RUNS,
+    run_requests: int = 0,
+    run_tokens: int = 0,
+) -> int:
+    """Run the remaining calibration checks of a first check back to back.
+
+    Each repeat is measured, compared and recorded exactly as a separate
+    ``throttle check`` of the same command would be (its own run id, its own
+    baseline: the latest check of the endpoint and workload profile). All
+    repeats share the one --max-elapsed-seconds budget and, in total, stay
+    under --max-requests and --max-total-requested-tokens (``max_runs``). A
+    repeat starts only when the slowest run so far fits in the time left;
+    otherwise, or when a repeat fails or times out, calibration stops, the
+    checks recorded so far stand, and the output says how many are still
+    needed. If a repeat reaches a real verdict, that verdict is shown.
+    """
+
+    metric = record["metric"]
+    metric_label = METRIC_LABELS[metric]
+    group = record.get("calibration_group") or record["id"]
+    run_records = [record]
+    durations = [first_duration]
+    last, last_comparison, last_baseline = record, comparison, baseline
+    stopped: str | None = None
+    while have < CALIBRATION_RUNS:
+        if len(run_records) >= max_runs:
+            stopped = (
+                f"another run would pass --max-requests {args.max_requests} or "
+                f"--max-total-requested-tokens {args.max_total_requested_tokens:,} "
+                f"(each run sends {run_requests} requests, up to {run_tokens:,} output tokens)"
+            )
+            break
+        total = min(max_runs, len(run_records) + CALIBRATION_RUNS - have)
+        remaining = args.max_elapsed_seconds - (_monotonic() - command_started)
+        estimate = max(durations)
+        if estimate > remaining:
+            stopped = (
+                f"the next run would take about {estimate:.0f} s, but only "
+                f"{max(remaining, 0):.0f} s of the --max-elapsed-seconds "
+                f"{args.max_elapsed_seconds:g} limit is left"
+            )
+            break
+        number = len(run_records) + 1
+        left = estimate * (total - len(run_records))
+        print(
+            f"calibrating: run {number} of {total}, about {left:.0f} s left "
+            f"(run 1 took {durations[0]:.0f} s)",
+            flush=True,
+        )
+        run_id, plan, workload = new_workload()
+        started = _monotonic()
+        try:
+            repeat = measure(run_id, plan, workload, remaining)
+        except CheckError as exc:
+            print()
+            print(f"Calibration run {number} failed: {exc}. It was not recorded.")
+            stopped = f"run {number} failed ({exc})"
+            break
+        durations.append(_monotonic() - started)
+        repeat["calibration_group"] = group
+        repeat_baseline = pick_baseline(records)
+        repeat_comparison = (
+            compare_checks(repeat_baseline, repeat, records) if repeat_baseline else None
+        )
+        if repeat_baseline is not None:
+            repeat["baseline_id"] = repeat_baseline.get("id")
+        try:
+            path = append_history(directory, repeat)
+        except OSError as exc:
+            print(f"Error: could not save the check to {directory}: {exc}", file=sys.stderr)
+            return EXIT_FAILED
+        records.append(dict(repeat))
+        repeat["comparison"] = repeat_comparison
+        have = same_config_count(records, repeat)
+        headline = repeat["result"][metric]
+        print(
+            f"  run {number} of {total}  {st.bold(_money(headline['mean']))}/M {metric_label} "
+            + st.dim(f"({_ci_text(headline)}) [MEASURED]")
+        )
+        run_records.append(repeat)
+        last, last_comparison, last_baseline = repeat, repeat_comparison, repeat_baseline
+        if judged(repeat_comparison):
+            # A real verdict is never hidden behind "calibrated".
+            assert repeat_comparison is not None
+            print(
+                f"  Verdict: {st.verdict(repeat_comparison['verdict'])}, "
+                f"{repeat_comparison['reason']}."
+            )
+            print()
+            bound = (repeat_comparison.get("noise") or {})
+            hint = noisy_machine_hint(
+                run_records, bound.get("floor_percent") if bound.get("calibrated") else None
+            )
+            if hint:
+                print(f"  hint    {hint}.")
+            print(verdict_panel(st, repeat, repeat_comparison, repeat_baseline, args,
+                                saved=path is not None))
+            print(st.dim(f"Saved as checks {', '.join(r['id'] for r in run_records)} in {path}"))
+            repeat["calibration"] = {
+                "ids": [r["id"] for r in run_records],
+                "first_comparison": comparison,
+                "back_to_back": True,
+                "stopped_early": "a repeat reached a verdict",
+            }
+            return _write_outputs(args, repeat, repeat_comparison)
+        print(f"  noise   {_repeat_line(repeat_comparison, have)}")
+        print()
+
+    noise = calibrated_noise(records, last)
+    bound = noise["floor_percent"] if noise["calibrated"] else None
+    calibration = {
+        "have": have,
+        "bound_percent": bound,
+        "ids": [r["id"] for r in run_records],
+        "noise": noise,
+        "first_comparison": comparison,
+        "back_to_back": True,
+        "stopped_early": stopped,
+    }
+    if stopped is not None:
+        print(
+            f"Stopped calibrating after {len(run_records)} run(s): {stopped}. Run the "
+            f"same command again to record the other {CALIBRATION_RUNS - have} (it picks "
+            "up these checks), or raise the limit."
+        )
+    hint = noisy_machine_hint(run_records, bound)
+    if hint:
+        print(f"  hint    {hint}.")
+    print(verdict_panel(
+        st, last, last_comparison, last_baseline, args, saved=path is not None,
+        calibration=calibration,
+    ))
+    print(st.dim(
+        f"Saved as checks {', '.join(calibration['ids'])} in {path}"
+    ))
+    last["calibration"] = calibration
+    code = _write_outputs(args, last, last_comparison)
+    if code != EXIT_OK:
+        return code
+    if bound is None and stopped is None:
+        print(
+            f"Not calibrated yet ({have} of {CALIBRATION_RUNS} checks of this config: "
+            "the config Throttle sees changed between runs). Run the same command "
+            "again, unchanged."
+        )
+    if bound is not None:
+        print(
+            f"Calibrated (noise bound {bound:.1f}%). Now change one setting and run the "
+            "same command again for a verdict."
+        )
+    return EXIT_OK
+
+
+def _write_outputs(
+    args: argparse.Namespace, record: Mapping[str, Any], comparison: Mapping[str, Any] | None
+) -> int:
+    """Share hint, --json and --share for the last check a calibrating command
+    saved."""
+
+    if not args.share:
+        print(style_module.Style().dim(
+            f"Share this result (no traffic): throttle check --share-id {record['id']}"
+        ))
+    if args.json_output:
+        try:
+            args.json_output.write_text(json.dumps(record, indent=2, sort_keys=True) + "\n")
+        except OSError as exc:
+            print(f"Error: could not write {args.json_output}: {exc}", file=sys.stderr)
+            return EXIT_FAILED
+        print(f"JSON written to {args.json_output}")
+    if args.share:
+        print()
+        _print_share(record, comparison)
     return EXIT_OK

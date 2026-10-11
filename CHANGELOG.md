@@ -4,6 +4,14 @@ All notable changes to Throttle will be documented in this file.
 
 ## [Unreleased]
 
+### Changed
+- `throttle check` calibrates itself: when there is no recent noise measurement for this endpoint, config and workload, the first check runs up to 3 times back to back (each recorded as its own check, all within `--max-elapsed-seconds`) and ends with "Calibrated (noise bound X%). Now change one setting and run the same command again for a verdict." A fresh install reaches a calibrated baseline in one command and a verdict in two. `--no-calibrate` keeps the single run. It never calibrates after a config change, with `--against`, `--no-save` or `--fail-if-costlier`, or when `CI` / `GITHUB_ACTIONS` is set; the repeats fit under `--max-requests` and `--max-total-requested-tokens` in total; a failed or timed-out repeat stops calibration and keeps the checks already saved. `--json` adds a `calibration` object (with `first_comparison`), and each calibration check records `calibration_group`. Statistics are unchanged.
+- Calibration runs print one plain line ("Baseline 2 of 3 recorded; unchanged server, yet -54.1% vs the last check: this is the noise Throttle is measuring.") instead of degrees of freedom; the full reason stays in `--json`.
+- The printed 95% CI lower bound is floored at $0 (the record and `--json` keep the raw value). A plain hint says when the machine is too noisy for a verdict (noise bound above 50% or block times varying more than 5x).
+- `--workload agent`: the first agent check of an endpoint is its own baseline, never a NO WINNER against a default-workload check; block 1 warns when the run is on pace to pass the time limit and names the flag to raise it.
+- The no-arguments screen, `--help`, `throttle cost` and the README show one path: run once to calibrate, change one setting, run again. README no longer promises a verdict in 2 minutes.
+- Contact address is kush@throttle-pro.com everywhere.
+
 ## [0.6.1] - 2026-10-07
 
 ### Fixed
@@ -74,7 +82,7 @@ All notable changes to Throttle will be documented in this file.
   find savings on your agent workload and prove them: free for 2 weeks, then 20%
   of verified monthly savings (conservative end of the 95% interval), $500/month
   floor, cancel anytime, at most 5 design partners per round. Contact:
-  https://throttle-pro.com, kushthrottle@gmail.com (subject "Throttle pilot").
+  https://throttle-pro.com, kush@throttle-pro.com (subject "Throttle pilot").
   The QR code now encodes https://throttle-pro.com. `throttle upgrade --audit`
   is a hidden alias that prints the same page. The nudge rules are unchanged
   (once per 24 h; off with `THROTTLE_NO_NUDGE`, in CI, and with `--json`,

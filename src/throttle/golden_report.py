@@ -13,7 +13,7 @@ def generate_html_report(
     output_path: Path,
     gpu_hourly_rate: Optional[float] = None,
     operator_name: str = "Throttle",
-    operator_email: str = "kushthrottle@gmail.com",
+    operator_email: str = "kush@throttle-pro.com",
 ) -> None:
     """
     Generate self-contained HTML report from golden protocol artifacts.

@@ -91,6 +91,12 @@ from PyPI. For any other ref it installs the latest release, unless you set
 
 ## Calibration in CI: the first 3 runs are NOT CALIBRATED
 
+On a laptop, a first `throttle check` repeats itself to calibrate. In CI it
+does not: when the `CI` or `GITHUB_ACTIONS` environment variable is set to a
+true value (GitHub Actions sets both), `throttle check` runs exactly one
+check per job, as with `--no-calibrate`, so each job's summary compares this
+commit with the previous one.
+
 A single check's 95% CI is computed within one run, so it cannot see
 run-to-run drift: other tenants, thermal state, a noisy neighbor on the node.
 Throttle only says CHEAPER or MORE EXPENSIVE when it has also measured that

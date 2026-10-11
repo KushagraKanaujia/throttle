@@ -20,7 +20,7 @@ from ._vendor.qrcodegen import QrCode, QrSegment
 from .style import Style
 
 PILOT_URL = "https://throttle-pro.com"
-PILOT_EMAIL = "kushthrottle@gmail.com"
+PILOT_EMAIL = "kush@throttle-pro.com"
 PILOT_SUBJECT = "Throttle pilot"
 # Older names, kept for imports; every offer now points at the pilot page.
 PRO_URL = PILOT_URL

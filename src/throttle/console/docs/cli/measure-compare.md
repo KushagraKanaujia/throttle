@@ -114,7 +114,7 @@ options:
                         operator name for report footer (default: 'Throttle')
   --operator-email OPERATOR_EMAIL
                         operator email for report footer (default:
-                        'kushthrottle@gmail.com')
+                        'kush@throttle-pro.com')
 ```
 
 </details>

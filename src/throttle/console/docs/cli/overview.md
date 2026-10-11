@@ -93,14 +93,15 @@ Get your first $/M-token number (3 commands):
      with or without /v1). The hourly rate is what your GPU(s) cost you:
        throttle cost --url http://localhost:11434 --model llama3.2:3b --gpu-hourly-rate 1.50
 
-  3. Catch cost drift: record today's config three times (the repeats measure
-     run-to-run noise), change one server setting, check again. Each check is compared
-     with the last one for that endpoint (95% CI and noise bound; overlap is NO WINNER,
-     fewer than 3 recent repeats is NOT CALIBRATED). --config only records what you changed:
-       throttle check --url http://localhost:11434 --model llama3.2:3b --gpu-hourly-rate 1.50 --label before
-       (run it two more times, unchanged)
-       (change a setting, e.g. restart Ollama with OLLAMA_NUM_PARALLEL=4, then:)
-       throttle check --url http://localhost:11434 --model llama3.2:3b --gpu-hourly-rate 1.50 --label after --config OLLAMA_NUM_PARALLEL=4
+  3. Get a verdict on a config change, in three steps:
+     a. Run once to calibrate. The first check repeats itself 3 times back to back to
+        measure run-to-run noise (a few minutes on a laptop; --no-calibrate runs once):
+          throttle check --url http://localhost:11434 --model llama3.2:3b --gpu-hourly-rate 1.50 --label before
+     b. Change one setting (Ollama on macOS: quit the Ollama app, then run
+        OLLAMA_NUM_PARALLEL=4 ollama serve in another terminal).
+     c. Run again for the verdict (CHEAPER / MORE EXPENSIVE only beyond the noise and
+        the 95% CIs; otherwise NO WINNER). --config only records what you changed:
+          throttle check --url http://localhost:11434 --model llama3.2:3b --gpu-hourly-rate 1.50 --label after --config OLLAMA_NUM_PARALLEL=4
 
 Other commands: plan / smoke / benchmark / golden (capped, evidence-labelled runs),
 measure + compare (repeated trials to JSON), watch (read vLLM /metrics),

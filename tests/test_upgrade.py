@@ -68,7 +68,7 @@ PILOT_TERMS = (
     "pricing is based on the savings we verify together",
     "conservative end of the 95% interval",
     "https://throttle-pro.com",
-    "kushthrottle@gmail.com",
+    "kush@throttle-pro.com",
     '"Throttle pilot"',
 )
 RETIRED = ("$19", "$50/", "$50 ", "Cost Audit", "early access", "Early access", "No savings guarantee",

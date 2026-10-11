@@ -14,7 +14,7 @@ Want us to do it with you? The **Throttle Pilot** finds and proves savings on
 your agent workload: free for 3 months, for a small group of teams. See
 [throttle-pro.com/pilot](https://throttle-pro.com/pilot) or run `throttle upgrade`.
 
-## Try it in 2 minutes
+## Try it
 
 **On a free GPU, in your browser:**
 [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/KushagraKanaujia/throttle/blob/main/notebooks/throttle-quickstart.ipynb)
@@ -30,8 +30,23 @@ ollama pull llama3.2:3b && pipx install throttle-pro
 throttle check --url http://localhost:11434 --model llama3.2:3b --gpu-hourly-rate 1.50
 ```
 
+A verdict takes three steps:
+
+1. **Run once to calibrate.** The command above prints your cost per million
+   tokens with a 95% interval. With no recent history it repeats itself 3
+   times back to back (each run saved as its own check) to measure your
+   machine's run-to-run noise; that takes a few minutes on a laptop.
+   `--no-calibrate` runs it once.
+2. **Change one setting.** For Ollama on macOS: quit the Ollama app, then run
+   `OLLAMA_NUM_PARALLEL=4 ollama serve` in another terminal.
+3. **Run the same command again** (add `--label after --config
+   OLLAMA_NUM_PARALLEL=4` to record what you changed) for the verdict:
+   CHEAPER or MORE EXPENSIVE only when the change beats the measured noise,
+   otherwise NO WINNER.
+
 Your laptop has no real GPU price, so the \$1.50/hr is an assumed rate; use
-what your GPUs actually cost when you point it at a real server.
+what your GPUs actually cost when you point it at a real server. A busy
+laptop can be too noisy for any verdict; Throttle says so when it is.
 
 **No GPU at all:** `pipx install throttle-pro && throttle demo` runs a
 simulated comparison in about a second (every number is labelled SIMULATED).
@@ -66,7 +81,7 @@ throttle upgrade          # the pilot terms, how to reach us, and a QR code to s
 ```
 
 Apply at [throttle-pro.com/pilot](https://throttle-pro.com/pilot) or email
-kushthrottle@gmail.com with the subject "Throttle pilot". The QR code is
+kush@throttle-pro.com with the subject "Throttle pilot". The QR code is
 generated on your machine; `--url-only` prints just the link and `--no-qr`
 skips the drawing. The console has the same page under **Pilot**.
 
@@ -119,7 +134,7 @@ change a serving setting ──► throttle check ──► $/M tokens (95% CI) 
 | | Command | What you get |
 | --- | --- | --- |
 | **Price it** | `throttle cost`, `throttle watch` | Dollars per million tokens, measured against a live endpoint (`cost`) or read from vLLM `/metrics` (`watch`). The GPU $/hr is yours and always labelled ASSUMED; tokens and time are MEASURED. |
-| **Re-check it after every config change** | `throttle check` | $/M tokens with a 95% confidence interval, what changed in the config, and a verdict against the last check. CHEAPER or MORE EXPENSIVE only when the measured change is larger than a run-to-run noise bound estimated from at least 3 recent repeat checks **and** the intervals don't overlap. Otherwise NO WINNER, or NOT CALIBRATED when there is no recent noise measurement yet. `--fail-if-costlier` makes it a CI gate. |
+| **Re-check it after every config change** | `throttle check` | $/M tokens with a 95% confidence interval, what changed in the config, and a verdict against the last check. CHEAPER or MORE EXPENSIVE only when the measured change is larger than a run-to-run noise bound estimated from at least 3 recent repeat checks **and** the intervals don't overlap. Otherwise NO WINNER, or NOT CALIBRATED when there is no recent noise measurement yet (a first check measures it by repeating itself 3 times in one command). `--fail-if-costlier` makes it a CI gate. |
 | **Prove the savings** | `throttle savings` | A conservative dollar figure for a verified CHEAPER change: the smaller of (baseline CI low - candidate CI high) and ((1 - run-to-run noise bound) x baseline mean - candidate mean), x your production tokens, refused unless the verdict is calibrated, on the same model and workload, with unchanged outputs. |
 | **Prove a config change** | `throttle plan` → `smoke` → `benchmark` → `golden` | Traffic that is planned and capped before any request goes out, repeated measurement blocks, 95% intervals, and a six-position counterbalanced protocol for a decision-grade baseline-vs-candidate answer. |
 | **Profile agents** | `throttle proxy --enable-session-tracking` + `throttle sessions` | A per-session breakdown of time spent generating versus waiting, an estimate of redundant prefill, and suggested backend settings to check. |
@@ -229,16 +244,23 @@ anything you declare with `--config KEY=VALUE`), saves the result to
 endpoint. The workflow:
 
 ```sh
-# 1. record today's config, three times, changing nothing: the repeats measure run-to-run noise
-for i in 1 2 3; do
-  throttle check --url http://localhost:11434 --model llama3.2:3b \
-    --gpu-hourly-rate 1.50 --label before
-done
-# 2. change one server setting (for Ollama, e.g. restart it with OLLAMA_NUM_PARALLEL=4), then:
+# 1. run once to calibrate: with no recent history it records today's config
+#    three times back to back, changing nothing; the repeats measure run-to-run noise
+throttle check --url http://localhost:11434 --model llama3.2:3b \
+  --gpu-hourly-rate 1.50 --label before
+# 2. change one server setting (Ollama on macOS: quit the app, then
+#    OLLAMA_NUM_PARALLEL=4 ollama serve), then 3. run again for the verdict:
 throttle check --url http://localhost:11434 --model llama3.2:3b \
   --gpu-hourly-rate 1.50 --label after --config OLLAMA_NUM_PARALLEL=4 \
   --monthly-tokens 500M
 ```
+
+The recording below was made before the first check calibrated itself, so
+its three `before` checks were three separate commands. Today the first
+command runs them back to back, all within `--max-elapsed-seconds`, and
+prints one plain line per repeat (for example "Baseline 2 of 3 recorded;
+unchanged server, yet +8.3% vs the last check: this is the noise Throttle is
+measuring.") instead of the noise detail shown for the second and third.
 
 What those commands printed on a MacBook (Apple M3 Pro, local Ollama
 0.32.5, `llama3.2:3b`, default check workload of 5 blocks x 4 requests; GPU

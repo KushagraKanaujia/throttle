@@ -105,19 +105,23 @@ the serving config it can see, saves the result, and compares it with the last
 check of the same endpoint. Each check takes about 30 seconds on a laptop
 (21 requests).
 
-Record today's config **three times without changing anything**. The
+The path to a verdict has three steps: run once to calibrate, change one
+setting, run again.
+
+**Run once to calibrate.** With no recent history, the first check records
+today's config **three times back to back, without changing anything**
+(each run saved as its own check, all within `--max-elapsed-seconds`). The
 repeats measure how much this machine drifts between runs (the run-to-run
-noise):
+noise). `--no-calibrate` runs it once:
 
 ```bash
-for i in 1 2 3; do
-  throttle check --url http://localhost:11434 --model llama3.2:3b \
-    --gpu-hourly-rate 1.50 --label before
-done
+throttle check --url http://localhost:11434 --model llama3.2:3b \
+  --gpu-hourly-rate 1.50 --label before
 ```
 
-Then change one server setting (for Ollama, for example, restart it with
-`OLLAMA_NUM_PARALLEL=4`) and check again with a new label. `--config` only
+Then change one server setting (for Ollama on macOS: quit the Ollama app,
+then run `OLLAMA_NUM_PARALLEL=4 ollama serve` in another terminal) and run
+the same command again with a new label. `--config` only
 records what you changed; Throttle never changes your server:
 
 ```bash
@@ -127,7 +131,9 @@ throttle check --url http://localhost:11434 --model llama3.2:3b \
 ```
 
 Recorded on a MacBook (Apple M3 Pro, local Ollama 0.32.5, `llama3.2:3b`;
-GPU rate ASSUMED). For this recording Ollama was **not** restarted, so the
+GPU rate ASSUMED), before the first check calibrated itself, so the three
+`before` checks were three separate commands; today they run back to back
+and print one plain line per repeat instead of the noise detail below. For this recording Ollama was **not** restarted, so the
 server never changed and "no winner" is the right answer. The second and
 third `before` checks are NOT CALIBRATED: they have only 1 and 2 earlier
 checks to learn the noise from. The second ended with:
