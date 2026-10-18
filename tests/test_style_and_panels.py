@@ -331,7 +331,9 @@ def test_savings_panel_headlines_the_conservative_figure(tmp_path, capsys, monke
 RETIRED_PATTERNS = {
     "$19": re.compile(r"\$19(?![.,]\d)"),  # the $19/month Pro price; $19.72 in a sample output is a number, not an offer
     "Cost Audit": re.compile(r"Cost Audit", re.IGNORECASE),
-    "early access": re.compile(r"early access", re.IGNORECASE),
+    # The retired Throttle Pro "(early access)" features. Autotune's own
+    # "free during early access" (0.7.0) is the current offer, not a retired one.
+    "early access": re.compile(r"(?<!during )early access", re.IGNORECASE),
     "no savings guarantee": re.compile(r"no savings guarantee", re.IGNORECASE),
     "formspree": re.compile(r"formspree", re.IGNORECASE),
     # The 2-week pilot at 20% with a $500 floor (retired 2026-10-06).

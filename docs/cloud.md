@@ -34,11 +34,17 @@ Only when you are logged in **and** run one of these:
 | --- | --- | --- |
 | `throttle login`, `throttle whoami`, start of `throttle autotune` | `GET /api/v1/me` | free |
 | `throttle check ... --push` (or `push: true` in `~/.throttle/config.yaml`) | `POST /api/v1/checks` | \$0.25 per check |
-| `throttle autotune` (not `--dry-run`) | `POST /api/v1/autotune/trials` before every trial, `POST /api/v1/autotune/runs/{run_id}/result` at the end | \$1.00 per trial, the baseline included |
+| `throttle autotune` (not `--dry-run`), logged in | `POST /api/v1/autotune/trials` before every trial, `POST /api/v1/autotune/runs/{run_id}/result` at the end | \$1.00 per trial, the baseline included |
 | `throttle gate` (not `--no-cloud`) | `POST /api/v1/ci/gate` | \$0.10 per gate |
 
 Every other command, and every command when you are not logged in, sends
-nothing to Throttle Cloud. `--no-push` overrides `push: true` for one check.
+nothing to Throttle Cloud.
+
+**Early access:** Autotune is free without a login. It runs fully locally,
+unmetered, and prints "Autotune is free during early access. `throttle
+login` saves runs to Throttle Cloud." Logged in, it is metered as above. If
+Throttle Cloud is unreachable (no connection or a server error), Autotune and
+`throttle gate` warn and continue locally instead of failing. `--no-push` overrides `push: true` for one check.
 
 Every POST carries an `Idempotency-Key` header derived from what it describes
 (`check:<check id>`, `autotune:<run id>:trial:<n>`, `autotune:<run id>:result`,

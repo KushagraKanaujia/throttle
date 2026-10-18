@@ -29,7 +29,8 @@ shows in your team's history. `--no-cloud` keeps it local. A `--baseline`
 that is a Throttle Cloud check id (not a local file or id) is judged by
 Throttle Cloud. What is sent is listed in [cloud.md](cloud.md); it never
 includes prompts, responses, endpoint URLs or keys. If the cloud call fails
-(out of credits, offline), the gate still judges locally and warns.
+(out of credits, unreachable), the gate still judges locally and only warns:
+an unreachable cloud never fails the gate.
 
 OUTPUT CHANGED compares answer length and token-cap hits between the two
 checks; it does not check that answers are correct.

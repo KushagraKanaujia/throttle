@@ -92,7 +92,7 @@ It runs on 127.0.0.1, reads your check history (`~/.throttle/checks`, or
 internet. Verdicts come from the same code as `throttle check`, so the two
 always agree.
 
-## Cut the bill: Throttle Cloud (`throttle autotune`)
+## Cut the bill: `throttle autotune` (free during early access)
 
 Try Autotune first on a simulated server: no GPU, no login, nothing charged,
 every number labelled SIMULATED.
@@ -105,7 +105,6 @@ Then on your own server. Throttle starts and stops it for every trial, so stop
 any copy that is already running on that port first:
 
 ```sh
-throttle login     # paste an API key from the dashboard; new accounts start with $10 of credits
 throttle autotune --url http://localhost:8000 --model Qwen/Qwen2.5-7B-Instruct \
     --gpu-hourly-rate 2.49 --concurrency 16 --monthly-tokens 2B \
     --launch "vllm serve {model} --tensor-parallel-size {tp} --max-num-seqs {seqs} --gpu-memory-utilization {mem}" \
@@ -136,10 +135,13 @@ projected monthly dollars saved at `--monthly-tokens` (and the conservative
 verifiably cheaper, it says so and tells you to keep your config. `--space`
 also takes a YAML or JSON file; `--json PATH` writes every trial.
 
-Each trial, the baseline included, uses \$1.00 of credits, charged before the
-trial runs (the free \$10 covers about 10 trials). Out of credits, Autotune
-stops cleanly and reports the best config found so far; every local feature
-keeps working.
+**Free during early access.** Without a login, Autotune runs fully on your
+machine and nothing is metered or uploaded; it prints one line saying so.
+After `throttle login`, runs are saved to Throttle Cloud and each trial, the
+baseline included, uses \$1.00 of credits, charged before the trial runs (new
+accounts start with \$10). Out of credits, Autotune stops cleanly and reports
+the best config found so far. If Throttle Cloud cannot be reached, it warns
+and carries on locally; it never blocks a run.
 
 **Also in Throttle Cloud:**
 

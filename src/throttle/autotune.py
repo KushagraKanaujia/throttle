@@ -24,10 +24,13 @@ multiplied by the GPU count of each trial (the ``tp`` / ``tensor_parallel_size``
 setting, or ``--gpus-param``): 2 GPUs that are 1.56x faster are still 28%
 more per token.
 
-Autotune is a Throttle Cloud feature: every trial is metered ($1.00 of
-credits, POST /autotune/trials before it runs; 402 stops the run cleanly) and
-the result is saved to your account. ``--dry-run`` simulates the server, needs
-no GPU and no login, charges nothing, and labels every number SIMULATED.
+During early access, without ``throttle login`` Autotune runs fully locally and
+free (no cloud metering). Logged in, every trial is metered ($1.00 of credits,
+POST /autotune/trials before it runs; 402 stops the run cleanly) and the
+result is saved to your Throttle Cloud account; if the cloud cannot be
+reached, Autotune warns and carries on locally. ``--dry-run`` simulates the
+server, needs no GPU and no login, charges nothing, and labels every number
+SIMULATED.
 """
 
 from __future__ import annotations
@@ -71,6 +74,10 @@ EXIT_OK = 0
 EXIT_FAILED = 1
 EXIT_USAGE = 2
 
+EARLY_ACCESS_LINE = (
+    "Autotune is free during early access. `throttle login` saves runs to Throttle Cloud."
+)
+
 DEMO_MODEL = "demo-model"
 DEMO_URL = "http://127.0.0.1:8000"
 DEMO_RATE = 2.00
@@ -91,8 +98,8 @@ examples:
   # simulated, no GPU, no login, nothing charged:
   throttle autotune --dry-run --monthly-tokens 2B
 
-  # real: Throttle starts and stops the server for every trial
-  throttle login
+  # real: Throttle starts and stops the server for every trial; free
+  # during early access (after `throttle login` runs are saved to Throttle Cloud)
   throttle autotune --url http://localhost:8000 --model Qwen/Qwen2.5-7B-Instruct \\
       --gpu-hourly-rate 2.49 --concurrency 16 --monthly-tokens 2B \\
       --launch "vllm serve {model} --tensor-parallel-size {tp} --max-num-seqs {seqs} --gpu-memory-utilization {mem}" \\
@@ -184,7 +191,8 @@ def add_autotune_arguments(parser: argparse.ArgumentParser) -> None:
         "--max-trials", type=check_module._positive_int, default=DEFAULT_MAX_TRIALS,
         metavar="N",
         help=f"candidate configs to measure at most, after the baseline (default: "
-        f"{DEFAULT_MAX_TRIALS}). Each trial, the baseline included, uses $1.00 of credits",
+        f"{DEFAULT_MAX_TRIALS}). Free during early access; logged in, each trial, the "
+        "baseline included, uses $1.00 of Throttle Cloud credits",
     )
     group.add_argument(
         "--baseline-runs", type=check_module._positive_int, default=DEFAULT_BASELINE_RUNS,
@@ -689,6 +697,11 @@ class Runner:
                 {k: check_module.share_value(k, v) for k, v in trial.config.items()},
             )
         except cloud.CloudError as exc:
+            if exc.kind in ("offline", "server"):
+                # An unreachable cloud never blocks a run.
+                self.out(self.st.warn("      warning: ") + f"{exc} Continuing locally, not metered.")
+                self.client = None
+                return
             raise StopSearch(str(exc)) from None
         if body.get("allowed") is False:
             raise StopSearch(
@@ -974,16 +987,8 @@ def handle_autotune(
             creds = cloud.load_credentials()
             client = cloud.CloudClient(creds.key) if creds else None
         except cloud.CloudError as exc:
-            print(f"Error: {exc}", file=sys.stderr)
-            return EXIT_USAGE
-        if client is None:
-            print(
-                "Autotune is a Throttle Cloud feature: run `throttle login` first (start "
-                f"free with $10 of credits, about 10 trials: {cloud.PRICING_URL}). "
-                "Try it without a GPU or a login: throttle autotune --dry-run",
-                file=sys.stderr,
-            )
-            return EXIT_USAGE
+            print(f"warning: {exc} Running locally.", file=sys.stderr)
+            client = None
 
     run_id = _new_run_id()
     run_dir = (
@@ -1024,8 +1029,12 @@ def handle_autotune(
             me = client.me()
             print(f"  cloud      {cloud._account_line(me)}; each trial uses $1.00 of credits")
         except cloud.CloudError as exc:
-            print(f"Error: {exc}", file=sys.stderr)
-            return EXIT_FAILED
+            # Logged in but the cloud is unreachable (or rejects the key):
+            # warn and run locally, free, instead of blocking.
+            print(f"warning: {exc} Running locally, not metered.", file=sys.stderr)
+            client = None
+    elif not args.dry_run:
+        print(f"  {EARLY_ACCESS_LINE}")
     print(f"  trials     logs and checks in {run_dir}")
     print()
 
@@ -1061,6 +1070,7 @@ def handle_autotune(
     result = _result(args, runner, space, baseline_trial, best, simulated, chat_url)
     _print_result(st, args, runner, result, label)
 
+    client = runner.client  # None if the cloud became unreachable mid-run
     if client is not None:
         try:
             response = client.autotune_result(run_id, _cloud_body(result))

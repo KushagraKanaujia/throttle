@@ -180,3 +180,18 @@ def test_cloud_only_baseline_is_judged_by_the_cloud(env, capsys, tmp_path, monke
     code, out, err = gate(capsys, "--baseline", "chk_123", "--candidate", str(cand))
     assert code == 2
     assert "plan does not include the CI cost gate" in err
+
+
+def test_unreachable_cloud_is_a_warning_not_a_failure(env, capsys, tmp_path):
+    cloud.write_credentials(KEY)
+    base = baseline(capsys, tmp_path)
+    cand = check(capsys, tmp_path, "cand", {"seqs": "256", "tp": "1"})
+    env.fail_first = 100
+    code, out, err = gate(capsys, "--baseline", str(base), "--candidate", str(cand))
+    assert code == 0
+    assert "Could not reach Throttle Cloud" in err and "judged locally" in err
+    assert "PASS: CHEAPER." in out
+    env.forced["/api/v1/ci/gate"] = 502
+    env.fail_first = 0
+    code, out, err = gate(capsys, "--baseline", str(base), "--candidate", str(cand))
+    assert code == 0 and "judged locally" in err
