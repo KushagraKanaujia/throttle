@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "throttle-pro"
-version = "0.6.2"
-description = "Find and prove inference savings for agent workloads on your own GPUs: $/M tokens with 95% CIs, calibrated verdicts and verified-savings statements"
+version = "0.7.0"
+description = "Cut what LLM inference costs on your own GPUs: $/M tokens with 95% CIs, calibrated verdicts, and Autotune for the cheapest config whose output did not change shape"
 readme = "README.md"
 license = "MIT"
 license-files = ["LICENSE"]

@@ -12,6 +12,7 @@ import queue
 import re
 import stat
 import sys
+import textwrap
 import tempfile
 import threading
 import time
@@ -119,6 +120,13 @@ Get your first $/M-token number (3 commands):
      c. Run again for the verdict (CHEAPER / MORE EXPENSIVE only beyond the noise and
         the 95% CIs; otherwise NO WINNER). --config only records what you changed:
           throttle check --url http://localhost:11434 --model llama3.2:3b --gpu-hourly-rate 1.50 --label after --config OLLAMA_NUM_PARALLEL=4
+
+Cut the bill (Throttle Cloud, start free with $10 of credits; see throttle upgrade):
+  throttle login                          save your API key
+  throttle autotune --dry-run             try Autotune on a simulated server, free
+  throttle autotune --launch ... --space ...   find the cheapest config that passes OUTPUT CHANGED
+  throttle gate --baseline A --candidate B     CI cost gate (exit 1 on MORE EXPENSIVE / OUTPUT CHANGED)
+  throttle check ... --push               save a check to your team's cloud history
 
 Other commands: plan / smoke / benchmark / golden (capped, evidence-labelled runs),
 measure + compare (repeated trials to JSON), watch (read vLLM /metrics),
@@ -1017,17 +1025,65 @@ def build_parser() -> argparse.ArgumentParser:
 
     upgrade = subparsers.add_parser(
         "upgrade",
-        help="the Throttle Pilot: we find and prove savings on your agent workload",
+        help="Throttle Cloud: Autotune cuts what your inference costs (start free with $10 of credits)",
         description=(
-            "Prints the Throttle Pilot terms (free for 3 months for a small group of "
-            "teams; after that, pricing based on the savings we verify together), how to "
-            "reach us, and a QR code for your phone. Generated offline; nothing is sent."
+            "Prints what Throttle Cloud does (Autotune, the CI cost gate, team history; "
+            "start free with $10 of credits), the Enterprise pilot, the pricing link "
+            "(https://www.throttle-pro.com/pricing) and a QR code for your phone. "
+            "Generated offline; nothing is sent."
         ),
     )
-    # Hidden alias so older docs keep working: prints the same pilot page.
+    # Hidden alias so older docs keep working: prints the same page.
     upgrade.add_argument("--audit", action="store_true", help=argparse.SUPPRESS)
     upgrade.add_argument("--url-only", action="store_true", help="print only the link")
     upgrade.add_argument("--no-qr", action="store_true", help="don't draw the QR code")
+
+    # Throttle Cloud (see throttle/cloud.py and docs/cloud.md)
+    from .cloud import add_login_arguments
+    login = subparsers.add_parser(
+        "login",
+        help="log in to Throttle Cloud with an API key (saved to ~/.config/throttle/credentials)",
+        description=(
+            "Verifies an API key with Throttle Cloud and saves it to "
+            "~/.config/throttle/credentials (mode 600). THROTTLE_API_KEY, when set, "
+            "overrides the saved key. Start free with $10 of credits: "
+            "https://www.throttle-pro.com/pricing"
+        ),
+    )
+    add_login_arguments(login)
+    subparsers.add_parser(
+        "logout", help="forget the saved Throttle Cloud API key",
+        description="Deletes ~/.config/throttle/credentials.",
+    )
+    subparsers.add_parser(
+        "whoami", help="show the Throttle Cloud account, plan and credits left",
+        description="Shows the logged-in Throttle Cloud account, its plan and the credits left.",
+    )
+
+    from .autotune import AUTOTUNE_EPILOG, add_autotune_arguments
+    autotune = subparsers.add_parser(
+        "autotune",
+        help="find the cheapest serving config that is verifiably cheaper with unchanged "
+        "output (Throttle Cloud; --dry-run to try it free)",
+        description=textwrap.fill(
+            "Searches serving configs: restarts your server with each one, measures "
+            "$/M tokens like `throttle check` against a calibrated baseline, rejects "
+            "OUTPUT CHANGED and anything inside the noise, and prints the best config, "
+            "the $/M before and after, the projected monthly saving and a ready-to-paste "
+            "launch command. Each trial uses $1.00 of Throttle Cloud credits (needs "
+            "`throttle login`); --dry-run simulates everything for free.", width=79,
+        ),
+        epilog=AUTOTUNE_EPILOG,
+    )
+    add_autotune_arguments(autotune)
+
+    from .gate import GATE_DESCRIPTION, add_gate_arguments
+    gate = subparsers.add_parser(
+        "gate",
+        help="CI cost gate: exit 1 if a candidate check is MORE EXPENSIVE or OUTPUT CHANGED",
+        description=GATE_DESCRIPTION,
+    )
+    add_gate_arguments(gate)
 
     ui = subparsers.add_parser(
         "ui",
@@ -4646,7 +4702,7 @@ def _render_watch_snap(snap) -> None:
     print()
 
 
-WELCOME_TAGLINE = "Find and prove inference savings on your own GPUs."
+WELCOME_TAGLINE = "Throttle cuts what your LLM inference costs on your own GPUs."
 WELCOME_STEPS = (
     ("Install Ollama: ollama pull llama3.2:3b", "or use your vLLM / SGLang OpenAI-compatible URL.", ()),
     ("Run once to calibrate (a few minutes on a laptop):", None, (
@@ -4675,10 +4731,10 @@ def welcome_screen() -> str:
             rows.append(f"   {second}")
         rows.extend(f"   {st.paint(command, '36')}" for command in commands)
     pilot = (
-        f"{st.accent('Throttle Pilot')}: we find and prove savings on your agent workload."
+        f"{st.accent('Throttle Cloud')}: Autotune cuts what this costs."
     )
     terms = (
-        "Free for 3 months for a small group of teams. "
+        "Start free with $10 of credits: "
     )
     return "\n".join([
         st.panel(rows, title=f"Throttle {__version__}"),
@@ -4797,6 +4853,21 @@ def main(argv: Sequence[str] | None = None) -> int:
     if args.command == "upgrade":
         from .upgrade import handle_upgrade
         return handle_upgrade(args)
+    if args.command == "login":
+        from .cloud import handle_login
+        return handle_login(args)
+    if args.command == "logout":
+        from .cloud import handle_logout
+        return handle_logout(args)
+    if args.command == "whoami":
+        from .cloud import handle_whoami
+        return handle_whoami(args)
+    if args.command == "autotune":
+        from .autotune import handle_autotune
+        return handle_autotune(args)
+    if args.command == "gate":
+        from .gate import handle_gate
+        return handle_gate(args)
     if args.command == "ui":
         from .check import history_dir as check_history_dir
         from .console import run_ui

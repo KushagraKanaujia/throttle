@@ -1,18 +1,42 @@
 # Throttle
 
-**Find and prove inference savings for agent workloads on your own GPUs.** Throttle measures what your serving setup costs in dollars per million tokens, with a 95% confidence interval, tells you whether a config change really made it cheaper (and refuses to call a winner inside the noise or when the answers changed), and turns a verified win into a conservative dollar figure for the month.
+**Throttle cuts what your LLM inference costs on your own GPUs.** The free CLI
+shows where the money goes; Throttle Cloud cuts it.
+
+- **The free CLI** measures what your serving setup costs in dollars per million
+  tokens, with a 95% confidence interval, and tells you whether a config change
+  really made it cheaper. It refuses to call a winner inside the run-to-run
+  noise, or when the answers changed shape (OUTPUT CHANGED).
+- **Throttle Cloud** runs `throttle autotune`: it restarts your server with
+  candidate configs, measures each one the same way, and hands you the cheapest
+  config that is verifiably cheaper and passes the OUTPUT CHANGED check, with
+  the projected monthly dollars saved and a ready-to-paste launch command.
+  Plus a CI cost gate (`throttle gate`) and a shared check history.
+
+Why measuring before you switch matters, from our own runs (Qwen2.5-72B on
+rented AMD MI300X, [raw checks](https://github.com/KushagraKanaujia/throttle/tree/main/validation/hotaisle-mi300x-20261001)):
+
+- **Faster is not cheaper.** 2 GPUs instead of 1 gave 1.56x the throughput but
+  cost **28% more per token**: \$2.14 vs \$1.67 per million output tokens.
+- **Cheaper tokens can be broken tokens.** On-the-fly FP8 looked **47% cheaper**
+  on 72B, but nearly every answer ran to the token cap; on Qwen2.5-32B the
+  model answered "!!!!". Throttle flags both as OUTPUT CHANGED, so neither
+  counts as a saving.
+
+OUTPUT CHANGED compares answer length and how often answers hit the token cap
+between configs; it does not check that answers are correct.
+
+Start free with \$10 of Throttle Cloud credits, no card. Plans and the
+Enterprise pilot: [throttle-pro.com/pricing](https://www.throttle-pro.com/pricing),
+or run `throttle upgrade`.
 
 How Throttle decides: [docs/METHODOLOGY.md](https://github.com/KushagraKanaujia/throttle/blob/main/docs/METHODOLOGY.md)
 
-Throttle is an open-source CLI for any OpenAI-compatible endpoint: vLLM,
-SGLang, Ollama, LMDeploy and similar servers. It is built for teams running
-agents (multi-turn, tool-calling, RL rollouts) on GPUs they own or rent:
+Throttle is an open-source CLI (MIT) for any OpenAI-compatible endpoint: vLLM,
+SGLang, Ollama, LMDeploy and similar servers, on GPUs you own or rent. It is
+built for agent traffic too (multi-turn, tool-calling, RL rollouts):
 `throttle check --workload agent` measures agent-shaped traffic, and
-`throttle savings` produces the verified-savings statement.
-
-Want us to do it with you? The **Throttle Pilot** finds and proves savings on
-your agent workload: free for 3 months, for a small group of teams. See
-[throttle-pro.com/pilot](https://throttle-pro.com/pilot) or run `throttle upgrade`.
+`throttle savings` turns a verified win into a conservative dollar figure.
 
 ## Try it
 
@@ -68,22 +92,74 @@ It runs on 127.0.0.1, reads your check history (`~/.throttle/checks`, or
 internet. Verdicts come from the same code as `throttle check`, so the two
 always agree.
 
-## Throttle Pilot (`throttle upgrade`)
+## Cut the bill: Throttle Cloud (`throttle autotune`)
 
-We're working with a small group of teams running agents on their own GPUs.
-For 3 months, free, we set Throttle up on your stack, find the config changes
-that lower your cost per token, and prove each one. We'd love to help you with
-your results. After the pilot, pricing is based on the savings we verify
-together, counted at the conservative end of the 95% interval.
+Try Autotune first on a simulated server: no GPU, no login, nothing charged,
+every number labelled SIMULATED.
 
 ```sh
-throttle upgrade          # the pilot terms, how to reach us, and a QR code to scan
+throttle autotune --dry-run --monthly-tokens 2B
 ```
 
-Apply at [throttle-pro.com/pilot](https://throttle-pro.com/pilot) or email
-kush@throttle-pro.com with the subject "Throttle pilot". The QR code is
-generated on your machine; `--url-only` prints just the link and `--no-qr`
-skips the drawing. The console has the same page under **Pilot**.
+Then on your own server. Throttle starts and stops it for every trial, so stop
+any copy that is already running on that port first:
+
+```sh
+throttle login     # paste an API key from the dashboard; new accounts start with $10 of credits
+throttle autotune --url http://localhost:8000 --model Qwen/Qwen2.5-7B-Instruct \
+    --gpu-hourly-rate 2.49 --concurrency 16 --monthly-tokens 2B \
+    --launch "vllm serve {model} --tensor-parallel-size {tp} --max-num-seqs {seqs} --gpu-memory-utilization {mem}" \
+    --space tp=1,2 seqs=64,128,256 mem=0.85,0.9
+```
+
+How it decides:
+
+1. **Baseline.** Trial 0 is the config you run today (`--baseline`, default
+   the first value of each setting), measured 3 times to calibrate the
+   run-to-run noise bound.
+2. **Candidates.** Each candidate is measured once, exactly like
+   `throttle check`, and judged against that baseline. Only a calibrated
+   CHEAPER counts: beyond the noise bound, 95% intervals apart, and no OUTPUT
+   CHANGED. A config that is cheaper per token because its answers changed is
+   rejected however cheap it looks.
+3. **Search.** Greedy, one setting at a time: it keeps walking in a direction
+   while each step is a verified CHEAPER that also beats the best so far, and
+   stops a direction at the first step that does not. It ends when a full pass
+   finds nothing better or after `--max-trials` candidates (default 8).
+4. **GPU count is cost.** Here `--gpu-hourly-rate` is the price of one GPU;
+   each trial pays for its GPU count (`tp` / `tensor_parallel_size`, or
+   `--gpus-param`).
+
+You get the best config, \$/M before and after with 95% intervals, the
+projected monthly dollars saved at `--monthly-tokens` (and the conservative
+`throttle savings` figure), and the launch command to paste. If nothing is
+verifiably cheaper, it says so and tells you to keep your config. `--space`
+also takes a YAML or JSON file; `--json PATH` writes every trial.
+
+Each trial, the baseline included, uses \$1.00 of credits, charged before the
+trial runs (the free \$10 covers about 10 trials). Out of credits, Autotune
+stops cleanly and reports the best config found so far; every local feature
+keeps working.
+
+**Also in Throttle Cloud:**
+
+```sh
+throttle whoami                              # account, plan, credits left
+throttle check ... --push                    # save a check to your team's history, print its link ($0.25)
+throttle gate --baseline base.json --candidate new.json   # CI cost gate ($0.10 when logged in)
+```
+
+What leaves your machine: numbers, the model name, the config fingerprint,
+engine and GPU. Never prompts, responses, endpoint URLs, hostnames or keys.
+Nothing is uploaded unless you are logged in and run a cloud command (or set
+`push: true` in `~/.throttle/config.yaml`). Every field is listed in
+[docs/cloud.md](https://github.com/KushagraKanaujia/throttle/blob/main/docs/cloud.md).
+`THROTTLE_API_KEY` overrides the saved key (use it in CI).
+
+`throttle upgrade` prints the plans, the Enterprise pilot (a hands-on pilot on
+your stack, kush@throttle-pro.com) and a QR code for
+[throttle-pro.com/pricing](https://www.throttle-pro.com/pricing), generated on
+your machine; `--url-only` prints just the link and `--no-qr` skips the drawing.
 
 ## Results
 
@@ -135,12 +211,15 @@ change a serving setting ──► throttle check ──► $/M tokens (95% CI) 
 | --- | --- | --- |
 | **Price it** | `throttle cost`, `throttle watch` | Dollars per million tokens, measured against a live endpoint (`cost`) or read from vLLM `/metrics` (`watch`). The GPU $/hr is yours and always labelled ASSUMED; tokens and time are MEASURED. |
 | **Re-check it after every config change** | `throttle check` | $/M tokens with a 95% confidence interval, what changed in the config, and a verdict against the last check. CHEAPER or MORE EXPENSIVE only when the measured change is larger than a run-to-run noise bound estimated from at least 3 recent repeat checks **and** the intervals don't overlap. Otherwise NO WINNER, or NOT CALIBRATED when there is no recent noise measurement yet (a first check measures it by repeating itself 3 times in one command). `--fail-if-costlier` makes it a CI gate. |
+| **Cut it** (Throttle Cloud) | `throttle autotune` | Restarts your server with candidate configs from a search space you give, judges each against a calibrated baseline with the `throttle check` rules, and returns the cheapest config that is a verified CHEAPER without OUTPUT CHANGED, the projected monthly \$ saved and a ready-to-paste launch command. |
 | **Prove the savings** | `throttle savings` | A conservative dollar figure for a verified CHEAPER change: the smaller of (baseline CI low - candidate CI high) and ((1 - run-to-run noise bound) x baseline mean - candidate mean), x your production tokens, refused unless the verdict is calibrated, on the same model and workload, with unchanged outputs. |
 | **Prove a config change** | `throttle plan` → `smoke` → `benchmark` → `golden` | Traffic that is planned and capped before any request goes out, repeated measurement blocks, 95% intervals, and a six-position counterbalanced protocol for a decision-grade baseline-vs-candidate answer. |
 | **Profile agents** | `throttle proxy --enable-session-tracking` + `throttle sessions` | A per-session breakdown of time spent generating versus waiting, an estimate of redundant prefill, and suggested backend settings to check. |
 
-Throttle provisions nothing and never changes your server. It measures and
-reports; `--config KEY=VALUE` only records what you changed.
+Throttle provisions nothing. Every command above only measures and reports;
+`--config KEY=VALUE` only records what you changed. The one command that
+touches your server is `throttle autotune` (Throttle Cloud), which starts and
+stops it with the launch command you give it.
 
 ## Receipts
 
@@ -169,7 +248,7 @@ Throttle needs Python 3.11+. Install it from PyPI with pipx:
 
 ```sh
 pipx install throttle-pro
-throttle --version   # 0.6.2
+throttle --version   # 0.7.0
 ```
 
 Add the `embeddings` extra (`pipx install 'throttle-pro[embeddings]'`) only if
@@ -683,6 +762,12 @@ is ASSUMED, as you supplied it. `--json` prints a `savings_statement` record.
 EXPENSIVE and 5 on NOT CALIBRATED, so it can gate a serving-config change.
 See [docs/github-action.md](https://github.com/KushagraKanaujia/throttle/blob/main/docs/github-action.md) for a GitHub Actions
 setup.
+
+`throttle gate --baseline BASE --candidate NEW` compares two `throttle check
+--json` files (or check ids) and exits 1 on MORE EXPENSIVE or OUTPUT CHANGED,
+0 otherwise; logged in, it also records the gate in Throttle Cloud. A
+copy-paste GitHub Actions workflow is in
+[docs/ci-gate.md](https://github.com/KushagraKanaujia/throttle/blob/main/docs/ci-gate.md).
 
 ## Caching proxy
 
@@ -1557,8 +1642,11 @@ check's endpoint URL so it can compare checks of the same endpoint. It holds
 no keys, prompts or responses.)
 
 **No telemetry.** Throttle never phones home: it only sends requests to the
-endpoint you point it at. After a calibrated CHEAPER or MORE EXPENSIVE verdict,
-`throttle check` may print one line suggesting the Throttle Pilot (`throttle upgrade`), at most once
+endpoint you point it at, and to Throttle Cloud only when you are logged in and
+run a cloud command (`whoami`, `check --push`, `autotune`, `gate`; see
+[docs/cloud.md](https://github.com/KushagraKanaujia/throttle/blob/main/docs/cloud.md)).
+After a calibrated CHEAPER or MORE EXPENSIVE verdict,
+`throttle check` may print one line suggesting Throttle Cloud (`throttle upgrade`), at most once
 every 24 hours. The only state is a timestamp file (`.upgrade-nudge`) in the
 check history directory. It's skipped with `--json`, `--share` and
 `--fail-if-costlier`, when `CI` is set, and entirely with `THROTTLE_NO_NUDGE=1`.

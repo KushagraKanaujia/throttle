@@ -1,11 +1,11 @@
-"""`throttle upgrade`: the Throttle Pilot terms, with a scannable QR code.
+"""`throttle upgrade`: Throttle Cloud and the Enterprise pilot, with a scannable QR code.
 
 Everything here is offline. The QR code is generated locally (vendored
 qrcodegen, MIT), nothing is fetched, and nothing is tracked. The only state is
 the timestamp file that limits the post-verdict nudge to once per 24 hours.
 
 `--audit` is a hidden alias kept so older docs and scripts still work; it
-prints the same pilot page.
+prints the same page.
 """
 
 from __future__ import annotations
@@ -19,59 +19,65 @@ from pathlib import Path
 from ._vendor.qrcodegen import QrCode, QrSegment
 from .style import Style
 
-PILOT_URL = "https://throttle-pro.com"
+PRICING_URL = "https://www.throttle-pro.com/pricing"
 PILOT_EMAIL = "kush@throttle-pro.com"
 PILOT_SUBJECT = "Throttle pilot"
-# Older names, kept for imports; every offer now points at the pilot page.
-PRO_URL = PILOT_URL
-AUDIT_URL = PILOT_URL
+# Older names, kept for imports; every offer now points at the pricing page.
+PILOT_URL = PRICING_URL
+PRO_URL = PRICING_URL
+AUDIT_URL = PRICING_URL
 
 NUDGE_ENV = "THROTTLE_NO_NUDGE"
 NUDGE_FILE = ".upgrade-nudge"
 NUDGE_INTERVAL_SECONDS = 24 * 60 * 60
 NUDGE_TEXT = (
-    "Want us to find and prove savings on your agent workload? "
-    "Throttle Pilot, free for 3 months: `throttle upgrade`"
+    "Want Throttle to cut this bill, not just measure it? "
+    "Throttle Cloud Autotune, start free with $10 of credits: `throttle upgrade`"
 )
 
-PILOT_TAGLINE = "We find savings on your agent workload and prove them."
-PILOT_INTRO = (
-    "We're working with a small group of teams running agents on their own GPUs."
+CLOUD_TAGLINE = "Throttle cuts what your LLM inference costs on your own GPUs."
+CLOUD_INTRO = "The free CLI shows where the money goes. Throttle Cloud cuts it."
+CLOUD_TERMS = (
+    "Start free with $10 of credits, no card.",
+    "Autotune restarts your server with candidate configs (batching, memory, GPU count, "
+    "quantization) and keeps the cheapest one that beats the run-to-run noise and passes "
+    "the OUTPUT CHANGED check. About $1 of credits per trial.",
+    "CI cost gate (`throttle gate`) and a shared check history for your team.",
+    "Enterprise: a hands-on pilot on your stack, priced on the savings we verify together.",
 )
-PILOT_TERMS = (
-    "Free for 3 months: we set Throttle up on your stack, find the config changes that lower your cost per token, and prove each one.",
-    "We'd love to help you with your results.",
-    "After the pilot, pricing is based on the savings we verify together "
-    "(the conservative end of the 95% interval).",
+CLOUD_STEPS = (
+    "throttle login   (paste the API key from your dashboard)",
+    "throttle autotune --launch \"vllm serve ...\" --space ...   (try it free: --dry-run)",
+    "throttle gate in CI keeps the savings from regressing",
 )
-PILOT_STEPS = (
-    "We measure your agent workload's $/M tokens (baseline, 95% CI) on your own GPUs",
-    "We test config changes and ship the winner only if it beats the noise bound with unchanged outputs",
-    "Each verified saving is shown line by line, priced at the conservative end",
-)
+# Older names, kept for imports.
+PILOT_TAGLINE = CLOUD_TAGLINE
+PILOT_INTRO = CLOUD_INTRO
+PILOT_TERMS = CLOUD_TERMS
+PILOT_STEPS = CLOUD_STEPS
 PILOT_ONE_LINE = (
-    "Throttle Pilot: we find and prove savings on your agent workload. Free for 3 months, "
-    "for a small group of teams. throttle upgrade"
+    "Throttle Cloud: Autotune finds the cheapest serving config that passes OUTPUT CHANGED. "
+    "Start free with $10 of credits. throttle upgrade"
 )
 
 # Served to the console Upgrade page by /api/upgrade.
 PLANS = {
-    "pilot": {
-        "title": "Throttle Pilot",
-        "tag": "for agent workloads on your own GPUs",
-        "price": "Free for 3 months",
+    "cloud": {
+        "title": "Throttle Cloud",
+        "tag": "cuts what your LLM inference costs on your own GPUs",
+        "price": "Start free: $10 of credits",
         "note": (
-            "We're working with a small group of teams running agents on their own "
-            "GPUs. We set Throttle up on your stack, find the config changes that "
-            "lower your cost per token, and prove each one. We'd love to help you "
-            "with your results. After the pilot, pricing is based on the savings we "
-            "verify together (the conservative end of the 95% interval)."
+            "The free CLI shows where the money goes. Throttle Cloud cuts it: Autotune "
+            "searches serving configs on your GPUs and keeps the cheapest one that beats "
+            "the run-to-run noise and passes the OUTPUT CHANGED check. Plans and usage "
+            "rates are on the pricing page. Enterprise: a hands-on pilot on your stack, "
+            "priced on the savings we verify together."
         ),
-        "items": [PILOT_TAGLINE, *PILOT_STEPS],
-        "url": PILOT_URL,
+        "items": [CLOUD_TAGLINE, *CLOUD_STEPS],
+        "url": PRICING_URL,
         "email": PILOT_EMAIL,
         "subject": PILOT_SUBJECT,
-        "command": "throttle upgrade",
+        "command": "throttle login",
     },
 }
 
@@ -132,32 +138,32 @@ def qr_svg(text: str, quiet: int = 4, scale: int = 8) -> str:
 
 
 def pilot_page(style: Style, *, qr: bool) -> str:
-    """The `throttle upgrade` screen: pilot terms in a panel, then the QR code."""
+    """The `throttle upgrade` screen: Throttle Cloud in a panel, then the QR code."""
 
-    rows: list = [(PILOT_TAGLINE, ("1",)), (PILOT_INTRO, ()), ""]
-    rows += [(f"{style.dot} {term}", (), "  ") for term in PILOT_TERMS]
-    rows += ["", ("How it works", ("1",))]
-    rows += [(f"{i}. {step}", (), "   ") for i, step in enumerate(PILOT_STEPS, 1)]
+    rows: list = [(CLOUD_TAGLINE, ("1",)), (CLOUD_INTRO, ()), ""]
+    rows += [(f"{style.dot} {term}", (), "  ") for term in CLOUD_TERMS]
+    rows += ["", ("Get started", ("1",))]
+    rows += [(f"{i}. {step}", (), "   ") for i, step in enumerate(CLOUD_STEPS, 1)]
     rows += [
         "",
-        (f"Contact  {PILOT_URL}", ("1", "36")),
-        (f"         {PILOT_EMAIL}  (subject \"{PILOT_SUBJECT}\")", ()),
+        (f"Pricing     {PRICING_URL}", ("1", "36")),
+        (f"Enterprise  {PILOT_EMAIL}  (subject \"{PILOT_SUBJECT}\")", ()),
         "",
         ("The CLI stays free, local and open source (MIT).", ("2",)),
     ]
-    out = [style.panel(rows, title="Throttle Pilot")]
+    out = [style.panel(rows, title="Throttle Cloud")]
     # The QR code is drawn with block characters: only on a stream that can
     # encode them. Otherwise the URL line below is the whole link.
     if qr and style.unicode:
-        out += ["", style.dim("Scan with your phone:"), qr_terminal(PILOT_URL)]
-    out += ["", f"Open: {PILOT_URL}"]
+        out += ["", style.dim("Scan with your phone:"), qr_terminal(PRICING_URL)]
+    out += ["", f"Open: {PRICING_URL}"]
     return "\n".join(out)
 
 
 def handle_upgrade(args: argparse.Namespace) -> int:
-    # --audit is a hidden alias: same pilot page, same link.
+    # --audit is a hidden alias: same page, same link.
     if args.url_only:
-        print(PILOT_URL)
+        print(PRICING_URL)
         return 0
     print(pilot_page(Style(), qr=not args.no_qr))
     return 0

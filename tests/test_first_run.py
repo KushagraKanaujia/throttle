@@ -401,7 +401,7 @@ def test_no_args_prints_three_command_start_and_exits_zero(capsys, monkeypatch):
     lines = out.rstrip("\n").splitlines()
     assert len(lines) <= 20
     assert "Throttle " + __version__ in out
-    assert "Find and prove inference savings on your own GPUs." in out
+    assert "Throttle cuts what your LLM inference costs on your own GPUs." in out
     assert "1. Install Ollama" in out and "vLLM / SGLang" in out
     # One path, no promise of a verdict from the first run: run once to
     # calibrate, change one setting, run again.
@@ -409,7 +409,8 @@ def test_no_args_prints_three_command_start_and_exits_zero(capsys, monkeypatch):
     assert "3. Change one setting, then run it again for a verdict." in out
     assert "and a verdict:" not in out
     assert "4. For agent traffic" in out and "throttle check --workload agent" in out
-    assert "Throttle Pilot" in out and "Free for 3 months for a small group of teams." in out
+    assert "Throttle Cloud" in out and "Start free with $10 of credits" in out
+    assert "3 months" not in out
     assert "throttle upgrade" in out
     for retired in ("2 weeks", "20%", "$500", "floor"):
         assert retired not in out, retired
@@ -430,7 +431,7 @@ def test_no_args_screen_with_force_color_and_ascii(capsys, monkeypatch):
     assert "\x1b[" in out
     from throttle.style import strip_ansi
     plain = strip_ansi(out)
-    assert "Find and prove inference savings on your own GPUs." in plain
+    assert "Throttle cuts what your LLM inference costs on your own GPUs." in plain
     assert "throttle check --workload agent" in plain
 
 
