@@ -688,6 +688,23 @@ def add_check_arguments(parser: argparse.ArgumentParser) -> None:
         help="also write this check and its comparison as JSON",
     )
 
+    cloud = parser.add_argument_group("Throttle Cloud (only with --push; see docs/cloud.md)")
+    cloud.add_argument(
+        "--push",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="upload this check to Throttle Cloud and print its share URL and the "
+        "credits left (needs `throttle login`; $0.25 of credits per check). Sends "
+        "numbers, the model, config, engine and GPU only: never prompts, responses, "
+        "URLs, hosts or keys. Also on with 'push: true' in ~/.throttle/config.yaml; "
+        "--no-push overrides that",
+    )
+    cloud.add_argument(
+        "--project",
+        metavar="NAME",
+        help="Throttle Cloud project to file a pushed check under",
+    )
+
     share = parser.add_argument_group("share your results (nothing is uploaded)")
     share.add_argument(
         "--share",
@@ -3670,6 +3687,7 @@ def handle_check(args: argparse.Namespace) -> int:
             nudge = maybe_nudge(directory)
             if nudge:
                 print(nudge)
+    _maybe_push(args, record)
     if args.json_output:
         try:
             args.json_output.write_text(json.dumps(record, indent=2, sort_keys=True) + "\n")
@@ -3906,6 +3924,17 @@ def _finish_calibration(
     return EXIT_OK
 
 
+def _maybe_push(args: argparse.Namespace, record: Mapping[str, Any]) -> None:
+    """Upload the check to Throttle Cloud only with --push (or push: true in
+    the config file). Never changes the exit code: the check is saved locally."""
+
+    if not getattr(args, "push", False):
+        return
+    from .cloud import push_record
+
+    push_record(record, project=getattr(args, "project", None))
+
+
 def _write_outputs(
     args: argparse.Namespace, record: Mapping[str, Any], comparison: Mapping[str, Any] | None
 ) -> int:
@@ -3916,6 +3945,7 @@ def _write_outputs(
         print(style_module.Style().dim(
             f"Share this result (no traffic): throttle check --share-id {record['id']}"
         ))
+    _maybe_push(args, record)
     if args.json_output:
         try:
             args.json_output.write_text(json.dumps(record, indent=2, sort_keys=True) + "\n")

@@ -537,6 +537,11 @@ class ParserAndPlanTests(unittest.TestCase):
                 "ui",
                 "upgrade",
                 "savings",
+                "login",
+                "logout",
+                "whoami",
+                "autotune",
+                "gate",
             },
         )
 

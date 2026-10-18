@@ -218,25 +218,25 @@ def test_ui_parser_defaults_to_loopback() -> None:
 
 def test_upgrade_plans_and_offline_qr_codes(client: Client) -> None:
     plans = client.get("/api/upgrade").json()
-    assert list(plans) == ["pilot"]
-    pilot = plans["pilot"]
-    assert pilot["url"] == "https://throttle-pro.com"
-    assert pilot["email"] == "kush@throttle-pro.com" and pilot["subject"] == "Throttle pilot"
-    assert pilot["price"] == "Free for 3 months"
-    assert "a small group of teams" in pilot["note"]
-    assert "pricing is based on the savings we verify together" in pilot["note"]
+    assert list(plans) == ["cloud"]
+    cloud = plans["cloud"]
+    assert cloud["url"] == "https://www.throttle-pro.com/pricing"
+    assert cloud["email"] == "kush@throttle-pro.com" and cloud["subject"] == "Throttle pilot"
+    assert cloud["price"] == "Start free: $10 of credits"
+    assert "Throttle Cloud cuts it" in cloud["note"]
+    assert "Enterprise" in cloud["note"]
     text = json.dumps(plans)
     for retired in ("$19", "Cost Audit", "early access", "No savings guarantee", "one-time",
-                    "2 weeks", "20%", "$500", "floor", "design partners"):
+                    "2 weeks", "20%", "$500", "floor", "design partners", "3 months"):
         assert retired not in text
-    # "pro" and "audit" are old targets: still served, and they encode the pilot URL.
+    # "pilot", "pro" and "audit" are old targets: still served, and they encode the pricing URL.
     svgs = set()
-    for target in ("pilot", "pro", "audit"):
+    for target in ("cloud", "pilot", "pro", "audit"):
         response = client.get("/api/qr.svg", params={"target": target})
         assert response.status_code == 200
         assert response.headers["content-type"].startswith("image/svg+xml")
         assert response.text.startswith("<svg") and "h1v1h-1z" in response.text
         svgs.add(response.text)
     assert len(svgs) == 1
-    # Only the fixed pilot URL can be encoded.
+    # Only the fixed pricing URL can be encoded.
     assert client.get("/api/qr.svg", params={"target": "https://evil.example"}).status_code == 422

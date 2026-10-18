@@ -1,30 +1,41 @@
-# Throttle Pilot
+# Throttle Cloud
 
-*We find savings on your agent workload and prove them.*
+*Throttle cuts what your LLM inference costs on your own GPUs.*
 
-For teams that run agent workloads on GPUs they own or rent, served with vLLM,
-SGLang, Ollama, LMDeploy or another OpenAI-compatible server. The CLI and this
-console stay free, local and open source (MIT).
-
-We're working with a small group of teams running agents on their own GPUs.
-For 3 months, free, we set Throttle up on your stack, find the config changes
-that lower your cost per token, and prove each one. We'd love to help you with
-your results.
+The free CLI and this console show where the money goes: $/M tokens with 95%
+intervals and calibrated verdicts. They stay free, local and open source (MIT).
+Throttle Cloud cuts the bill.
 
 | | |
 | --- | --- |
-| Pilot | 3 months, free |
-| After the pilot | Pricing based on the savings we verify together, counted at the conservative end of the 95% interval |
-| Cohort | A small group of teams |
+| Start | Free, with $10 of credits, no card |
+| Plans and usage rates | [throttle-pro.com/pricing](https://www.throttle-pro.com/pricing) |
+| Enterprise | A hands-on pilot on your stack, priced on the savings we verify together |
 
-## How it works
+## What it does
 
-1. We measure your agent workload's current $/M tokens on your own GPUs: a baseline with a 95% confidence interval.
-2. We test config changes (flags, quantization, engine, GPU) and ship the winning config only if it beats the run-to-run noise bound with unchanged outputs.
-3. Verified savings = the conservative $/M reduction x the production tokens served, measured by Throttle and shown line by line (`throttle savings`).
+1. **Autotune** (`throttle autotune`): restarts your server with candidate
+   configs from a search space you give, measures each like `throttle check`
+   against a calibrated baseline, and keeps the cheapest config that is a
+   verified CHEAPER and passes the OUTPUT CHANGED check. You get $/M before
+   and after, the projected monthly saving and a ready-to-paste launch
+   command. Try it free on a simulated server: `throttle autotune --dry-run`.
+2. **CI cost gate** (`throttle gate`): fails a deploy that is MORE EXPENSIVE
+   or OUTPUT CHANGED.
+3. **Team history** (`throttle check --push`): every check in one place, with
+   a link to share.
 
-## Apply
+OUTPUT CHANGED compares answer length and how often answers hit the token cap;
+it does not check that answers are correct.
 
-- **[throttle-pro.com/pilot](https://throttle-pro.com/pilot)**
-- Email **kush@throttle-pro.com** with the subject "Throttle pilot".
-- From the terminal: `throttle upgrade` prints these terms and a QR code.
+## What leaves your machine
+
+Only when you are logged in and run a cloud command: numbers, the model name,
+the config fingerprint (secret-looking values masked), engine and GPU. Never
+prompts, responses, endpoint URLs, hostnames or keys.
+
+## Get started
+
+- `throttle login` (paste an API key from the dashboard)
+- `throttle upgrade` prints the plans and a QR code for the pricing page.
+- Enterprise: email **kush@throttle-pro.com** with the subject "Throttle pilot".

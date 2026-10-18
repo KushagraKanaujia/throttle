@@ -4,6 +4,60 @@ All notable changes to Throttle will be documented in this file.
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-10-17
+
+Throttle cuts what your LLM inference costs on your own GPUs: the free CLI
+shows where the money goes, Throttle Cloud cuts it.
+
+### Added
+- `throttle autotune` (Throttle Cloud): give a launch-command template with
+  `{placeholders}`, a search space (`--space tp=1,2 seqs=64,128,256` or a
+  YAML/JSON file) and your per-GPU price. For each trial Throttle restarts the
+  server, waits until it answers, and measures it exactly like `throttle
+  check` against a baseline measured 3 times (calibrated noise bound). Only a
+  calibrated CHEAPER counts: beyond the noise bound, 95% intervals apart, no
+  OUTPUT CHANGED. Greedy coordinate search with early stopping, at most
+  `--max-trials` candidates (default 8). Each trial pays for its GPU count
+  (`tp` / `tensor_parallel_size` / `--gpus-param`). Prints the best config, $/M
+  before and after, the projected monthly saving at `--monthly-tokens` (and
+  the conservative `throttle savings` figure), and a ready-to-paste launch
+  command; `--json` writes every trial. Each trial is metered before it runs
+  (`POST /autotune/trials`, $1.00 of credits); out of credits (402) stops
+  cleanly with the best config so far. Refuses to start if something already
+  answers at the health URL. `--dry-run` simulates the server (no GPU, no
+  login, nothing charged, every number labelled SIMULATED) and runs a
+  built-in demo space when no `--launch` / `--space` is given.
+- `throttle gate --baseline A --candidate B`: CI cost gate on two `throttle
+  check --json` files or check ids. Exit 1 on MORE EXPENSIVE or OUTPUT
+  CHANGED, 0 otherwise (NOT CALIBRATED passes with a warning), 2 on usage
+  errors; `--max-increase PCT`. Logged in, it is also recorded in Throttle
+  Cloud (`POST /ci/gate`, $0.10); `--no-cloud` keeps it local. Copy-paste
+  GitHub Actions workflow in docs/ci-gate.md.
+- `throttle login` (prompt or `--key`; verified with `GET /me`; saved to
+  `~/.config/throttle/credentials` with mode 600), `throttle logout`,
+  `throttle whoami` (plan and credits). `THROTTLE_API_KEY` overrides the saved
+  key; `THROTTLE_CLOUD_URL` points at another server (https only, except
+  localhost).
+- `throttle check --push` (or `push: true` in `~/.throttle/config.yaml`;
+  `--no-push` overrides): uploads the check to Throttle Cloud and prints its
+  link and the credits left. `--project NAME` files it under a project. The
+  upload is an allow-list: numbers, model, config fingerprint (secrets masked,
+  hosts and paths removed), engine and GPU; never prompts, responses,
+  endpoint URLs or keys (the endpoint is sent as a truncated SHA-256). Every
+  field is listed in docs/cloud.md. A failed upload is a warning; the check's
+  exit code is unchanged.
+- Every Throttle Cloud POST carries an `Idempotency-Key`, so a retry never
+  charges twice. 401 / 402 / 403 / 422 / offline each get a plain message,
+  and every local feature keeps working.
+
+### Changed
+- `throttle upgrade`, the post-verdict nudge, the first-run screen, `--help`,
+  the console's Cloud page and the README now point to Throttle Cloud: start
+  free with $10 of credits, plans at https://www.throttle-pro.com/pricing, and
+  the Enterprise pilot (kush@throttle-pro.com). The "free for 3 months" pilot
+  copy is retired. The QR code encodes the pricing page.
+- README leads with what Throttle saves, using only our recorded runs.
+
 ## [0.6.2] - 2026-10-11
 
 ### Changed

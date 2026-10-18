@@ -1,8 +1,9 @@
-"""Tests for `throttle upgrade` (the Throttle Pilot), its offline QR code and the once-a-day nudge.
+"""Tests for `throttle upgrade` (Throttle Cloud and the Enterprise pilot), its offline QR code and the once-a-day nudge.
 
 The reference matrices in fixtures/upgrade_qr_matrices.json were produced by
 the vendored encoder and decoded back to the exact URLs with an independent
-decoder (zxing-cpp) when they were recorded (the pilot URL on 2026-10-06); these tests pin them so the
+decoder (zxing-cpp) when they were recorded (the pilot URL on 2026-10-06, the
+pricing URL on 2026-10-17); these tests pin them so the
 encoder, its settings and the renderers can't drift silently.
 """
 
@@ -23,13 +24,13 @@ def as_text(matrix: list[list[bool]]) -> list[str]:
     return ["".join("#" if dark else "." for dark in row) for row in matrix]
 
 
-@pytest.mark.parametrize("url", [upgrade.PILOT_URL])
+@pytest.mark.parametrize("url", [upgrade.PRICING_URL])
 def test_qr_matrix_matches_decoded_reference(url: str) -> None:
     assert url in REFERENCE
     assert as_text(upgrade.qr_matrix(url)) == REFERENCE[url]
 
 
-@pytest.mark.parametrize("url", [upgrade.PILOT_URL])
+@pytest.mark.parametrize("url", [upgrade.PRICING_URL])
 def test_terminal_rendering_round_trips_to_the_matrix(url: str) -> None:
     quiet = 2
     lines = upgrade.qr_terminal(url, quiet=quiet).split("\n")
@@ -51,36 +52,37 @@ def test_terminal_rendering_round_trips_to_the_matrix(url: str) -> None:
 
 
 def test_svg_draws_exactly_the_dark_modules() -> None:
-    svg = upgrade.qr_svg(upgrade.PILOT_URL)
-    dark = sum(row.count("#") for row in REFERENCE[upgrade.PILOT_URL])
+    svg = upgrade.qr_svg(upgrade.PRICING_URL)
+    dark = sum(row.count("#") for row in REFERENCE[upgrade.PRICING_URL])
     assert svg.startswith("<svg") and svg.endswith("</svg>")
     assert svg.count("h1v1h-1z") == dark
     assert 'fill="#fff"' in svg
 
 
 PILOT_TERMS = (
-    "Throttle Pilot",
-    "We find savings on your agent workload and prove them.",
-    "a small group of teams running agents on their own GPUs",
-    "Free for 3 months",
-    "find the config changes that lower your cost per token, and prove each one.",
-    "We'd love to help you with your results.",
-    "pricing is based on the savings we verify together",
-    "conservative end of the 95% interval",
-    "https://throttle-pro.com",
+    "Throttle Cloud",
+    "Throttle cuts what your LLM inference costs on your own GPUs.",
+    "The free CLI shows where the money goes. Throttle Cloud cuts it.",
+    "Start free with $10 of credits, no card.",
+    "keeps the cheapest one that beats the run-to-run noise and passes the OUTPUT CHANGED check.",
+    "Enterprise: a hands-on pilot on your stack",
+    "throttle login",
+    "throttle autotune",
+    "https://www.throttle-pro.com/pricing",
     "kush@throttle-pro.com",
     '"Throttle pilot"',
 )
 RETIRED = ("$19", "$50/", "$50 ", "Cost Audit", "early access", "Early access", "No savings guarantee",
            "no savings guarantee", "formspree", "Throttle Pro", "one-time",
-           "2 weeks", "2-week", "20%", "$500", "floor", "design partners")
+           "2 weeks", "2-week", "20%", "$500", "floor", "design partners",
+           "3 months", "Free for 3 months", "small group of teams")
 
 
 def _flat(out: str) -> str:
     return " ".join(" ".join(line.strip().strip("│|").split()) for line in out.splitlines())
 
 
-def test_upgrade_prints_pilot_terms_link_and_qr(capsys, monkeypatch) -> None:
+def test_upgrade_prints_cloud_terms_link_and_qr(capsys, monkeypatch) -> None:
     monkeypatch.delenv("FORCE_COLOR", raising=False)
     assert main(["upgrade"]) == 0
     out = capsys.readouterr().out
@@ -88,12 +90,12 @@ def test_upgrade_prints_pilot_terms_link_and_qr(capsys, monkeypatch) -> None:
         assert term in _flat(out), term
     for retired in RETIRED:
         assert retired not in out, retired
-    assert "Open: https://throttle-pro.com" in out
+    assert "Open: https://www.throttle-pro.com/pricing" in out
     assert "▀" in out or "▄" in out
     assert "\x1b[" not in out  # not a TTY, no FORCE_COLOR: no colour
 
 
-def test_audit_is_a_hidden_alias_for_the_same_pilot_page(capsys, monkeypatch) -> None:
+def test_audit_is_a_hidden_alias_for_the_same_page(capsys, monkeypatch) -> None:
     monkeypatch.delenv("FORCE_COLOR", raising=False)
     assert main(["upgrade", "--no-qr"]) == 0
     plain = capsys.readouterr().out
@@ -103,13 +105,14 @@ def test_audit_is_a_hidden_alias_for_the_same_pilot_page(capsys, monkeypatch) ->
     for term in PILOT_TERMS:
         assert term in _flat(plain), term
     assert main(["upgrade", "--url-only"]) == 0
-    assert capsys.readouterr().out == "https://throttle-pro.com\n"
+    assert capsys.readouterr().out == "https://www.throttle-pro.com/pricing\n"
     assert main(["upgrade", "--audit", "--url-only"]) == 0
-    assert capsys.readouterr().out == "https://throttle-pro.com\n"
+    assert capsys.readouterr().out == "https://www.throttle-pro.com/pricing\n"
     with pytest.raises(SystemExit):
         main(["upgrade", "--help"])
     help_text = capsys.readouterr().out
-    assert "--audit" not in help_text and "Throttle Pilot" in help_text
+    assert "--audit" not in help_text and "Throttle Cloud" in help_text
+    assert "https://www.throttle-pro.com/pricing" in help_text
 
 
 def test_upgrade_with_force_color_is_styled_and_still_complete(capsys, monkeypatch) -> None:
@@ -123,9 +126,9 @@ def test_upgrade_with_force_color_is_styled_and_still_complete(capsys, monkeypat
         assert term in _flat(strip_ansi(out)), term
 
 
-def test_nudge_text_points_at_the_pilot() -> None:
+def test_nudge_text_points_at_throttle_cloud() -> None:
     assert "throttle upgrade" in upgrade.NUDGE_TEXT
-    assert "Pilot" in upgrade.NUDGE_TEXT
+    assert "Throttle Cloud" in upgrade.NUDGE_TEXT and "$10 of credits" in upgrade.NUDGE_TEXT
     for retired in RETIRED:
         assert retired not in upgrade.NUDGE_TEXT
 
@@ -160,11 +163,11 @@ def test_no_qr_on_a_stream_that_cannot_encode_it(monkeypatch) -> None:
     page.encode("ascii")  # every character can be written to the stream
     assert "▀" not in page and "▄" not in page and "█" not in page
     assert "Scan with your phone" not in page
-    assert page.rstrip().endswith(f"Open: {upgrade.PILOT_URL}")
+    assert page.rstrip().endswith(f"Open: {upgrade.PRICING_URL}")
     monkeypatch.setattr(sys, "stdout", stream)
     assert main(["upgrade"]) == 0
     stream.flush()
-    assert f"Open: {upgrade.PILOT_URL}" in stream.buffer.getvalue().decode("ascii")
+    assert f"Open: {upgrade.PRICING_URL}" in stream.buffer.getvalue().decode("ascii")
 
 
 def test_nudge_at_most_once_per_24_hours(tmp_path: Path, nudge_env) -> None:
