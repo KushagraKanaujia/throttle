@@ -1063,15 +1063,17 @@ def build_parser() -> argparse.ArgumentParser:
     from .autotune import AUTOTUNE_EPILOG, add_autotune_arguments
     autotune = subparsers.add_parser(
         "autotune",
-        help="find the cheapest serving config that is verifiably cheaper with unchanged "
-        "output (Throttle Cloud; --dry-run to try it free)",
+        help="find the cheapest serving config that is verifiably cheaper and passes "
+        "OUTPUT CHANGED (free during early access)",
         description=textwrap.fill(
             "Searches serving configs: restarts your server with each one, measures "
             "$/M tokens like `throttle check` against a calibrated baseline, rejects "
             "OUTPUT CHANGED and anything inside the noise, and prints the best config, "
             "the $/M before and after, the projected monthly saving and a ready-to-paste "
-            "launch command. Each trial uses $1.00 of Throttle Cloud credits (needs "
-            "`throttle login`); --dry-run simulates everything for free.", width=79,
+            "launch command. Free during early access: without a login it runs fully "
+            "locally; after `throttle login` each trial uses $1.00 of Throttle Cloud "
+            "credits and runs are saved to your account. --dry-run simulates the "
+            "server (no GPU needed).", width=79,
         ),
         epilog=AUTOTUNE_EPILOG,
     )

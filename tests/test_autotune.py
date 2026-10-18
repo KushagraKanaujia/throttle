@@ -132,14 +132,60 @@ def test_priciest_trial_is_checked_against_safety_limits_first(env, capsys):
     assert env.requests == []
 
 
-def test_autotune_requires_login_but_dry_run_does_not(env, capsys, tmp_path):
-    code, out, err = run(capsys, *DEMO)
-    assert code == 2
-    assert "throttle login" in err and "--dry-run" in err and "pricing" in err
+def cli_with_sim(monkeypatch):
+    """Route `throttle autotune` (via main) to the simulator instead of a launch."""
+
+    sim = autotune.SimulatedServer("m", 2)
+    original = autotune.handle_autotune
+    monkeypatch.setattr(autotune, "handle_autotune", lambda args: original(args, backend=sim))
+    return sim
+
+
+def test_not_logged_in_autotune_runs_locally_and_free(env, capsys, tmp_path, monkeypatch):
+    sim = cli_with_sim(monkeypatch)
+    code, out, err = run(capsys, *DEMO, *SMALL, "--history-dir", str(tmp_path / "at"),
+                         "--max-trials", "2", "--json", str(tmp_path / "r.json"))
+    assert code == 0, err
+    assert out.count(autotune.EARLY_ACCESS_LINE) == 1
+    assert env.requests == []  # nothing metered, nothing uploaded
+    assert sim.trials == 3
+    result = json.loads((tmp_path / "r.json").read_text())
+    assert result["cloud_url"] is None and len(result["trials"]) == 3
+    assert "metered" not in out
+
+
+def test_dry_run_never_contacts_the_cloud(env, capsys, tmp_path):
     code, out, err = run(capsys, "--dry-run", "--history-dir", str(tmp_path / "at"), *SMALL)
     assert code == 0, err
-    assert env.requests == []  # a dry run never contacts Throttle Cloud
+    assert env.requests == []
     assert "DRY RUN" in out and "SIMULATED" in out
+    assert autotune.EARLY_ACCESS_LINE not in out
+
+
+def test_logged_in_but_cloud_unreachable_warns_and_runs_locally(env, capsys, tmp_path, monkeypatch):
+    cloud.write_credentials(KEY)
+    sim = cli_with_sim(monkeypatch)
+    env.fail_first = 1000
+    code, out, err = run(capsys, *DEMO, *SMALL, "--history-dir", str(tmp_path / "at"),
+                         "--max-trials", "2")
+    assert code == 0, err
+    assert "Could not reach Throttle Cloud" in err and "Running locally" in err
+    assert sim.trials == 3
+    assert set(env.paths()) == {"/api/v1/me"}  # no trial or result calls after that
+
+
+def test_cloud_lost_mid_run_continues_locally(env, capsys, tmp_path, monkeypatch):
+    cloud.write_credentials(KEY)
+    sim = cli_with_sim(monkeypatch)
+    env.forced["/api/v1/autotune/trials"] = 503
+    code, out, err = run(capsys, *DEMO, *SMALL, "--history-dir", str(tmp_path / "at"),
+                         "--max-trials", "2")
+    assert code == 0, err
+    assert "Continuing locally, not metered" in out
+    assert sim.trials == 3
+    # one metering attempt (plus its retry), then local: no result upload either
+    assert env.paths().count("/api/v1/autotune/trials") == 2
+    assert not any(p.endswith("/result") for p in env.paths())
 
 
 def test_autotune_help_says_rate_is_per_gpu_and_hides_check_only_flags(capsys):
@@ -325,12 +371,13 @@ def test_403_and_401_stop_before_any_trial(env, capsys, tmp_path, status, text):
     assert text in out
 
 
-def test_offline_cloud_stops_autotune_before_the_first_trial(env, capsys, tmp_path):
+def test_offline_cloud_does_not_block_autotune(env, capsys, tmp_path):
     env.fail_first = 100
-    code, out, err, result, sim = metered(capsys, env, tmp_path)
-    assert code == 1
-    assert sim.trials == 0
+    code, out, err, result, sim = metered(capsys, env, tmp_path, "--max-trials", "2")
+    assert code == 0, err
+    assert sim.trials == 3
     assert "Could not reach Throttle Cloud" in err
+    assert result["cloud_url"] is None
 
 
 def test_result_upload_failure_is_a_warning(env, capsys, tmp_path):
@@ -343,15 +390,13 @@ def test_result_upload_failure_is_a_warning(env, capsys, tmp_path):
 
 def test_logged_in_cli_autotune_uses_saved_key(env, capsys, tmp_path, monkeypatch):
     cloud.write_credentials(KEY)
-    sim = autotune.SimulatedServer("m", 2)
-    original = autotune.handle_autotune
-    monkeypatch.setattr(autotune, "handle_autotune",
-                        lambda args: original(args, backend=sim))
+    cli_with_sim(monkeypatch)
     code, out, err = run(capsys, *DEMO, *SMALL, "--history-dir", str(tmp_path / "at"),
                          "--max-trials", "2")
     assert code == 0, err
     assert env.paths().count("/api/v1/autotune/trials") == 3
     assert env.requests[0].headers["authorization"] == f"Bearer {KEY}"
+    assert autotune.EARLY_ACCESS_LINE not in out
 
 
 # -- a real server process ---------------------------------------------------------

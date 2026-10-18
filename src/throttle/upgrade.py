@@ -41,7 +41,8 @@ CLOUD_TERMS = (
     "Start free with $10 of credits, no card.",
     "Autotune restarts your server with candidate configs (batching, memory, GPU count, "
     "quantization) and keeps the cheapest one that beats the run-to-run noise and passes "
-    "the OUTPUT CHANGED check. About $1 of credits per trial.",
+    "the OUTPUT CHANGED check. Free during early access; logged in, runs are saved to "
+    "Throttle Cloud.",
     "CI cost gate (`throttle gate`) and a shared check history for your team.",
     "Enterprise: a hands-on pilot on your stack, priced on the savings we verify together.",
 )

@@ -10,7 +10,7 @@ Throttle cuts what your LLM inference costs on your own GPUs: the free CLI
 shows where the money goes, Throttle Cloud cuts it.
 
 ### Added
-- `throttle autotune` (Throttle Cloud): give a launch-command template with
+- `throttle autotune` (free during early access): give a launch-command template with
   `{placeholders}`, a search space (`--space tp=1,2 seqs=64,128,256` or a
   YAML/JSON file) and your per-GPU price. For each trial Throttle restarts the
   server, waits until it answers, and measures it exactly like `throttle
@@ -21,9 +21,12 @@ shows where the money goes, Throttle Cloud cuts it.
   (`tp` / `tensor_parallel_size` / `--gpus-param`). Prints the best config, $/M
   before and after, the projected monthly saving at `--monthly-tokens` (and
   the conservative `throttle savings` figure), and a ready-to-paste launch
-  command; `--json` writes every trial. Each trial is metered before it runs
-  (`POST /autotune/trials`, $1.00 of credits); out of credits (402) stops
-  cleanly with the best config so far. Refuses to start if something already
+  command; `--json` writes every trial. **Early access:** without `throttle
+  login` it runs fully locally and free (no metering, nothing uploaded) and
+  prints one line saying so. Logged in, each trial is metered before it runs
+  (`POST /autotune/trials`, $1.00 of credits), out of credits (402) stops
+  cleanly with the best config so far, and the result is saved to Throttle
+  Cloud; if the cloud is unreachable it warns and carries on locally. Refuses to start if something already
   answers at the health URL. `--dry-run` simulates the server (no GPU, no
   login, nothing charged, every number labelled SIMULATED) and runs a
   built-in demo space when no `--launch` / `--space` is given.
@@ -31,7 +34,8 @@ shows where the money goes, Throttle Cloud cuts it.
   check --json` files or check ids. Exit 1 on MORE EXPENSIVE or OUTPUT
   CHANGED, 0 otherwise (NOT CALIBRATED passes with a warning), 2 on usage
   errors; `--max-increase PCT`. Logged in, it is also recorded in Throttle
-  Cloud (`POST /ci/gate`, $0.10); `--no-cloud` keeps it local. Copy-paste
+  Cloud (`POST /ci/gate`, $0.10); `--no-cloud` keeps it local, and an
+  unreachable cloud is a warning, never a failure. Copy-paste
   GitHub Actions workflow in docs/ci-gate.md.
 - `throttle login` (prompt or `--key`; verified with `GET /me`; saved to
   `~/.config/throttle/credentials` with mode 600), `throttle logout`,
