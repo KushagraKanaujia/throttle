@@ -65,10 +65,10 @@ class TestModelRouting(unittest.IsolatedAsyncioTestCase):
         }
 
         # Execute
-        response_a = await proxy._make_backend_request(
+        response_a, _ = await proxy._make_backend_request(
             request_a, {}, "test prompt", is_streaming=False
         )
-        response_b = await proxy._make_backend_request(
+        response_b, _ = await proxy._make_backend_request(
             request_b, {}, "test prompt", is_streaming=False
         )
 
