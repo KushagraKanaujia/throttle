@@ -226,6 +226,10 @@ def load_eval_set(path: Path) -> tuple[list[EvalItem], str]:
                                    "\"contains:<text>\" or \"regex:<re>\"")
             if check == "exact" and expected is None:
                 raise EvalSetError(f"{where}: \"check\": \"exact\" needs \"expected\"")
+            if check == "json" and expected is not None and not parse_json_answer(expected)[0]:
+                # Otherwise the equality check would be skipped without a word.
+                raise EvalSetError(f"{where}: \"expected\" with \"check\": \"json\" must be "
+                                   "JSON (an object/list, or a string holding JSON)")
             if check.startswith("regex:"):
                 try:
                     re.compile(check[len("regex:"):])
@@ -408,10 +412,15 @@ async def stream_one(
                     continue
                 usage = event.get("usage")
                 if isinstance(usage, dict):
-                    answer.prompt_tokens = int(usage.get("prompt_tokens") or 0)
-                    answer.output_tokens = int(usage.get("completion_tokens") or 0)
-                for choice in event.get("choices") or []:
-                    delta = choice.get("delta") or {}
+                    answer.prompt_tokens = _token_count(usage.get("prompt_tokens"))
+                    answer.output_tokens = _token_count(usage.get("completion_tokens"))
+                choices = event.get("choices")
+                for choice in choices if isinstance(choices, list) else []:
+                    if not isinstance(choice, dict):
+                        continue
+                    delta = choice.get("delta")
+                    if not isinstance(delta, dict):
+                        delta = {}
                     content = delta.get("content")
                     reasoning = delta.get("reasoning_content") or delta.get("reasoning")
                     tools = delta.get("tool_calls")
@@ -436,6 +445,14 @@ async def stream_one(
         answer.output_tokens = chunks
         answer.tokens_estimated = True
     return answer
+
+
+def _token_count(value: Any) -> int:
+    """A usage count, or 0 when the server sent null or something odd."""
+
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return 0
+    return int(value) if math.isfinite(value) and value > 0 else 0
 
 
 async def run_once(
@@ -719,7 +736,11 @@ def decide(base: Mapping[str, Any], cand: Mapping[str, Any], dr: Mapping[str, An
                 "line": f"Candidate {fails_text()}{cost_note}: DON'T SWITCH",
                 "cost_change_percent": pct}
 
-    checks_text = ("passes more checks" if pass_better else "passes the same checks") if scored \
+    same_checks = (not regressed and not dr["improved_items"]
+                   and c_pass["median"] == b_pass["median"])
+    checks_text = ("passes more checks" if pass_better
+                   else "passes the same checks" if same_checks
+                   else "passes about as many checks (within noise)") if scored \
         else "has no checks to fail (add \"check\" or \"expected\" to your eval set)"
     if pct is None:
         return {"verdict": VERDICT_NOISE,

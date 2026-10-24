@@ -167,7 +167,9 @@ your machine; `--url-only` prints just the link and `--no-qr` skips the drawing.
 
 Point it at the server you run today and the one you are thinking about, and
 give it your own prompts. It runs them on both, a few times each, and tells you
-which one is cheaper per *good* answer.
+which one is cheaper per answer that passes *your* checks. It knows only the
+checks you write: an answer with no `check` or `expected` is timed and priced
+but never judged right or wrong.
 
 ```sh
 throttle compare \

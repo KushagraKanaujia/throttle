@@ -163,3 +163,48 @@ def test_label_count_must_match(tmp_path, capsys):
                  "--url", "http://127.0.0.1:9", "--model", "m"])
     assert code == coldstart.EXIT_USAGE
     assert "one --label per --cmd" in capsys.readouterr().err
+
+
+def test_second_interrupt_while_stopping_does_not_leak(tmp_path):
+    """A Ctrl-C during the SIGTERM wait must not lose the server: the next
+    stop() goes straight to SIGKILL."""
+
+    port = free_port()
+    pidfile = tmp_path / "pids"
+    server = coldstart.Server(server_cmd(port, "--pidfile", str(pidfile), "--ignore-term"),
+                              tmp_path / "log", stop_timeout=30)
+    server.start()
+    deadline = time.monotonic() + 5
+    while not pids(pidfile) and time.monotonic() < deadline:
+        time.sleep(0.05)
+    process = server.process
+    real_wait = process.wait
+    calls = {"n": 0}
+
+    def wait(timeout=None):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise KeyboardInterrupt
+        return real_wait(timeout=timeout)
+
+    process.wait = wait
+    with pytest.raises(KeyboardInterrupt):
+        server.stop()
+    assert server.process is process  # still tracked
+    started = time.monotonic()
+    server.stop()
+    assert time.monotonic() - started < 10 and server.process is None
+    (pid,) = pids(pidfile)
+    deadline = time.monotonic() + 5
+    while alive(pid) and time.monotonic() < deadline:
+        time.sleep(0.05)
+    assert not alive(pid)
+
+
+def test_rejected_chat_request_fails_fast():
+    import httpx
+
+    transport = httpx.MockTransport(lambda r: httpx.Response(404, text="model not found"))
+    with httpx.Client(transport=transport) as client:
+        with pytest.raises(coldstart.ColdstartError, match="HTTP 404"):
+            coldstart.first_token(client, "http://127.0.0.1:9/v1/chat/completions", {}, "nope")

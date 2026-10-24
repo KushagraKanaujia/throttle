@@ -198,6 +198,7 @@ def test_failing_endpoint_exits_3(evalset, tmp_path, monkeypatch, capsys):
     ('{"prompt": "x", "check": "fuzzy"}', "\"check\" must be"),
     ('{"prompt": "x", "check": "exact"}', "needs \"expected\""),
     ('{"prompt": "x", "check": "regex:("}', "bad regex"),
+    ('{"prompt": "x", "check": "json", "expected": "not json"}', "must be JSON"),
 ])
 def test_bad_eval_set_is_a_usage_error(tmp_path, monkeypatch, capsys, line, message):
     monkeypatch.setattr(config_module, "DEFAULT_CONFIG_PATH", tmp_path / "no-config.yaml")
@@ -240,3 +241,25 @@ def test_saved_report_compare_still_requires_reports(capsys):
     with pytest.raises(SystemExit):
         main(["compare"])
     assert "--eval-set" in capsys.readouterr().err
+
+
+def test_odd_stream_events_do_not_crash():
+    """null choices/deltas and non-numeric usage from a quirky server are skipped."""
+
+    events = [
+        {"choices": [None, {"delta": None}, {"delta": {"content": "hi"}}]},
+        {"choices": {"oops": 1}},
+        {"choices": [], "usage": {"prompt_tokens": "x", "completion_tokens": None}},
+    ]
+    body = "".join(f"data: {json.dumps(e)}\n\n" for e in events) + "data: [DONE]\n\n"
+
+    async def go():
+        transport = httpx.MockTransport(lambda r: httpx.Response(200, content=body.encode()))
+        async with httpx.AsyncClient(transport=transport) as client:
+            return await ev.stream_one(client, BASE + "/v1/chat/completions", {}, "m",
+                                       ev.EvalItem("1", [{"role": "user", "content": "q"}]),
+                                       max_tokens=8, temperature=0.0)
+
+    answer = asyncio.run(go())
+    assert answer.error is None and answer.text == "hi"
+    assert answer.prompt_tokens == 0 and answer.output_tokens == 1 and answer.tokens_estimated

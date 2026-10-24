@@ -4818,6 +4818,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         from .evalcompare import handle_live_compare, is_live
         if is_live(args):
             return handle_live_compare(args, raw_argv)
+        if args.out is not None:
+            # Before --out existed, argparse expanded "--out" to "--output";
+            # keep that working for saved-report comparisons.
+            args.output = args.out
         if not args.reports:
             parser.error(
                 "compare needs two saved reports, or --baseline URL --candidate URL "

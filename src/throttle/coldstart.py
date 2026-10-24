@@ -12,8 +12,8 @@ Then it stops the server (SIGTERM to the whole process group, SIGKILL after
 compare engines or settings; runs alternate between the commands so a slow
 disk cache or a busy machine hits all of them alike.
 
-The server always gets killed: on success, on error, on Ctrl-C and on
-SIGTERM. Nothing is sent anywhere except the tiny request to ``--url``.
+The server always gets killed: on success, on error, on Ctrl-C, on SIGTERM
+and on SIGHUP. Nothing is sent anywhere except the tiny request to ``--url``.
 """
 
 from __future__ import annotations
@@ -136,6 +136,7 @@ class Server:
         self.log_path = log_path
         self.stop_timeout = stop_timeout
         self.process: subprocess.Popen[bytes] | None = None
+        self._term_sent = False
 
     def start(self) -> None:
         with open(self.log_path, "wb") as log:
@@ -151,11 +152,23 @@ class Server:
         return None if self.process is None else self.process.poll()
 
     def stop(self) -> None:
-        """SIGTERM the whole process group, SIGKILL after the timeout."""
+        """SIGTERM the whole process group, SIGKILL after the timeout.
 
-        process, self.process = self.process, None
+        ``self.process`` is only cleared once the group is gone, so a second
+        Ctrl-C during the wait cannot leak the server: the next call (the
+        outer handler, ``finally`` or atexit) goes straight to SIGKILL."""
+
+        process = self.process
         if process is None:
             return
+        if self._term_sent:
+            with contextlib.suppress(ProcessLookupError, PermissionError):
+                os.killpg(process.pid, signal.SIGKILL)
+            with contextlib.suppress(subprocess.TimeoutExpired):
+                process.wait(timeout=10)
+            self.process = None
+            return
+        self._term_sent = True
         deadline = time.monotonic() + self.stop_timeout
         with contextlib.suppress(ProcessLookupError, PermissionError):
             os.killpg(process.pid, signal.SIGTERM)
@@ -170,6 +183,7 @@ class Server:
             os.killpg(process.pid, signal.SIGKILL)
         with contextlib.suppress(subprocess.TimeoutExpired):
             process.wait(timeout=10)
+        self.process = None
 
 
 def _origin(chat_url: str) -> str:
@@ -203,6 +217,12 @@ def first_token(
     }
     try:
         with client.stream("POST", chat_url, headers=headers, json=body, timeout=60.0) as response:
+            if response.status_code in (401, 403, 404):
+                # Up (it answered /health or /v1/models) but this request can
+                # never work: wrong --model, path or key. Retrying is pointless.
+                detail = response.read().decode(errors="replace")[:200]
+                raise ColdstartError(f"chat request rejected with HTTP {response.status_code} "
+                                     f"(check --model, --url and the API key): {detail}")
             if response.status_code != 200:
                 return False, f"HTTP {response.status_code}"
             for line in response.iter_lines():
@@ -216,8 +236,11 @@ def first_token(
                     event = json.loads(data)
                 except ValueError:
                     continue
-                for choice in (event.get("choices") or []) if isinstance(event, dict) else []:
-                    delta = choice.get("delta") or {}
+                choices = event.get("choices") if isinstance(event, dict) else None
+                for choice in choices if isinstance(choices, list) else []:
+                    delta = choice.get("delta") if isinstance(choice, dict) else None
+                    if not isinstance(delta, dict):
+                        continue
                     if (delta.get("content") or delta.get("reasoning_content")
                             or delta.get("reasoning") or delta.get("tool_calls")):
                         return True, None
@@ -299,15 +322,20 @@ def _secs(s: Mapping[str, Any]) -> str:
 def _sigterm_as_interrupt() -> Iterator[None]:
     def raise_interrupt(signum: int, frame: Any) -> None:
         raise KeyboardInterrupt
+    # SIGHUP too: closing the terminal must not orphan the server group.
+    signums = [signal.SIGTERM] + ([signal.SIGHUP] if hasattr(signal, "SIGHUP") else [])
+    previous: dict[int, Any] = {}
     try:
-        previous = signal.signal(signal.SIGTERM, raise_interrupt)
+        for signum in signums:
+            previous[signum] = signal.signal(signum, raise_interrupt)
     except ValueError:  # not the main thread
         yield
         return
     try:
         yield
     finally:
-        signal.signal(signal.SIGTERM, previous)
+        for signum, handler in previous.items():
+            signal.signal(signum, handler)
 
 
 def handle_coldstart(args: argparse.Namespace) -> int:
@@ -345,8 +373,11 @@ def handle_coldstart(args: argparse.Namespace) -> int:
     current: list[Server] = []
 
     def cleanup() -> None:
+        # Stop before forgetting the server: if a second Ctrl-C lands while we
+        # wait for it to exit, the next cleanup() call still finds it.
         while current:
-            current.pop().stop()
+            current[-1].stop()
+            current.pop()
 
     atexit.register(cleanup)
     interrupted = False
