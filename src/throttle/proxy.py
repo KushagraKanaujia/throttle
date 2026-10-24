@@ -367,6 +367,8 @@ class ProxyServer:
             # For streaming, accumulate the complete response
             accumulated_content = []
             response_metadata = {}
+            ttft_ms: Optional[float] = None
+            stream_start = time.perf_counter()
 
             async with self._client.stream(
                 "POST",
@@ -392,6 +394,8 @@ class ProxyServer:
                             for choice in chunk.get("choices", []):
                                 delta = choice.get("delta", {})
                                 if "content" in delta:
+                                    if ttft_ms is None and delta["content"]:
+                                        ttft_ms = (time.perf_counter() - stream_start) * 1000
                                     accumulated_content.append(delta["content"])
                                 if choice.get("finish_reason"):
                                     response_metadata["finish_reason"] = choice["finish_reason"]
@@ -414,7 +418,7 @@ class ProxyServer:
                         "finish_reason": response_metadata.get("finish_reason", "stop"),
                     }
                 ],
-            }
+            }, ttft_ms
         else:
             # Non-streaming request
             response = await self._client.post(
@@ -423,7 +427,7 @@ class ProxyServer:
                 headers=headers,
             )
             response.raise_for_status()
-            return response.json()
+            return response.json(), None
 
     def _track_session_turn(
         self,
@@ -520,7 +524,7 @@ class ProxyServer:
                     headers["Authorization"] = request.headers["authorization"]
 
                 try:
-                    response_data = await self._make_backend_request(
+                    response_data, ttft_ms = await self._make_backend_request(
                         request_body, headers, prompt, is_streaming
                     )
 
