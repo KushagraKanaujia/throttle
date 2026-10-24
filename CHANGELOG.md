@@ -4,6 +4,22 @@ All notable changes to Throttle will be documented in this file.
 
 ## [Unreleased]
 
+### Added
+- `throttle compare --baseline URL --candidate URL --eval-set FILE.jsonl`: should
+  you switch models? Runs your own prompts against two OpenAI-compatible
+  endpoints `--runs` times each (alternating), and reports throughput, TTFT
+  p50/p95 (streamed), $/M output tokens, $ per passing answer, pass rate on
+  your checks (`json`, `exact`, `contains:`, `regex:`), JSON and tool-call
+  error rates, and drift from the baseline, each with its min..max over the
+  runs. Overlapping ranges are called within noise. Ends with one verdict line
+  (SWITCH / DON'T SWITCH / within noise) and writes manifest.json,
+  outputs.jsonl and result.json. Saved-report `throttle compare A B` is
+  unchanged.
+- `throttle coldstart --cmd "..." --url URL --model M`: launches the server,
+  times until /health or /v1/models answers and until the first streamed
+  token, kills the whole process group, repeats `--runs` times. Repeat
+  `--cmd` with `--label` to compare engines.
+
 ## [0.7.0] - 2026-10-17
 
 Throttle cuts what your LLM inference costs on your own GPUs: the free CLI

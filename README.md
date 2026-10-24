@@ -163,6 +163,97 @@ your stack, kush@throttle-pro.com) and a QR code for
 [throttle-pro.com/pricing](https://www.throttle-pro.com/pricing), generated on
 your machine; `--url-only` prints just the link and `--no-qr` skips the drawing.
 
+## Should you switch models? `throttle compare`
+
+Point it at the server you run today and the one you are thinking about, and
+give it your own prompts. It runs them on both, a few times each, and tells you
+which one is cheaper per answer that passes *your* checks. It knows only the
+checks you write: an answer with no `check` or `expected` is timed and priced
+but never judged right or wrong.
+
+```sh
+throttle compare \
+    --baseline http://localhost:30000 --baseline-model Qwen/Qwen2.5-7B-Instruct \
+    --candidate http://localhost:30001 --candidate-model meta-llama/Llama-3.1-8B-Instruct \
+    --eval-set evals.jsonl --concurrency 16 --runs 3 --gpu-price 2.49
+```
+
+`evals.jsonl` has one prompt per line. `check` and `expected` are optional:
+
+```json
+{"prompt": "Capital of France?", "check": "contains:Paris"}
+{"messages": [{"role": "user", "content": "Return the order as JSON"}], "check": "json"}
+{"prompt": "2+2? Answer with a number only.", "check": "regex:^\\s*4\\s*$"}
+{"prompt": "Spell cat backwards", "expected": "tac", "check": "exact"}
+{"prompt": "Summarize this ticket: ...", "tools": [...]}
+```
+
+`json` passes when the answer parses as JSON (a ```json fence is fine; with
+`expected`, the JSON must also be equal). With `expected` and no `check`, the
+answer must match after ignoring case, spaces and punctuation. A line with
+neither is not scored but still counts for speed, cost and drift.
+
+For each side you get: tokens per second at your concurrency, time to first
+token (p50 and p95, from streaming), \$ per 1M output tokens, \$ per passing
+answer, the pass rate, the share of bad JSON and of malformed tool calls, and
+how much the candidate's answers drift from the baseline's (length change, and
+how many are identical or the same after normalizing, next to how often the
+baseline even agrees with itself). Every number shows its spread over the runs.
+When the two sides' ranges overlap, the difference is marked *within noise*.
+
+Runs alternate (baseline, candidate, baseline, ...) so a busy machine hurts
+both alike. Use `--baseline-gpu-price` and `--candidate-gpu-price` when the two
+run on different hardware. The last line is the answer, for example:
+
+```
+Candidate is 31% cheaper per passing answer and passes the same checks: SWITCH
+Candidate fails 4 JSON checks the baseline passes: DON'T SWITCH
+Cost per passing answer differs by -3% but the run ranges overlap: within noise, keep the baseline
+```
+
+Exit code 0 means SWITCH or within noise, 1 means DON'T SWITCH, 3 means an
+endpoint failed. It writes three files to `--out` (default
+`./throttle-compare-<time>/`): `manifest.json` (models, engine versions from
+`/version` and `/v1/models`, every flag, the eval set's sha256, the time),
+`outputs.jsonl` (every answer, so you can read them) and `result.json`. Nothing
+is sent anywhere except the two endpoints you named.
+
+## How long is a cold start? `throttle coldstart`
+
+If you pay for every cold start, time it. Throttle starts your server, then
+measures, from the moment it ran your command, how long until `/health` or
+`/v1/models` answers and how long until the first token of a tiny request.
+Then it stops the server and does it again.
+
+```sh
+throttle coldstart --cmd "vllm serve Qwen/Qwen2.5-7B-Instruct --port 8000" \
+    --url http://localhost:8000 --model Qwen/Qwen2.5-7B-Instruct --runs 3
+```
+
+Compare engines or settings by giving `--cmd` more than once, each with a
+`--label`. Runs take turns between the commands:
+
+```sh
+throttle coldstart --url http://localhost:8000 --model Qwen/Qwen2.5-7B-Instruct \
+    --cmd "vllm serve Qwen/Qwen2.5-7B-Instruct --port 8000" --label vllm \
+    --cmd "python -m sglang.launch_server --model-path Qwen/Qwen2.5-7B-Instruct --port 8000" --label sglang
+```
+
+Example output (illustrative numbers):
+
+```
+  command         ok      ready                     first token
+  vllm            3/3     41.2s (40.8..43.0)        41.9s (41.5..43.6)
+  sglang          3/3     33.7s (33.1..34.2)        34.0s (33.4..34.5)
+  sglang reaches its first token 7.9s sooner than vllm
+```
+
+You get the median and the min..max over the runs. The server always gets
+stopped: SIGTERM to its whole process group, SIGKILL if it is still there after
+`--stop-timeout` (30s), also on Ctrl-C. Stop anything already running on that
+port first; Throttle refuses to start if something answers. Each run's server
+log is kept (`--log-dir`), and `--json PATH` saves every run.
+
 ## Results
 
 Real runs, real numbers. Every row is either a saved artifact in this repo or

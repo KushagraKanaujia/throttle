@@ -542,6 +542,7 @@ class ParserAndPlanTests(unittest.TestCase):
                 "whoami",
                 "autotune",
                 "gate",
+                "coldstart",
             },
         )
 
@@ -2383,6 +2384,23 @@ class CliRunAndPersistenceTests(unittest.TestCase):
             self.assertFalse(comparison["decision_eligible"])
             self.assertIn("no traffic sent", stdout.getvalue())
             self.assertEqual(stat.S_IMODE(output.stat().st_mode), 0o600)
+
+    def test_saved_compare_still_accepts_out_abbreviation(self) -> None:
+        # "--out" used to abbreviate "--output"; the live compare added its own
+        # --out, which must not silently swallow it for saved reports.
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            baseline = root / "baseline.json"
+            candidate = root / "candidate.json"
+            output = root / "comparison.json"
+            _atomic_write(_smoke_artifact(), baseline)
+            _atomic_write(_smoke_artifact(), candidate)
+            with (
+                contextlib.redirect_stdout(io.StringIO()),
+                contextlib.redirect_stderr(io.StringIO()),
+            ):
+                main(["compare", str(baseline), str(candidate), "--out", str(output)])
+            self.assertTrue(output.exists())
 
     def test_unattributable_statistical_direction_exits_three(self) -> None:
         comparison_fixture = {
