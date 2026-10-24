@@ -542,6 +542,7 @@ class ParserAndPlanTests(unittest.TestCase):
                 "whoami",
                 "autotune",
                 "gate",
+                "coldstart",
             },
         )
 

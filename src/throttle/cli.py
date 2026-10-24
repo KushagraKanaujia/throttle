@@ -126,6 +126,10 @@ Cut the bill (Throttle Cloud, start free with $10 of credits; see throttle upgra
   throttle autotune --dry-run             try Autotune on a simulated server, free
   throttle autotune --launch ... --space ...   find the cheapest config that passes OUTPUT CHANGED
   throttle gate --baseline A --candidate B     CI cost gate (exit 1 on MORE EXPENSIVE / OUTPUT CHANGED)
+
+Switch models or engines? (free, local):
+  throttle compare --baseline URL --candidate URL --eval-set FILE ...  your prompts -> SWITCH?
+  throttle coldstart --cmd "vllm serve ..." --url URL --model M        time a cold start
   throttle check ... --push               save a check to your team's cloud history
 
 Other commands: plan / smoke / benchmark / golden (capped, evidence-labelled runs),
@@ -757,16 +761,22 @@ def build_parser() -> argparse.ArgumentParser:
         help="don't check for or persist to the result store for this run",
     )
 
+    from .evalcompare import LIVE_EPILOG, add_live_arguments
     compare = subparsers.add_parser(
-        "compare", help="compare two saved benchmark reports without network traffic"
+        "compare",
+        help="compare two saved reports offline, or two live endpoints on your own "
+        "prompts (--baseline/--candidate/--eval-set): should you switch models?",
+        epilog=LIVE_EPILOG,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     compare.add_argument(
         "reports",
-        nargs="+",
+        nargs="*",
         type=Path,
         help="two saved reports, or six ordered B1 C1 B2 C2 B3 C3 reports for the golden protocol",
     )
     compare.add_argument("--output", type=Path, default=DEFAULT_COMPARE_OUTPUT)
+    add_live_arguments(compare)
 
     report = subparsers.add_parser(
         "report", help="generate HTML report with chart comparing measure outputs"
@@ -1078,6 +1088,17 @@ def build_parser() -> argparse.ArgumentParser:
         epilog=AUTOTUNE_EPILOG,
     )
     add_autotune_arguments(autotune)
+
+    from .coldstart import COLDSTART_DESCRIPTION, COLDSTART_EPILOG, add_coldstart_arguments
+    coldstart = subparsers.add_parser(
+        "coldstart",
+        help="launch your server, time until it answers and until its first token; "
+        "compare engines with repeated --cmd/--label",
+        description=COLDSTART_DESCRIPTION,
+        epilog=COLDSTART_EPILOG,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    add_coldstart_arguments(coldstart)
 
     from .gate import GATE_DESCRIPTION, add_gate_arguments
     gate = subparsers.add_parser(
@@ -4794,6 +4815,14 @@ def main(argv: Sequence[str] | None = None) -> int:
     if args.command == "report":
         return _handle_report(args)
     if args.command == "compare":
+        from .evalcompare import handle_live_compare, is_live
+        if is_live(args):
+            return handle_live_compare(args, raw_argv)
+        if not args.reports:
+            parser.error(
+                "compare needs two saved reports, or --baseline URL --candidate URL "
+                "--eval-set FILE for a live comparison"
+            )
         # Detect if these are measure outputs (have ci_95_input field) or benchmark reports
         try:
             with open(args.reports[0]) as f:
@@ -4867,6 +4896,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     if args.command == "autotune":
         from .autotune import handle_autotune
         return handle_autotune(args)
+    if args.command == "coldstart":
+        from .coldstart import handle_coldstart
+        return handle_coldstart(args)
     if args.command == "gate":
         from .gate import handle_gate
         return handle_gate(args)
