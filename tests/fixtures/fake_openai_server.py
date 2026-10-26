@@ -1,8 +1,9 @@
 """A tiny OpenAI-compatible server for the autotune launcher test.
 
 Standard library only. Answers /v1/models and /v1/chat/completions on
-127.0.0.1:PORT; each completion sleeps BASE / SPEED seconds, so a higher
---speed is a cheaper config. Exits on SIGTERM like a real server.
+127.0.0.1:PORT; each completion sleeps BASE / SPEED seconds (BASE is
+--base-seconds), so a higher --speed is a cheaper config. Exits on SIGTERM
+like a real server.
 """
 
 from __future__ import annotations
@@ -17,11 +18,12 @@ parser.add_argument("--port", type=int, required=True)
 parser.add_argument("--speed", type=float, default=1.0)
 parser.add_argument("--startup-delay", type=float, default=0.0)
 parser.add_argument("--crash", action="store_true")
+parser.add_argument("--base-seconds", type=float, default=0.04)
 args = parser.parse_args()
 if args.crash:
     raise SystemExit("simulated crash: CUDA out of memory")
 time.sleep(args.startup_delay)
-BASE = 0.04
+BASE = args.base_seconds
 
 
 class Handler(BaseHTTPRequestHandler):
