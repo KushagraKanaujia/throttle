@@ -4,6 +4,13 @@ All notable changes to Throttle will be documented in this file.
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-10-26
+
+Throttle cuts what your LLM inference costs on your own GPUs: whether a
+cheaper model, engine or config still gives good answers on your work
+(`compare`), what cold starts cost you (`coldstart`), and which config is
+verifiably cheaper (`check`, `autotune`).
+
 ### Added
 - `throttle compare --baseline URL --candidate URL --eval-set FILE.jsonl`: should
   you switch models? Runs your own prompts against two OpenAI-compatible
@@ -19,13 +26,6 @@ All notable changes to Throttle will be documented in this file.
   times until /health or /v1/models answers and until the first streamed
   token, kills the whole process group, repeats `--runs` times. Repeat
   `--cmd` with `--label` to compare engines.
-
-## [0.7.0] - 2026-10-17
-
-Throttle cuts what your LLM inference costs on your own GPUs: the free CLI
-shows where the money goes, Throttle Cloud cuts it.
-
-### Added
 - `throttle autotune` (free during early access): give a launch-command template with
   `{placeholders}`, a search space (`--space tp=1,2 seqs=64,128,256` or a
   YAML/JSON file) and your per-GPU price. For each trial Throttle restarts the
@@ -76,7 +76,18 @@ shows where the money goes, Throttle Cloud cuts it.
   free with $10 of credits, plans at https://www.throttle-pro.com/pricing, and
   the Enterprise pilot (kush@throttle-pro.com). The "free for 3 months" pilot
   copy is retired. The QR code encodes the pricing page.
-- README leads with what Throttle saves, using only our recorded runs.
+- README leads with what Throttle saves: `compare` (cost per passing answer
+  on your own eval set) and `coldstart` first, with example output taken from
+  the repo's own test fixtures; OUTPUT CHANGED is described as the
+  length/token-cap warning it is; Autotune is free during early access and
+  `gate` judges locally without a login.
+
+### Fixed
+- Flaky CI test `test_real_launcher_starts_measures_and_stops_each_server`
+  (#74): the fake server's 40 ms vs 13 ms gap was inside the calibrated noise
+  bound on a busy runner, so Autotune (correctly) found NO WINNER. The test
+  now uses a 250 ms baseline, a 10x speedup and one warmup request. No change
+  to Throttle itself.
 
 ## [0.6.2] - 2026-10-11
 
