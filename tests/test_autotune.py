@@ -414,8 +414,8 @@ def fast_polls(monkeypatch):
     monkeypatch.setattr(autotune, "STOP_TIMEOUT_SECONDS", 10.0)
 
 
-def launcher_args(tmp_path, port: int, space: list[str], *extra: str):
-    template = f"{sys.executable} {FAKE_SERVER} --port {port} --speed {{speed}}"
+def launcher_args(tmp_path, port: int, space: list[str], *extra: str, server_flags: str = ""):
+    template = f"{sys.executable} {FAKE_SERVER} --port {port} --speed {{speed}}{server_flags}"
     return parse(
         "--launch", template, "--space", *space, "--url", f"http://127.0.0.1:{port}",
         "--model", "fake", "--gpu-hourly-rate", "2", "--history-dir", str(tmp_path / "at"),
@@ -425,14 +425,21 @@ def launcher_args(tmp_path, port: int, space: list[str], *extra: str):
 
 
 def test_real_launcher_starts_measures_and_stops_each_server(env, capsys, tmp_path, fast_polls):
+    # Real wall-clock timing on a shared CI runner (issue #74). The baseline's
+    # noise bound is t x sqrt(2) x run-to-run SD with only 2 df (about 6x the
+    # SD), so a 40 ms vs 13 ms gap let a few ms of scheduler jitter turn a real
+    # saving into NO WINNER, which autotune correctly refuses to pick. A
+    # 250 ms baseline makes that jitter a small fraction of each request, and
+    # a 10x speedup (-90%) clears the bound unless run-to-run SD tops ~15%.
     port = free_port()
-    args = launcher_args(tmp_path, port, ["speed=1,3"])
+    args = launcher_args(tmp_path, port, ["speed=1,10"], "--warmup", "1",
+                         server_flags=" --base-seconds 0.25")
     code, out, err = run_with(capsys, args, client=cloud.CloudClient(KEY))
     assert code == 0, err + out
     result = json.loads((tmp_path / "r.json").read_text())
     assert result["simulated"] is False
-    assert [t["config"]["speed"] for t in result["trials"]] == ["1", "3"]
-    assert result["best_config"] == {"speed": "3"}
+    assert [t["config"]["speed"] for t in result["trials"]] == ["1", "10"]
+    assert result["best_config"] == {"speed": "10"}
     assert result["trials"][1]["verdict"] == check_module.VERDICT_CHEAPER
     assert "[MEASURED]" in out
     run_dir = tmp_path / "at" / result["run_id"]

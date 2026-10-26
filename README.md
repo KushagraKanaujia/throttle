@@ -1,20 +1,72 @@
 # Throttle
 
-**Throttle cuts what your LLM inference costs on your own GPUs.** The free CLI
-shows where the money goes; Throttle Cloud cuts it.
+**Stop overpaying for LLM inference on your own GPUs.** Will the cheaper model,
+engine or GPU setup still give good answers on *your* work, and what will it
+save? Throttle answers in dollars, and refuses to call a winner inside the
+noise.
 
-- **The free CLI** measures what your serving setup costs in dollars per million
-  tokens, with a 95% confidence interval, and tells you whether a config change
-  really made it cheaper. It refuses to call a winner inside the run-to-run
-  noise, or when the answers changed shape (OUTPUT CHANGED).
-- **Throttle Cloud** runs `throttle autotune`: it restarts your server with
-  candidate configs, measures each one the same way, and hands you the cheapest
-  config that is verifiably cheaper and passes the OUTPUT CHANGED check, with
-  the projected monthly dollars saved and a ready-to-paste launch command.
-  Plus a CI cost gate (`throttle gate`) and a shared check history.
+```sh
+pipx install throttle-pro
+```
 
-Why measuring before you switch matters, from our own runs (Qwen2.5-72B on
-rented AMD MI300X, [raw checks](https://github.com/KushagraKanaujia/throttle/tree/main/validation/hotaisle-mi300x-20261001)):
+**Should you switch? `throttle compare`.** Runs your own eval set against the
+server you run today and the one you are considering, a few times each, and
+prices every answer that passes *your* checks. It ends with one line: SWITCH,
+DON'T SWITCH, or within noise.
+
+```sh
+throttle compare --baseline http://localhost:30000 --baseline-model Qwen/Qwen2.5-7B-Instruct \
+    --candidate http://localhost:30001 --candidate-model meta-llama/Llama-3.1-8B-Instruct \
+    --eval-set evals.jsonl --runs 3 --gpu-price 2.49
+```
+
+Output shape, from the repo's own test (`tests/test_evalcompare.py`, two mock
+endpoints; not a GPU benchmark):
+
+```
+                      baseline                      candidate
+  $ / 1M output tok   $0.346 ($0.340..$1.13)        $0.102 ($0.101..$0.107)
+  $ / 1k passing ans. $0.0173 ($0.0170..$0.0563)    $0.00512 ($0.00504..$0.00533)
+  pass rate           100%                          100%
+  median (min..max) over the runs; "within noise" = the run ranges overlap
+
+Candidate is 70% cheaper per passing answer and passes the same checks: SWITCH
+```
+
+It only knows the checks you write (`json`, `exact`, `contains:`, `regex:`);
+a prompt with no check is timed and priced but never judged.
+
+**What does a cold start cost you? `throttle coldstart`.** Launches your server
+command, times how long until it answers and until the first token, stops the
+whole process group, and repeats. Give `--cmd` more than once to compare
+engines or settings.
+
+```sh
+throttle coldstart --url http://localhost:8000 --model Qwen/Qwen2.5-7B-Instruct --runs 3 \
+    --cmd "vllm serve Qwen/Qwen2.5-7B-Instruct --port 8000" --label vllm \
+    --cmd "python -m sglang.launch_server --model-path Qwen/Qwen2.5-7B-Instruct --port 8000" --label sglang
+```
+
+Output shape, from a run against the repo's stub server
+(`tests/fake_openai_server.py`, a fake 2 s vs 0.5 s "model load"; not a GPU
+benchmark):
+
+```
+  command         ok      ready                     first token
+  slow-load       2/2     2.2s (2.1..2.3)           2.2s (2.1..2.3)
+  fast-load       2/2     0.7s (0.6..0.8)           0.7s (0.6..0.8)
+  seconds from launching the command; median (min..max) over the runs
+  fast-load reaches its first token 1.5s sooner than slow-load
+```
+
+`compare` and `coldstart` are new in 0.7.0 and have not yet been run on a real
+GPU by us; the numbers above only show what the output looks like.
+
+**What does a config change cost? `throttle check`.** Measures \$ per million
+tokens with a 95% confidence interval and says CHEAPER, MORE EXPENSIVE or NO
+WINNER only when the change beats the measured run-to-run noise. Why that
+matters, from our own runs (Qwen2.5-72B on rented AMD MI300X,
+[raw checks](https://github.com/KushagraKanaujia/throttle/tree/main/validation/hotaisle-mi300x-20261001)):
 
 - **Faster is not cheaper.** 2 GPUs instead of 1 gave 1.56x the throughput but
   cost **28% more per token**: \$2.14 vs \$1.67 per million output tokens.
@@ -23,12 +75,22 @@ rented AMD MI300X, [raw checks](https://github.com/KushagraKanaujia/throttle/tre
   model answered "!!!!". Throttle flags both as OUTPUT CHANGED, so neither
   counts as a saving.
 
-OUTPUT CHANGED compares answer length and how often answers hit the token cap
-between configs; it does not check that answers are correct.
+OUTPUT CHANGED is a length and token-cap warning: it compares answer length
+and how often answers hit the token cap between configs. It does not check
+that answers are correct; use `throttle compare` with your own checks for that.
 
-Start free with \$10 of Throttle Cloud credits, no card. Plans and the
-Enterprise pilot: [throttle-pro.com/pricing](https://www.throttle-pro.com/pricing),
-or run `throttle upgrade`.
+**Find the cheaper config: `throttle autotune`.** Restarts your server with
+each config in a search space, measures each like `check`, and hands you the
+cheapest verified-cheaper config with a ready-to-paste launch command.
+Autotune is free during early access; `throttle login` saves runs to Throttle
+Cloud. **`throttle gate`** is a CI cost gate on two saved checks: it judges
+locally and for free without a login, and when logged in it also records the
+result in Throttle Cloud (\$0.10 of credits; `--no-cloud` keeps it local).
+
+**Throttle Cloud** (saved runs, team check history, `check --push`): start
+with \$10 of free credits, no card. Plans and the Enterprise pilot:
+[throttle-pro.com/pricing](https://www.throttle-pro.com/pricing), or run
+`throttle upgrade`.
 
 How Throttle decides: [docs/METHODOLOGY.md](https://github.com/KushagraKanaujia/throttle/blob/main/docs/METHODOLOGY.md)
 
