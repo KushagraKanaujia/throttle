@@ -52,6 +52,18 @@ DOCS_NAV: list[dict[str, Any]] = [
         ("getting-started/first-check", "Your first cost check"),
         ("getting-started/free-gpu", "Try on a free GPU"),
     ]},
+    {"tab": "docs", "group": "The loop", "pages": [
+        ("loop/overview", "Overview"),
+        ("loop/demo", "Demo"),
+        ("loop/capture", "1. Capture"),
+        ("loop/workloads", "2. Workloads"),
+        ("loop/shadow", "3. Shadow"),
+        ("loop/eval", "4. Eval"),
+        ("loop/report", "5. Report"),
+        ("loop/route", "6. Route"),
+        ("loop/refresh", "7. Refresh"),
+        ("loop/honest-numbers", "Honest numbers"),
+    ]},
     {"tab": "docs", "group": "Concepts", "pages": [
         ("concepts/cost-per-million-tokens", "Cost per million tokens"),
         ("concepts/noise-and-calibration", "Noise and calibration"),

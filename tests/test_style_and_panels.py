@@ -174,7 +174,7 @@ def test_narrow_terminal_gets_panels_without_a_frame(monkeypatch) -> None:
     assert box.splitlines()[0] == "Verdict"
     screen = welcome_screen()
     assert not any(ch in screen for ch in "┌┐└┘")
-    assert "1. Install Ollama" in screen
+    assert "1. See the whole loop" in screen
     # 60 columns and up keep the frame.
     monkeypatch.setenv("COLUMNS", "60")
     assert Style(colour=False, unicode=True).panel(["x"]).startswith("┌")

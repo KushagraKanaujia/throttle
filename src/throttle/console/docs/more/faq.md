@@ -28,7 +28,7 @@
 
 <details><summary>Does it measure quality?</summary>
 
-    No. It measures cost. Validate quality separately when a cheaper config uses a smaller model or lower precision.
+    `throttle eval` does: it compares your own model's answers with the API model's, per kind of work, with automatic checks and a pairwise judge run both ways round. See [Eval](../loop/eval.md). `throttle check` measures cost only, so validate quality separately when a cheaper serving config uses lower precision.
 
 </details>
 

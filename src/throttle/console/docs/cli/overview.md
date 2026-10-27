@@ -6,7 +6,20 @@
 throttle [--version] COMMAND ...
 ```
 
-## Everyday commands
+## The loop
+
+| Command | What it does | Sends traffic? |
+| --- | --- | --- |
+| [`demo`](../loop/demo.md) | The whole loop on made-up data, offline | No |
+| [`capture`](../loop/capture.md) | Local pass-through proxy that records your OpenAI/Anthropic traffic | Only to the upstream your app already calls |
+| [`workloads`](../loop/workloads.md) | Kinds of work and their list-price spend | No |
+| [`shadow`](../loop/shadow.md) | Replay captured requests on your own model (never served) | Yes, to your model |
+| [`eval`](../loop/eval.md) | Verdict per kind of work: checks plus a pairwise judge | Yes, to your judge |
+| [`report`](../loop/report.md) | MOVE / KEEP ON API / NEEDS FINETUNE / NEEDS MORE DATA | No |
+| [`route`](../loop/route.md) | Approve, list and revoke routes; realized savings | No (`capture --route` serves) |
+| [`refresh`](../loop/refresh.md) | Test a new open model on the saved eval sets | Yes, to the new model and your judge |
+
+## Serving your own model
 
 | Command | What it does | Sends traffic? |
 | --- | --- | --- |
