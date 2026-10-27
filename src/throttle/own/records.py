@@ -153,7 +153,9 @@ class ShadowResult:
 
     @property
     def ok(self) -> bool:
-        return 200 <= self.status < 300 and self.error is None and self.output_text is not None
+        if not (200 <= self.status < 300 and self.error is None and self.output_text is not None):
+            return False
+        return bool(self.output_text) or bool(self.tool_calls)
 
 
 # ---------------------------------------------------------------------------
@@ -267,6 +269,10 @@ class Normalized:
     output_tool_calls: list[dict[str, Any]]  # [{"name": str, "arguments": str}]
     finish_reason: str | None
     has_images: bool = False
+    # OpenAI form: "auto" | "none" | "required" |
+    # {"type": "function", "function": {"name": str}}; None when not set.
+    tool_choice: str | dict[str, Any] | None = None
+    stop: list[str] | None = None          # stop / stop_sequences
 
     @property
     def system_text(self) -> str:
@@ -355,6 +361,48 @@ def _openai_tool_calls(raw: Any) -> list[dict[str, Any]]:
     return calls
 
 
+_TOOL_CHOICE_MODES = ("auto", "none", "required")
+
+
+def _function_choice(name: Any) -> dict[str, Any] | None:
+    return {"type": "function", "function": {"name": name}} if isinstance(name, str) and name else None
+
+
+def tool_choice_from_openai(raw: Any) -> str | dict[str, Any] | None:
+    if isinstance(raw, str):
+        return raw if raw in _TOOL_CHOICE_MODES else None
+    if isinstance(raw, Mapping) and raw.get("type") == "function":
+        function = raw.get("function")
+        return _function_choice(function.get("name") if isinstance(function, Mapping) else raw.get("name"))
+    return None
+
+
+def tool_choice_from_anthropic(raw: Any) -> str | dict[str, Any] | None:
+    if not isinstance(raw, Mapping):
+        return None
+    kind = raw.get("type")
+    if kind in ("auto", "none"):
+        return kind
+    if kind == "any":
+        return "required"
+    if kind == "tool":
+        return _function_choice(raw.get("name"))
+    return None
+
+
+def tool_choice_forces_call(choice: str | dict[str, Any] | None) -> bool:
+    return choice == "required" or isinstance(choice, Mapping)
+
+
+def _stop_list(raw: Any) -> list[str] | None:
+    if isinstance(raw, str):
+        return [raw] if raw else None
+    if isinstance(raw, list):
+        items = [s for s in raw if isinstance(s, str) and s]
+        return items or None
+    return None
+
+
 def normalize_openai(request: Mapping[str, Any] | None, response: Mapping[str, Any] | None) -> Normalized:
     request = request or {}
     messages: list[Message] = []
@@ -401,6 +449,8 @@ def normalize_openai(request: Mapping[str, Any] | None, response: Mapping[str, A
         output_tool_calls=output_calls,
         finish_reason=finish,
         has_images=has_images,
+        tool_choice=tool_choice_from_openai(request.get("tool_choice")),
+        stop=_stop_list(request.get("stop")),
     )
 
 
@@ -455,6 +505,8 @@ def normalize_anthropic(request: Mapping[str, Any] | None, response: Mapping[str
         output_tool_calls=output_calls,
         finish_reason=finish,
         has_images=has_images,
+        tool_choice=tool_choice_from_anthropic(request.get("tool_choice")),
+        stop=_stop_list(request.get("stop_sequences")),
     )
 
 
@@ -516,15 +568,22 @@ def to_openai_chat_request(norm: Normalized, *, model: str, max_tokens: int | No
                 for i, c in enumerate(message.tool_calls)
             ]
             # Tool results are flattened to user text above, so keep the
-            # transcript valid for servers that require matching tool ids.
-            entry["content"] = message.text or json.dumps(
-                [{"tool": c.get("name"), "arguments": c.get("arguments")} for c in message.tool_calls]
+            # transcript valid for servers that require matching tool ids:
+            # the calls go into the content as compact JSON, after any text.
+            summary = json.dumps(
+                [{"tool": c.get("name"), "arguments": c.get("arguments")} for c in message.tool_calls],
+                separators=(",", ":"),
             )
+            entry["content"] = f"{message.text}\n{summary}" if message.text else summary
             entry.pop("tool_calls")
         messages.append(entry)
     body: dict[str, Any] = {"model": model, "messages": messages, "stream": False}
     if norm.tools:
         body["tools"] = norm.tools
+        if norm.tool_choice is not None:
+            body["tool_choice"] = norm.tool_choice
+    if norm.stop:
+        body["stop"] = list(norm.stop)
     if norm.response_format == "json":
         body["response_format"] = {"type": "json_object"}
     elif norm.response_format == "json_schema" and norm.json_schema is not None:

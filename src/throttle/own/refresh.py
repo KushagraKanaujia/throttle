@@ -9,7 +9,8 @@
 2. Evaluate the new model against the API model's captured answers on those
    ids (the same comparison as ``throttle eval``; that run is saved too).
 3. Judge the new model directly against the current owned model on the same
-   items: pairwise, both orders, order disagreement is a TIE, and the same
+   items: pairwise, both orders (TIE only when both orders say TIE; any other
+   disagreement is ``order_disagree``, scored as a tie), and the same
    automatic checks and verdict rule as ``throttle eval`` (with the current
    owned model in the incumbent's place). A failed answer loses to an
    answered one without a judge call; two failed answers are a TIE.
@@ -47,8 +48,10 @@ Output: ``<root>/evals/refresh-<run_id>.json``
           "compared": int,                       # ids with answers from both owned models
           "missing_ids": [str],                  # saved ids with no usable new answer
           "vs_api": {"verdict": str, "n": int, "wins": int, "ties": int, "losses": int,
+                     "order_disagree": int,
                      "net_ci": {...} | null, "new_evalset_sha256": str | null},
           "vs_current": {"verdict": str, "n": int, "wins": int, "ties": int, "losses": int,
+                         "order_disagree": int,
                          "judge_errors": int, "judge_skipped": int,
                          "net_ci": {...} | null,
                          "checks": {"<name>": {"current": wilson, "new": wilson, "unsupported": int}},
@@ -182,6 +185,7 @@ async def _judge_current_vs_new(
                     results[kind].outcomes.append(judge_mod.WIN)
                 else:
                     results[kind].outcomes.append(judge_mod.TIE)
+                results[kind].not_sent += 1
                 return
             async with gate:
                 if stopped:
@@ -230,20 +234,25 @@ def summarize_vs_current(
         new_ci, _ = ev._wilson_pair(new_checks[name])
         checks[name] = {"current": cur_ci, "new": new_ci, "unsupported": unsupported}
     counts = Counter(outcome.outcomes)
-    wins, ties, losses, errors = (counts[judge_mod.WIN], counts[judge_mod.TIE],
-                                  counts[judge_mod.LOSS], counts[judge_mod.ERROR])
-    judged = wins + ties + losses
-    net_ci = stats.paired_bootstrap_interval_95([1] * wins + [0] * ties + [-1] * losses, seed=seed)
+    wins, ties, losses, errors, disagree = (
+        counts[judge_mod.WIN], counts[judge_mod.TIE], counts[judge_mod.LOSS],
+        counts[judge_mod.ERROR], counts[judge_mod.ORDER_DISAGREE],
+    )
+    judged = wins + ties + losses + disagree
+    net_ci = stats.paired_bootstrap_interval_95(
+        [1] * wins + [0] * (ties + disagree) + [-1] * losses, seed=seed)
     as_eval = {k: {"incumbent": v["current"], "candidate": v["new"]} for k, v in checks.items()}
     verdict, reasons = ev.decide(
         judged=True, n=judged, min_n=min_n, margin=margin, net_ci=net_ci, checks=as_eval,
-        judge_errors=errors, judge_attempts=judged + errors,
+        judge_errors=errors, judge_attempts=judged + errors - outcome.not_sent, order_disagree=disagree,
+        win_rate_ci=stats.wilson_interval_95(wins, judged), loss_rate_ci=stats.wilson_interval_95(losses, judged),
     )
     reasons = [r.replace("API model's", "current model's") for r in reasons]
     if outcome.skipped:
         reasons.append(f"{outcome.skipped} items not judged: judge budget ran out")
     return {
         "verdict": verdict, "n": judged, "wins": wins, "ties": ties, "losses": losses,
+        "order_disagree": disagree,
         "judge_errors": errors, "judge_skipped": outcome.skipped,
         "net_ci": net_ci, "checks": checks, "reasons": reasons,
     }
@@ -323,6 +332,7 @@ def run_refresh(
             "wins": api_t["wins"] if api_t else 0,
             "ties": api_t["ties"] if api_t else 0,
             "losses": api_t["losses"] if api_t else 0,
+            "order_disagree": api_t.get("order_disagree", 0) if api_t else 0,
             "net_ci": api_t["net_ci"] if api_t else None,
             "new_evalset_sha256": api_t["evalset_sha256"] if api_t else None,
         }
@@ -462,7 +472,8 @@ def _wtl(block: Mapping[str, Any]) -> str:
     n = block["n"]
     if not n:
         return "-"
-    return f"{block['wins'] / n:.0%}/{block['ties'] / n:.0%}/{block['losses'] / n:.0%}"
+    tied = block["ties"] + block.get("order_disagree", 0)
+    return f"{block['wins'] / n:.0%}/{tied / n:.0%}/{block['losses'] / n:.0%}"
 
 
 def render_table(document: Mapping[str, Any]) -> str:

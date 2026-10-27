@@ -87,8 +87,10 @@ def test_backfill_only_ids_filter(tmp_path):
     assert len(sh.select_backfill(exs, classify=by_workload_field)) == 6
 
 
+# NO MATERIAL DIFFERENCE needs the loss-rate 95% upper bound <= the 0.05
+# margin, which zero losses reach at about 75 items; 80 is used below.
 def test_upgrade_when_equal(tmp_path):
-    _setup(tmp_path)
+    _setup(tmp_path, n=80)
     t = _run(tmp_path, lambda text: "positive")["types"]["classification"]
     assert t["vs_api"]["verdict"] == ev.NO_DIFF and t["vs_current"]["verdict"] == ev.NO_DIFF
     assert t["verdict"] == rf.UPGRADE and t["better_than_current"] is False
@@ -96,10 +98,10 @@ def test_upgrade_when_equal(tmp_path):
 
 
 def test_upgrade_and_better_than_current(tmp_path):
-    _setup(tmp_path, current_answer="negative")
+    _setup(tmp_path, n=80, current_answer="negative")
     t = _run(tmp_path, lambda text: "positive")["types"]["classification"]
     assert t["vs_api"]["verdict"] == ev.NO_DIFF
-    assert t["vs_current"]["verdict"] == ev.BETTER and t["vs_current"]["wins"] == 40
+    assert t["vs_current"]["verdict"] == ev.BETTER and t["vs_current"]["wins"] == 80
     assert t["verdict"] == rf.UPGRADE and t["better_than_current"] is True
     assert "better than the current owned model" in " ".join(t["notes"])
 
@@ -154,9 +156,9 @@ def _pairwise(items, rule):
     return out["chat"].outcomes, seen
 
 
-def test_pairwise_both_orders_and_disagreement_is_tie():
+def test_pairwise_both_orders_and_disagreement_is_order_disagree():
     outcomes, seen = _pairwise([(_pair("old", "cur"), _pair("new", "new"))], lambda a, b: "A")
-    assert outcomes == [j.TIE] and len(seen) == 2       # always "A": the orders disagree
+    assert outcomes == [j.ORDER_DISAGREE] and len(seen) == 2       # always "A": the orders disagree
     first, second = (s["messages"][-1]["content"] for s in seen)
     assert "=== Answer A ===\nold" in first and "=== Answer A ===\nnew" in second
     outcomes, _ = _pairwise([(_pair("old", "cur"), _pair("new", "new"))],
@@ -205,7 +207,7 @@ def test_newest_evalset_per_type_and_types_filter(tmp_path):
 
 
 def test_json_schema_and_cli(tmp_path, capsys):
-    _setup(tmp_path)
+    _setup(tmp_path, n=80)
     args = build_parser().parse_args([
         "refresh", "--current", "cur", "--new-label", "new", "--new-url", "http://gpu:8000/v1",
         "--new-model", "new-m", "--judge-model", "judge-m", "--judge-url", "http://judge/v1",
@@ -222,11 +224,12 @@ def test_json_schema_and_cli(tmp_path, capsys):
     for key in ("evalset_sha256", "evalset_path", "exchange_ids", "compared", "missing_ids", "vs_api",
                 "vs_current", "verdict", "better_than_current", "cost", "notes"):
         assert key in t
-    assert set(t["vs_current"]) >= {"verdict", "n", "wins", "ties", "losses", "net_ci", "checks", "reasons"}
+    assert set(t["vs_current"]) >= {"verdict", "n", "wins", "ties", "losses", "order_disagree", "net_ci",
+                                    "checks", "reasons"}
     assert set(t["vs_current"]["checks"]["exact_match"]) == {"current", "new", "unsupported"}
     saved = json.loads((tmp_path / "evals" / f"refresh-{doc['run_id']}.json").read_text())
     assert saved["types"]["classification"]["verdict"] == rf.UPGRADE
-    assert doc["judge_calls"] == 160    # 40 items x 2 orders x (vs API, vs current)
+    assert doc["judge_calls"] == 320    # 80 items x 2 orders x (vs API, vs current)
 
     args.json = False
     assert rf.handle(args, transport=cand, judge_transport=_judge_transport(prefer_positive)) == 0
@@ -268,3 +271,17 @@ def test_name_stem():
     assert rf.name_stem("Qwen2.5-72B-Instruct") == "Qwen2.5"
     assert rf.name_stem("Llama-3.1-8B") == "Llama-3.1"
     assert rf.name_stem("gemma-2-9b-it") == "gemma-2"
+
+
+def test_position_biased_judge_cannot_upgrade(tmp_path):
+    _setup(tmp_path, n=80)
+    t = _run(tmp_path, lambda text: "positive", judge_rule=lambda a, b: "A")["types"]["classification"]
+    assert t["vs_current"]["order_disagree"] == 80 and t["vs_current"]["verdict"] == ev.INSUFFICIENT
+    assert t["vs_api"]["order_disagree"] == 80 and t["vs_api"]["verdict"] == ev.INSUFFICIENT
+    assert t["verdict"] == rf.NEEDS_MORE_DATA
+
+
+def test_small_all_tie_refresh_is_not_an_upgrade(tmp_path):
+    _setup(tmp_path, n=40)
+    t = _run(tmp_path, lambda text: "positive")["types"]["classification"]
+    assert t["vs_current"]["verdict"] == ev.INCONCLUSIVE and t["verdict"] == rf.NEEDS_MORE_DATA

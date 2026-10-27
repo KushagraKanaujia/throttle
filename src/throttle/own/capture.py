@@ -503,7 +503,7 @@ def create_capture_app(
             return
         p.recorded = True
         try:
-            exchange = build_exchange(p)
+            exchange = await asyncio.to_thread(build_exchange, p)  # redaction is CPU-bound
         except Exception:  # noqa: BLE001
             state.write_errors += 1
             log.exception("could not build captured exchange")

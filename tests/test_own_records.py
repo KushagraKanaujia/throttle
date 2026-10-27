@@ -104,3 +104,84 @@ def test_shadow_results_are_kept_per_candidate(tmp_path):
 
 def test_bad_usage_values_are_not_trusted():
     assert r.usage_from_openai({"usage": {"prompt_tokens": -1, "completion_tokens": True}}).complete is False
+
+
+# ---------------------------------------------------------------------------
+# Review fixes: translation keeps tool calls, tool_choice and stop
+# ---------------------------------------------------------------------------
+
+ANTHROPIC_AGENT = {
+    "model": "claude-x", "max_tokens": 100, "system": [{"type": "text", "text": "sys"}],
+    "tools": [{"name": "get_weather", "input_schema": {"type": "object"}}],
+    "tool_choice": {"type": "tool", "name": "get_weather"},
+    "stop_sequences": ["END"],
+    "messages": [
+        {"role": "user", "content": "weather in SF?"},
+        {"role": "assistant", "content": [{"type": "text", "text": "Let me check."},
+                                          {"type": "tool_use", "id": "tu1", "name": "get_weather", "input": {"city": "SF"}}]},
+        {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "tu1", "content": "72F"}]},
+    ],
+}
+
+
+def test_assistant_text_and_tool_calls_both_survive_translation():
+    body = r.to_openai_chat_request(r.normalize_anthropic(ANTHROPIC_AGENT, None), model="m")
+    assistant = body["messages"][2]
+    assert assistant["role"] == "assistant" and assistant["content"].startswith("Let me check.\n")
+    summary = json.loads(assistant["content"].split("\n", 1)[1])
+    assert summary == [{"tool": "get_weather", "arguments": '{"city": "SF"}'}]
+    # A call-only turn is just the summary.
+    only = dict(ANTHROPIC_AGENT, messages=[ANTHROPIC_AGENT["messages"][0], {"role": "assistant", "content": [
+        {"type": "tool_use", "id": "t", "name": "get_weather", "input": {}}]}])
+    body = r.to_openai_chat_request(r.normalize_anthropic(only, None), model="m")
+    assert json.loads(body["messages"][2]["content"])[0]["tool"] == "get_weather"
+
+
+def test_anthropic_tool_choice_and_stop_sequences_are_forwarded():
+    norm = r.normalize_anthropic(ANTHROPIC_AGENT, None)
+    assert norm.tool_choice == {"type": "function", "function": {"name": "get_weather"}}
+    assert norm.stop == ["END"]
+    body = r.to_openai_chat_request(norm, model="m")
+    assert body["tool_choice"] == {"type": "function", "function": {"name": "get_weather"}}
+    assert body["stop"] == ["END"]
+    for raw, expected in [({"type": "any"}, "required"), ({"type": "auto"}, "auto"), ({"type": "none"}, "none"),
+                          ({"type": "weird"}, None), ("auto", None)]:
+        assert r.normalize_anthropic(dict(ANTHROPIC_AGENT, tool_choice=raw), None).tool_choice == expected
+
+
+def test_openai_tool_choice_and_stop_are_forwarded():
+    base = {"messages": [{"role": "user", "content": "x"}],
+            "tools": [{"type": "function", "function": {"name": "f", "parameters": {}}}]}
+    for raw, expected in [
+        ("required", "required"), ("auto", "auto"), ("none", "none"), ("bogus", None),
+        ({"type": "function", "function": {"name": "f"}}, {"type": "function", "function": {"name": "f"}}),
+        ({"type": "function", "name": "f"}, {"type": "function", "function": {"name": "f"}}),
+    ]:
+        norm = r.normalize_openai(dict(base, tool_choice=raw), None)
+        assert norm.tool_choice == expected
+        body = r.to_openai_chat_request(norm, model="m")
+        assert body.get("tool_choice") == expected
+    assert r.normalize_openai(dict(base, stop="\n\n"), None).stop == ["\n\n"]
+    body = r.to_openai_chat_request(r.normalize_openai(dict(base, stop=["a", "b"]), None), model="m")
+    assert body["stop"] == ["a", "b"]
+    # No tools: tool_choice is not sent (servers reject it), no stop means no key.
+    plain = r.to_openai_chat_request(r.normalize_openai({"messages": base["messages"], "tool_choice": "auto"}, None),
+                                     model="m")
+    assert "tool_choice" not in plain and "stop" not in plain
+
+
+def test_empty_shadow_answer_is_not_ok_but_tool_call_only_is():
+    def result(text, calls):
+        return r.ShadowResult(exchange_id="e", candidate="c", candidate_model="m", output_text=text,
+                              tool_calls=calls, usage=r.Usage(), latency_ms=1.0, status=200)
+
+    assert not result("", []).ok
+    assert result("", [{"name": "f", "arguments": "{}"}]).ok
+    assert result("hi", []).ok
+
+
+def test_incumbent_empty_answer_still_normalizes():
+    ex = _openai_exchange(response={"choices": [{"message": {"role": "assistant", "content": None},
+                                                 "finish_reason": "stop"}]})
+    norm = r.normalize(ex)
+    assert ex.ok and norm.output_text == "" and norm.output_tool_calls == []
