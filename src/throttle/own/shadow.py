@@ -13,9 +13,15 @@ as a :class:`records.ShadowResult`. Shadow output is never served to a client
 and never written into the captured exchange.
 
 ``ShadowResult.error`` is ``"<kind>: <message>"``. Kinds: ``context_overflow``,
-``http_<status>``, ``timeout``, ``connect``, ``bad_response``. A ``timeout`` or
-``connect`` failure (status 0) says nothing about the model, so backfill
-retries those exchanges on its next run; any other stored result is skipped.
+``http_<status>``, ``timeout``, ``connect``, ``bad_response``. An answer with
+no text and no tool calls is ``bad_response: empty answer``.
+
+A ``timeout`` or ``connect`` failure has status 0 (``TRANSPORT_STATUS``).
+Backfill retries it once right away. If the retry fails in transport too, the
+result is stored with status ``FINAL_TRANSPORT_STATUS`` (599): a permanent
+candidate failure that backfill does not retry and evaluate counts as a LOSS.
+A status-0 result (live shadow, or an older run) is left out of evaluate and
+counted as excluded; backfill retries those exchanges on its next run.
 """
 
 from __future__ import annotations
@@ -41,6 +47,7 @@ from ..request_errors import context_overflow_limit, describe_http_failure
 ALL_TYPES = "all"
 DEFAULT_SEED = 0
 TRANSPORT_STATUS = 0
+FINAL_TRANSPORT_STATUS = 599   # transport failed again on retry; a candidate failure
 OVERFLOW_REMEDY = (
     "serve the candidate with a larger max_model_len, or keep this workload type on the API"
 )
@@ -187,15 +194,34 @@ async def shadow_one(
     if not isinstance(payload, dict) or not payload.get("choices"):
         return failed(response.status_code, "bad_response", "candidate answer had no choices", latency_ms)
     view = records.normalize_openai(None, payload)
+    empty = not view.output_text and not view.output_tool_calls
     return records.ShadowResult(
         exchange_id=exchange.id, candidate=label, candidate_model=model,
-        output_text=view.output_text if view.output_text is not None else ("" if view.output_tool_calls else None),
+        output_text=None if empty else (view.output_text or ""),
         tool_calls=view.output_tool_calls,
         usage=records.usage_from_openai(payload),
         latency_ms=latency_ms, status=response.status_code,
         finish_reason=view.finish_reason,
-        error=None if (view.output_text is not None or view.output_tool_calls) else "bad_response: empty answer",
+        error="bad_response: empty answer" if empty else None,
     )
+
+
+async def shadow_with_retry(
+    client: httpx.AsyncClient,
+    exchange: records.Exchange,
+    norm: records.Normalized,
+    **kwargs: Any,
+) -> records.ShadowResult:
+    """:func:`shadow_one`, retried once on a transport failure. A second
+    transport failure comes back with ``FINAL_TRANSPORT_STATUS``."""
+
+    result = await shadow_one(client, exchange, norm, **kwargs)
+    if result.status != TRANSPORT_STATUS:
+        return result
+    result = await shadow_one(client, exchange, norm, **kwargs)
+    if result.status == TRANSPORT_STATUS:
+        result.status = FINAL_TRANSPORT_STATUS
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -278,8 +304,8 @@ async def run_backfill(
 
         async def one(exchange: records.Exchange, norm: records.Normalized, kind: str) -> None:
             async with gate:
-                result = await shadow_one(client, exchange, norm, url=url, model=model,
-                                          label=label, api_key=api_key, timeout=timeout)
+                result = await shadow_with_retry(client, exchange, norm, url=url, model=model,
+                                                 label=label, api_key=api_key, timeout=timeout)
             records.append_shadow(result, root)
             done[kind] += 1
             if result.error:

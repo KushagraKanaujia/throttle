@@ -148,19 +148,25 @@ SAME = {"json_valid": {"incumbent": _ci(50, 50), "candidate": _ci(49, 50)}}
 WORSE_CHECK = {"json_valid": {"incumbent": _ci(50, 50), "candidate": _ci(30, 50)}}
 
 
-def _decide(low, high, checks=SAME, **kw):
-    params = dict(judged=True, n=50, min_n=30, margin=0.05, net_ci={"low": low, "high": high}, checks=checks)
+# Rate CIs as a well-powered sample would give them (decide only reads the bounds).
+LOW_LOSS = {"win": {"low": 0.01, "high": 0.04}, "loss": {"low": 0.0, "high": 0.04}}
+BIG_WIN = {"win": {"low": 0.30, "high": 0.50}, "loss": {"low": 0.0, "high": 0.05}}
+
+
+def _decide(low, high, checks=SAME, rates=LOW_LOSS, **kw):
+    params = dict(judged=True, n=50, min_n=30, margin=0.05, net_ci={"low": low, "high": high}, checks=checks,
+                  win_rate_ci=rates["win"], loss_rate_ci=rates["loss"])
     params.update(kw)
     return ev.decide(**params)[0]
 
 
 def test_verdict_branches():
     assert _decide(-0.03, 0.04) == ev.NO_DIFF
-    assert _decide(0.08, 0.3) == ev.BETTER
+    assert _decide(0.08, 0.3, rates=BIG_WIN) == ev.BETTER
     assert _decide(-0.4, -0.1) == ev.WORSE
     assert _decide(-0.2, 0.2) == ev.INCONCLUSIVE          # contains 0 but too wide
     assert _decide(0.02, 0.2) == ev.INCONCLUSIVE          # positive, not above margin
-    assert _decide(0.08, 0.3, checks=WORSE_CHECK) == ev.WORSE   # a worse check beats a judge win
+    assert _decide(0.08, 0.3, checks=WORSE_CHECK, rates=BIG_WIN) == ev.WORSE   # a worse check beats a judge win
     assert _decide(-0.03, 0.04, checks=WORSE_CHECK) == ev.WORSE
     assert _decide(-0.03, 0.04, n=29) == ev.INSUFFICIENT
     assert _decide(-0.03, 0.04, judge_errors=11, judge_attempts=50) == ev.INSUFFICIENT
@@ -233,10 +239,14 @@ def test_run_eval_end_to_end(tmp_path):
     doc = ev.run_eval(tmp_path, "cand", judge_config=config, budget=j.JudgeBudget(max_calls=1000),
                       classify=by_workload_field, transport=_judge_transport(tie_unless_negative, seen),
                       run_id="run1")
-    assert set(doc["types"]) == {"classification", "extraction"}   # chat had no usable shadow
+    # chat's only shadow answer was a status-0 transport failure: shown, not judged
+    assert set(doc["types"]) == {"chat", "classification", "extraction"}
+    chat = doc["types"]["chat"]
+    assert chat["n"] == 0 and chat["transport_excluded"] == 1 and chat["verdict"] == ev.INSUFFICIENT
+    assert any("not retried" in x for x in chat["reasons"])
     cls = doc["types"]["classification"]
     assert cls["n"] == 40                                         # duplicate prompt dropped
-    assert (cls["wins"], cls["ties"], cls["losses"]) == (0, 36, 4)
+    assert (cls["wins"], cls["ties"], cls["losses"], cls["order_disagree"]) == (0, 36, 4, 0)
     assert cls["judged"] == 40 and cls["judge_errors"] == 0
     assert cls["checks"]["exact_match"]["incumbent"]["point"] == 1.0
     assert cls["checks"]["exact_match"]["candidate"]["point"] == pytest.approx(0.9)
@@ -333,3 +343,132 @@ def test_cli_usage_errors(tmp_path, capsys, monkeypatch):
     monkeypatch.delenv("JKEY", raising=False)
     assert ev.handle(parse(["eval", "--candidate", "x", "--judge-model", "m", "--judge-key-env", "JKEY",
                             "--dir", str(tmp_path)])) == 2
+
+
+# ---------------------------------------------------------------------------
+# Review fixes
+# ---------------------------------------------------------------------------
+
+
+def _flat(root, n, cand_text="I don't know, banana", *, status=200, error=None, start=0):
+    for i in range(start, start + n):
+        ex = exchange(f"question {i}", output=str(2 * i), kind="chat")
+        r.append_exchange(ex, root)
+        r.append_shadow(_shadow(ex, cand_text, status=status, error=error), root)
+
+
+JUDGE_CFG = j.JudgeConfig(provider="openai", model="judge-m", url="http://judge/v1/chat/completions")
+
+
+def test_position_biased_judge_is_insufficient_not_no_difference(tmp_path):
+    _flat(tmp_path, 40)
+    doc = ev.run_eval(tmp_path, "cand", judge_config=JUDGE_CFG, classify=by_workload_field,
+                      transport=_judge_transport(lambda a, b: "thinking...\nA", []))
+    t = doc["types"]["chat"]
+    assert (t["wins"], t["ties"], t["losses"], t["order_disagree"]) == (0, 0, 0, 40)
+    assert t["judged"] == 40 and t["tie_rate_ci"]["point"] == 1.0
+    assert t["verdict"] == ev.INSUFFICIENT
+    assert "disagreed with itself when answers were swapped on 100% of items; use a stronger judge" in t["reasons"][0]
+    saved = json.loads((tmp_path / "evals" / f"{doc['run_id']}.json").read_text())
+    assert saved["types"]["chat"]["order_disagree"] == 40
+
+
+def test_order_disagree_threshold_is_30_percent():
+    assert _decide(-0.03, 0.04, order_disagree=15) == ev.NO_DIFF      # 30% of 50
+    assert _decide(-0.03, 0.04, order_disagree=16) == ev.INSUFFICIENT
+
+
+@pytest.mark.parametrize("n, verdict", [(30, ev.INCONCLUSIVE), (80, ev.NO_DIFF)])
+def test_all_ties_needs_enough_items_for_no_difference(n, verdict):
+    diffs = [0] * n
+    net = st.paired_bootstrap_interval_95(diffs, seed=1)
+    assert net["low"] == net["high"] == 0                       # the degenerate bootstrap
+    got, reasons = ev.decide(judged=True, n=n, min_n=30, margin=0.05, net_ci=net, checks={},
+                             win_rate_ci=st.wilson_interval_95(0, n), loss_rate_ci=st.wilson_interval_95(0, n))
+    assert got == verdict
+    if verdict == ev.INCONCLUSIVE:
+        assert "loss rate could be as high as" in reasons[0]
+
+
+def test_better_needs_win_low_above_loss_high_plus_margin():
+    assert _decide(0.08, 0.3, rates={"win": {"low": 0.10, "high": 0.3}, "loss": {"low": 0, "high": 0.06}}) \
+        == ev.INCONCLUSIVE
+    assert _decide(0.08, 0.3, rates={"win": {"low": 0.12, "high": 0.3}, "loss": {"low": 0, "high": 0.06}}) \
+        == ev.BETTER
+    # Without the rate CIs neither BETTER nor NO MATERIAL DIFFERENCE can be shown.
+    assert ev.decide(judged=True, n=50, min_n=30, margin=0.05, net_ci={"low": 0.5, "high": 0.9},
+                     checks={})[0] == ev.INCONCLUSIVE
+    assert ev.decide(judged=True, n=50, min_n=30, margin=0.05, net_ci={"low": 0.0, "high": 0.0},
+                     checks={})[0] == ev.INCONCLUSIVE
+
+
+def test_unretried_candidate_timeouts_are_counted_and_block_a_verdict(tmp_path):
+    _flat(tmp_path, 30, "same")
+    _flat(tmp_path, 70, None, status=0, error="timeout: no answer", start=30)
+    doc = ev.run_eval(tmp_path, "cand", judge_config=JUDGE_CFG, classify=by_workload_field,
+                      transport=_judge_transport(lambda a, b: "TIE", []))
+    t = doc["types"]["chat"]
+    assert t["n"] == 30 and t["transport_excluded"] == 70
+    assert t["verdict"] == ev.INCONCLUSIVE
+    assert "70 of 100 items" in t["reasons"][0] and "not retried" in t["reasons"][0]
+    nj = ev.run_eval(tmp_path, "cand", judge_config=None, classify=by_workload_field)["types"]["chat"]
+    assert nj["verdict"] == ev.INCONCLUSIVE and nj["transport_excluded"] == 70
+
+
+def test_few_unretried_timeouts_are_reported_but_allowed(tmp_path):
+    _flat(tmp_path, 95, "same")
+    _flat(tmp_path, 5, None, status=0, error="timeout: no answer", start=95)
+    t = ev.run_eval(tmp_path, "cand", judge_config=JUDGE_CFG, classify=by_workload_field,
+                    transport=_judge_transport(lambda a, b: "TIE", []))["types"]["chat"]
+    assert t["transport_excluded"] == 5 and t["verdict"] == ev.NO_DIFF
+    assert any("5 of 100 items left out" in x for x in t["reasons"])
+
+
+def test_retried_transport_failure_counts_as_a_loss(tmp_path):
+    from throttle.own import shadow as sh
+
+    _flat(tmp_path, 3, "same")
+    _flat(tmp_path, 1, None, status=sh.FINAL_TRANSPORT_STATUS, error="timeout: no answer", start=3)
+    seen = []
+    t = ev.run_eval(tmp_path, "cand", judge_config=JUDGE_CFG, min_n=1, classify=by_workload_field,
+                    transport=_judge_transport(lambda a, b: "TIE", seen))["types"]["chat"]
+    assert t["losses"] == 1 and t["candidate_errors"] == 1 and t["transport_excluded"] == 0
+    assert len(seen) == 6
+
+
+def test_judge_error_rate_counts_only_items_sent_to_the_judge(tmp_path):
+    _flat(tmp_path, 20, None, status=400, error="context_overflow: too long")
+    _flat(tmp_path, 20, "same", start=20)
+    count = {"n": 0}
+
+    def flaky(a, b):        # 5 of the 20 sent items fail in their first order
+        count["n"] += 1
+        return "garbage" if count["n"] in (1, 4, 7, 10, 13) else "TIE"
+
+    t = ev.run_eval(tmp_path, "cand", judge_config=JUDGE_CFG, classify=by_workload_field, judge_concurrency=1,
+                    min_n=1, transport=_judge_transport(flaky, []))["types"]["chat"]
+    assert t["judge_errors"] == 5 and t["judge_sent"] == 20       # 25% of sent, 12.5% of all 40
+    assert t["verdict"] == ev.INSUFFICIENT and "5 of 20" in t["reasons"][0]
+
+
+TOOLS = [{"type": "function", "function": {"name": "save", "parameters": {}}}]
+CALL = [{"id": "1", "type": "function", "function": {"name": "save", "arguments": "{\"a\":1}"}}]
+
+
+@pytest.mark.parametrize("tool_choice, api_calls, cand_calls, expected", [
+    ({"type": "function", "function": {"name": "save"}}, CALL, [], False),   # forced + incumbent called
+    ("required", None, [], False),                                           # forced, no incumbent call
+    (None, CALL, [], False),                                                 # incumbent called
+    ("auto", None, [], True),                                                # nothing expected
+    (None, CALL, [{"name": "save", "arguments": "{}"}], True),
+])
+def test_tool_calls_valid_fails_when_a_call_was_expected(tool_choice, api_calls, cand_calls, expected):
+    req = {"messages": [{"role": "user", "content": "extract"}], "tools": TOOLS}
+    if tool_choice is not None:
+        req["tool_choice"] = tool_choice
+    message = {"role": "assistant", "content": None if api_calls else "fine"}
+    if api_calls:
+        message["tool_calls"] = api_calls
+    norm = r.normalize_openai(req, {"choices": [{"message": message, "finish_reason": "stop"}]})
+    got = ev.run_checks(norm, "extraction", ev.Side("sure, a=1", cand_calls, "stop"), norm.output_text)
+    assert got["tool_calls_valid"] is expected

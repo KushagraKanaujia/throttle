@@ -713,3 +713,59 @@ async def test_client_disconnect_mid_stream_is_still_recorded(tmp_path):
     assert time.perf_counter() - started < 3
     (ex,) = captured(tmp_path)
     assert ex.error == "client disconnected" and ex.response["choices"][0]["message"]["content"] == "A"
+
+
+# ---------------------------------------------------------------------------
+# Review fixes: redaction off the event loop, inline images dropped
+# ---------------------------------------------------------------------------
+
+
+async def test_redaction_runs_off_the_event_loop(tmp_path, monkeypatch):
+    import threading
+
+    from throttle.own import capture as cap
+
+    threads = []
+    real = cap.redact_body
+
+    def spy(*args, **kwargs):
+        threads.append(threading.current_thread())
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(cap, "redact_body", spy)
+    app, _ = make_app(tmp_path, lambda req: httpx.Response(200, json=OPENAI_RESPONSE))
+    async with front(app) as client:
+        await client.post("/v1/chat/completions", json={"model": "gpt-4o", "messages": [{"role": "user", "content": "hi"}]})
+        await app.state.capture.drain()
+    assert threads and all(t is not threading.main_thread() for t in threads)
+    (ex,) = captured(tmp_path)
+    assert ex.response["choices"][0]["message"]["content"] == "Mail me at <EMAIL>"
+
+
+@pytest.mark.parametrize("mode", [r.REDACTION_MASK, r.REDACTION_HASH])
+async def test_inline_image_payloads_are_not_stored(tmp_path, mode):
+    payload = "iVBORw0KGgo" + "A" * 5000
+    app, upstream = make_app(tmp_path, lambda req: httpx.Response(200, json=OPENAI_RESPONSE), redaction=mode)
+    body = {"model": "gpt-4o", "messages": [{"role": "user", "content": [
+        {"type": "text", "text": "what is this? kush@example.com"},
+        {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{payload}"}},
+    ]}]}
+    async with front(app) as client:
+        await client.post("/v1/chat/completions", json=body)
+    (ex,) = captured(tmp_path)
+    parts = ex.request["messages"][0]["content"]
+    assert parts[1] == {"type": "image_url", "image_url": {"url": "<IMAGE>"}}
+    assert "<EMAIL" in parts[0]["text"]
+    assert payload not in all_files_text(tmp_path)
+    assert payload.encode() in upstream.bodies[0]          # the upstream still gets the image
+    assert r.normalize(ex).has_images
+
+
+async def test_off_mode_keeps_inline_images(tmp_path):
+    app, _ = make_app(tmp_path, lambda req: httpx.Response(200, json=OPENAI_RESPONSE), redaction=r.REDACTION_OFF)
+    url = "data:image/png;base64,iVBORw0KGgoAAAA"
+    body = {"model": "gpt-4o", "messages": [{"role": "user", "content": [{"type": "image_url", "image_url": {"url": url}}]}]}
+    async with front(app) as client:
+        await client.post("/v1/chat/completions", json=body)
+    (ex,) = captured(tmp_path)
+    assert ex.request["messages"][0]["content"][0]["image_url"]["url"] == url

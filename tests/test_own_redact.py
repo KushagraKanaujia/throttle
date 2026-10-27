@@ -138,3 +138,59 @@ def test_luhn():
 def test_overlaps_prefer_the_stronger_type():
     # The secret regex and the phone regex could both fire inside a key.
     assert redact_text("sk-live-805-555-0134-abcdef", r.REDACTION_MASK) == "<SECRET>"
+
+
+# ---------------------------------------------------------------------------
+# Review fixes
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("text, expected", [
+    ("Phone/Fax: 415-555-0134/415-555-0199", "Phone/Fax: <PHONE>/<PHONE>"),
+    ("home 415-555-0134/work 415-555-0199", "home <PHONE>/work <PHONE>"),
+    ("tel 415-555-0134 / 415-555-0199", "tel <PHONE> / <PHONE>"),
+    ("intl +44 20 7946 0958/+44 20 7946 0959", "intl <PHONE>/<PHONE>"),
+])
+def test_phone_numbers_next_to_a_slash(text, expected):
+    assert redact_text(text, r.REDACTION_MASK) == expected
+
+
+SLASH_NEAR_MISSES = [
+    "see https://example.com/users/415-555-0134",
+    "path a/b/415-555-0134 and ./415-555-0134",
+    "file docs/415-555-0134-notes.txt",
+    "on 10/27/2026 and 2026/10/27 and 1/2/3",
+    "ratio 415/555/0134",
+]
+
+
+@pytest.mark.parametrize("text", SLASH_NEAR_MISSES)
+def test_slash_near_misses_survive(text):
+    assert redact_text(text, r.REDACTION_MASK) == text, find_pii(text)
+
+
+def test_inline_payloads_replaced_before_redaction():
+    from throttle.own.redact import strip_inline_payloads
+
+    body = {"messages": [
+        {"role": "user", "content": [
+            {"type": "image_url", "image_url": {"url": "data:image/jpeg;base64,/9j/4AAQ" + "B" * 100}},
+            {"type": "input_audio", "input_audio": {"data": "UklGR" + "C" * 100, "format": "wav"}},
+        ]},
+        {"role": "user", "content": [
+            {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": "iVBOR" + "D" * 100}},
+            {"type": "document", "source": {"type": "base64", "media_type": "application/pdf", "data": "JVBER"}},
+            {"type": "image", "source": {"type": "url", "url": "https://example.com/cat.png"}},
+        ]},
+    ]}
+    for mode in (r.REDACTION_MASK, r.REDACTION_HASH):
+        out = redact_body(body, mode, SALT)
+        first, second = out["messages"][0]["content"], out["messages"][1]["content"]
+        assert first[0]["image_url"]["url"] == "<IMAGE>"
+        assert first[1]["input_audio"] == {"data": "<AUDIO>", "format": "wav"}
+        assert second[0]["source"] == {"type": "base64", "media_type": "image/png", "data": "<IMAGE>"}
+        assert second[1]["source"]["data"] == "<DATA>"
+        assert second[2]["source"]["url"] == "https://example.com/cat.png"
+    assert redact_body(body, r.REDACTION_OFF) is body
+    assert strip_inline_payloads(body)["messages"][0]["content"][0]["image_url"]["url"] == "<IMAGE>"
+    assert body["messages"][0]["content"][0]["image_url"]["url"].startswith("data:")   # input untouched

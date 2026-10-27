@@ -90,9 +90,11 @@ def test_backfill_stores_results_and_skips_on_rerun(tmp_path, capsys, monkeypatc
 
 def test_backfill_names_context_overflow_and_retries_transport_errors(tmp_path, capsys):
     a, b, c = _seed(tmp_path, [exchange("long", kind="chat"), exchange("down", kind="chat"), exchange("fine", kind="chat")])
+    sent = []
 
     def answer(body):
         text = last_user(body)
+        sent.append(text)
         if text == "long":
             return httpx.Response(400, json={"error": {"message": "This model's maximum context length is 2048 tokens."}})
         if text == "down":
@@ -105,8 +107,11 @@ def test_backfill_names_context_overflow_and_retries_transport_errors(tmp_path, 
     stored = {s.exchange_id: s for s in r.iter_shadow("qwen@vllm", tmp_path)}
     assert sh.error_kind(stored[a.id].error) == "context_overflow"
     assert "2048-token context window" in stored[a.id].error
-    assert stored[b.id].status == sh.TRANSPORT_STATUS
-    assert sh.done_ids("qwen@vllm", tmp_path) == {a.id, c.id}
+    # Retried once right away; the second failure is stored as permanent.
+    assert sent.count("down") == 2
+    assert stored[b.id].status == sh.FINAL_TRANSPORT_STATUS and not stored[b.id].ok
+    assert sh.error_kind(stored[b.id].error) == "connect"
+    assert sh.done_ids("qwen@vllm", tmp_path) == {a.id, b.id, c.id}
 
 
 def test_anthropic_exchange_is_translated_for_the_candidate(tmp_path):
@@ -287,3 +292,49 @@ def test_shadow_output_is_never_served(tmp_path):
         assert "SHADOW-SENTINEL" not in json.dumps(ex.to_json())
     shadows = list(r.iter_shadow("live", tmp_path))
     assert len(shadows) == 3 and all(s.output_text == "SHADOW-SENTINEL" for s in shadows)
+
+
+# ---------------------------------------------------------------------------
+# Review fixes
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("content", [None, ""])
+def test_empty_candidate_answer_is_bad_response(content):
+    ex = exchange("hi", kind="chat")
+
+    async def go():
+        transport = candidate_transport(lambda body: chat_response(content))
+        async with httpx.AsyncClient(transport=transport) as client:
+            return await sh.shadow_one(client, ex, r.normalize(ex), url="http://c/v1", model="m", label="c")
+
+    res = asyncio.run(go())
+    assert res.error == "bad_response: empty answer" and not res.ok
+
+
+def test_tool_call_only_answer_is_ok():
+    ex = exchange("hi", kind="agent")
+    calls = [{"id": "1", "type": "function", "function": {"name": "f", "arguments": "{}"}}]
+
+    async def go():
+        transport = candidate_transport(lambda body: chat_response(None, tool_calls=calls, finish="tool_calls"))
+        async with httpx.AsyncClient(transport=transport) as client:
+            return await sh.shadow_one(client, ex, r.normalize(ex), url="http://c/v1", model="m", label="c")
+
+    res = asyncio.run(go())
+    assert res.ok and res.output_text == "" and res.tool_calls[0]["name"] == "f"
+
+
+def test_transport_failure_that_recovers_on_retry_is_stored_ok(tmp_path):
+    (ex,) = _seed(tmp_path, [exchange("flaky", kind="chat")])
+    tries = []
+
+    def answer(body):
+        tries.append(1)
+        if len(tries) == 1:
+            raise httpx.ReadTimeout("slow")
+        return chat_response("yes")
+
+    sh.handle(_args(tmp_path), classify=by_workload_field, transport=candidate_transport(answer))
+    (stored,) = list(r.iter_shadow("qwen@vllm", tmp_path))
+    assert len(tries) == 2 and stored.ok and stored.output_text == "yes"

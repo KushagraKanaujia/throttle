@@ -21,6 +21,11 @@ Modes (``records.REDACTION_MODES``):
 
 Only string values are rewritten. Dict keys, numbers, booleans and the
 ``model`` field are never touched, so the JSON structure survives.
+
+In ``mask`` and ``hash`` mode, inline base64 payloads (``data:`` URIs such as
+OpenAI ``image_url`` data URLs, and Anthropic ``source`` blocks of type
+``base64``) are replaced with ``<IMAGE>`` (or ``<AUDIO>`` / ``<DATA>``) before
+any pattern runs: they are not text, and scanning megabytes of base64 is slow.
 """
 
 from __future__ import annotations
@@ -51,10 +56,13 @@ _EMAIL = re.compile(
 )
 # Separators are required: a bare 10-digit run is far more often an order or
 # account number than a phone number. NANP area and exchange codes start 2-9.
+# A "/" next to a phone number is a list separator ("415-555-0134/415-555-0199",
+# "0134/work"); only a "/" right after a letter or punctuation (a URL or file
+# path segment) blocks a match.
 _PHONE_NANP = re.compile(
-    r"(?<![\w+\-./$#])(?:\+?1[\s.-]?)?(?:\([2-9]\d{2}\)\s?|[2-9]\d{2}[\s.-])[2-9]\d{2}[\s.-]\d{4}(?![\w\-/]|\.\d)"
+    r"(?<![\w+\-.$#])(?<![^\d\s]/)(?:\+?1[\s.-]?)?(?:\([2-9]\d{2}\)\s?|[2-9]\d{2}[\s.-])[2-9]\d{2}[\s.-]\d{4}(?![\w\-]|\.\d)"
 )
-_PHONE_INTL = re.compile(r"(?<![\w+])\+(?:[1-9]\d{0,2})(?:[\s.-]?\(?\d{1,4}\)?){2,5}(?![\w\-/]|\.\d)")
+_PHONE_INTL = re.compile(r"(?<![\w+])(?<![^\d\s]/)\+(?:[1-9]\d{0,2})(?:[\s.-]?\(?\d{1,4}\)?){2,5}(?![\w\-]|\.\d)")
 _SSN = re.compile(r"(?<![\w\-./])(?!000|666|9\d\d)\d{3}-(?!00)\d{2}-(?!0000)\d{4}(?![\w\-/]|\.\d)")
 _CARD = re.compile(
     r"(?<![\w\-./$#])(?:"
@@ -74,6 +82,44 @@ _JSON_SECRET_PAIR = re.compile(
 _AMBIGUOUS_KEYS = frozenset({"token"})
 
 Span = tuple[int, int, str, str]  # start, end, kind, normalized value
+
+_DATA_URI = re.compile(r"^\s*data:([\w.+-]+/[\w.+-]+)?[^,]*;base64,", re.IGNORECASE)
+
+
+def _payload_placeholder(media_type: Any) -> str:
+    kind = media_type.lower() if isinstance(media_type, str) else ""
+    if not kind or kind.startswith("image/"):
+        return "<IMAGE>"
+    return "<AUDIO>" if kind.startswith("audio/") else "<DATA>"
+
+
+def strip_inline_payloads(value: Any) -> Any:
+    """Replace base64 payloads with placeholders, leaving the structure.
+
+    Catches ``data:<type>;base64,...`` strings anywhere, Anthropic
+    ``{"type": "base64", "media_type": ..., "data": ...}`` sources and OpenAI
+    ``input_audio`` ``data``. Returns a new structure; the input is unchanged.
+    """
+
+    if isinstance(value, dict):
+        if value.get("type") == "base64" and isinstance(value.get("data"), str):
+            out = dict(value)
+            out["data"] = _payload_placeholder(value.get("media_type"))
+            return out
+        out = {}
+        for k, v in value.items():
+            if k == "input_audio" and isinstance(v, dict) and isinstance(v.get("data"), str):
+                out[k] = {**v, "data": "<AUDIO>"}
+            else:
+                out[k] = strip_inline_payloads(v)
+        return out
+    if isinstance(value, list):
+        return [strip_inline_payloads(v) for v in value]
+    if isinstance(value, str):
+        match = _DATA_URI.match(value[:256])
+        if match:
+            return _payload_placeholder(match.group(1) or "image/")
+    return value
 
 
 def luhn_ok(digits: str) -> bool:
@@ -264,6 +310,7 @@ def redact_body(obj: Any, mode: str, salt: str | bytes | None = None) -> Any:
         return None
     salt_bytes = _salt_bytes(salt) if mode == REDACTION_HASH else None
     label = _placeholder(mode, salt_bytes)
+    obj = strip_inline_payloads(obj)
 
     def walk(value: Any, key: str | None) -> Any:
         if isinstance(value, dict):
@@ -284,5 +331,5 @@ def redact_body(obj: Any, mode: str, salt: str | bytes | None = None) -> Any:
 __all__ = [
     "CARD", "EMAIL", "IP", "PHONE", "SECRET", "SSN",
     "REDACTION_HASH", "REDACTION_MASK", "REDACTION_METADATA", "REDACTION_OFF",
-    "find_pii", "luhn_ok", "redact_body", "redact_text",
+    "find_pii", "luhn_ok", "redact_body", "redact_text", "strip_inline_payloads",
 ]

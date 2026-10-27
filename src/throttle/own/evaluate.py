@@ -12,9 +12,11 @@ result for LABEL, with identical prompts deduplicated (first capture wins),
 ordered by exchange id. ``evalset_sha256`` is the sha256 of
 ``{"candidate": LABEL, "exchange_ids": [...]}`` (canonical JSON). The ids are
 saved to ``<root>/evals/evalset-<type>-<sha12>.json`` so refresh can rerun the
-same set. Shadow results that failed in transport (timeout, connect) are left
-out; any other candidate failure (context overflow, HTTP error, empty answer)
-stays in and counts as a LOSS and as a failure on every check.
+same set. Shadow results that failed in transport with status 0 (timeout or
+connect, not retried) are left out of the set but counted per type as
+``transport_excluded``. Every other candidate failure (context overflow, HTTP
+error, empty answer, a transport failure that failed again on backfill's
+retry) stays in and counts as a LOSS and as a failure on every check.
 
 Checks (pass rate, Wilson 95% CI, scored the same way for both sides)
 -------------------------------------------------------------------
@@ -26,26 +28,39 @@ Checks (pass rate, Wilson 95% CI, scored the same way for both sides)
 ``exact_match``       classification only; normalized answer equals the
                       incumbent's (so the incumbent scores 1.0 by definition).
 ``tool_calls_valid``  the request offered tools; every tool call names a
-                      listed tool and its arguments are a JSON object.
+                      listed tool and its arguments are a JSON object. Fails
+                      when the answer makes no call but the API model made
+                      one or ``tool_choice`` forced one.
 ``truncated``         every item; passes when the answer was NOT cut off by
                       the token limit (finish_reason length / max_tokens).
 
 Verdict rule (per type)
 -----------------------
-Let ``n`` be the judged items (wins + ties + losses), ``net`` the paired
-bootstrap 95% CI of mean(win - loss) with item scores +1 / 0 / -1, ``m`` the
+An item is WIN or LOSS when both judge orders agree, TIE when both say TIE,
+and ORDER_DISAGREE otherwise; ORDER_DISAGREE scores 0 like a tie. Let ``n`` be
+the judged items (wins + ties + losses + order_disagree), ``net`` the paired
+bootstrap 95% CI of mean(win - loss) with item scores +1 / 0 / -1, ``win`` and
+``loss`` the Wilson 95% CIs of the win and loss rates over n, ``m`` the
 margin, and "a check is worse" mean the candidate's pass-rate CI lies entirely
 below the incumbent's (``cand.high < inc.low``). In order:
 
-1. INSUFFICIENT DATA if n < min_n, or judge errors are more than 20% of judge
-   attempts.
+1. INSUFFICIENT DATA if n < min_n; or judge errors are more than 20% of the
+   items sent to the judge; or order_disagree / n > 30% (the judge is too
+   position-biased to trust).
 2. WORSE if net.high < -m, or any check is worse.
-3. BETTER if net.low > +m.
-4. NO MATERIAL DIFFERENCE if -m <= net.low and net.high <= +m.
-5. INCONCLUSIVE otherwise (the CI is too wide to tell; get more samples).
+3. INCONCLUSIVE if transport_excluded is more than 10% of the type
+   (eval set + transport_excluded): the missing answers could be losses.
+4. BETTER if win.low - loss.high > m. Using the Wilson bounds, not only the
+   bootstrap, keeps an all-wins or all-ties sample (bootstrap CI of width 0)
+   from claiming more than its size supports.
+5. NO MATERIAL DIFFERENCE if -m <= net.low and net.high <= m and
+   loss.high <= m. The loss bound needs about 75 loss-free items at m = 0.05,
+   so a small all-TIE sample is INCONCLUSIVE, not "no difference".
+6. INCONCLUSIVE otherwise (the CIs are too wide to tell; get more samples).
 
 With ``--no-judge``, n is the eval set size and the verdict is INSUFFICIENT
-DATA (n < min_n), WORSE (a check is worse) or CHECKS ONLY. It is never BETTER.
+DATA (n < min_n), WORSE (a check is worse), INCONCLUSIVE (rule 3) or CHECKS
+ONLY. It is never BETTER.
 
 Output: ``<root>/evals/<run_id>.json``
 --------------------------------------
@@ -62,13 +77,16 @@ Output: ``<root>/evals/<run_id>.json``
       "types": {
         "<type>": {
           "n": int,                       # eval set size
-          "judged": int,                  # wins + ties + losses
+          "judged": int,                  # wins + ties + losses + order_disagree
           "evalset_sha256": str, "evalset_path": str,
-          "wins": int, "ties": int, "losses": int,
+          "wins": int, "ties": int, "losses": int,   # ties: both orders said TIE
+          "order_disagree": int,          # the two orders disagreed; scored as a tie
           "judge_errors": int, "judge_skipped": int,   # skipped = budget ran out
+          "judge_sent": int,              # items sent to the judge (error-rate denominator)
           "candidate_errors": int,        # candidate failed; counted as losses
+          "transport_excluded": int,      # status-0 shadow results left out, not judged
           "win_rate_ci":  {"low", "high", "point", "n"},   # Wilson, over judged
-          "tie_rate_ci":  {"low", "high", "point", "n"},
+          "tie_rate_ci":  {"low", "high", "point", "n"},   # ties + order_disagree
           "loss_rate_ci": {"low", "high", "point", "n"},
           "net_ci": {"estimate", "low", "high", "n", "confidence", "method", "resamples"},
           "checks": {"<name>": {"incumbent": wilson, "candidate": wilson,
@@ -116,6 +134,8 @@ INCONCLUSIVE = "INCONCLUSIVE"
 INSUFFICIENT = "INSUFFICIENT DATA"
 CHECKS_ONLY = "CHECKS ONLY"
 MAX_JUDGE_ERROR_RATE = 0.20
+MAX_ORDER_DISAGREE_RATE = 0.30
+MAX_TRANSPORT_EXCLUDED_RATE = 0.10
 TRUNCATED_REASONS = {"length", "max_tokens"}
 CHECK_NAMES = ("json_valid", "schema_valid", "exact_match", "tool_calls_valid", "truncated")
 
@@ -243,9 +263,11 @@ def run_checks(norm: records.Normalized, workload: str, side: Side, incumbent_te
     if norm.tools:
         names = _tool_names(norm.tools)
         calls = [{"function": {"name": c.get("name"), "arguments": c.get("arguments") or ""}} for c in side.tool_calls]
+        call_expected = bool(norm.output_tool_calls) or records.tool_choice_forces_call(norm.tool_choice)
         out["tool_calls_valid"] = (
             not side.failed and tool_call_errors(calls) == 0
             and all(c.get("name") in names for c in side.tool_calls)
+            and not (call_expected and not side.tool_calls)
         )
     out["truncated"] = not side.failed and (side.finish_reason or "") not in TRUNCATED_REASONS
     return out
@@ -278,7 +300,8 @@ def evalset_sha256(candidate: str, exchange_ids: Sequence[str]) -> str:
 
 
 def pick_shadow(results: Sequence[records.ShadowResult]) -> records.ShadowResult | None:
-    """Latest ok result, else the latest non-transport failure."""
+    """Latest ok result, else the latest failure that is not an unretried
+    transport failure (status 0)."""
 
     usable = [r for r in results if r.status != TRANSPORT_STATUS]
     ok = [r for r in usable if r.ok]
@@ -293,8 +316,12 @@ def build_eval_sets(
     *,
     classify: Classifier | None = None,
     only_ids: Mapping[str, Sequence[str]] | None = None,
+    excluded: dict[str, int] | None = None,
 ) -> dict[str, list[Pair]]:
-    """Per-type eval pairs. ``only_ids`` ({type: ids}) restricts to a saved set."""
+    """Per-type eval pairs. ``only_ids`` ({type: ids}) restricts to a saved set.
+    ``excluded``, when given, is filled with {type: count} of eligible
+    exchanges left out because every shadow result was a status-0 transport
+    failure."""
 
     by_exchange: dict[str, list[records.ShadowResult]] = defaultdict(list)
     for result in records.iter_shadow(candidate, root):
@@ -316,9 +343,11 @@ def build_eval_sets(
         if norm is None:
             continue
         shadow = pick_shadow(by_exchange[exchange.id])
-        if shadow is None:
-            continue
         kind = wanted[exchange.id] if wanted is not None else workload_type(exchange, norm, classifier)
+        if shadow is None:
+            if excluded is not None:
+                excluded[kind] = excluded.get(kind, 0) + 1
+            continue
         key = prompt_key(norm)
         if key in seen[kind]:
             continue
@@ -376,14 +405,43 @@ def decide(
     checks: Mapping[str, Mapping[str, Mapping[str, Any]]],
     judge_errors: int = 0,
     judge_attempts: int = 0,
+    order_disagree: int = 0,
+    win_rate_ci: Mapping[str, Any] | None = None,
+    loss_rate_ci: Mapping[str, Any] | None = None,
+    transport_excluded: int = 0,
+    type_total: int | None = None,
 ) -> tuple[str, list[str]]:
-    """Apply the verdict rule in the module docstring."""
+    """Apply the verdict rule in the module docstring, in order:
+
+    1. INSUFFICIENT DATA: n < min_n; judge_errors / judge_attempts > 0.20
+       (attempts = items sent to the judge); order_disagree / n > 0.30.
+    2. WORSE: net.high < -margin, or any check is worse.
+    3. INCONCLUSIVE: transport_excluded / type_total > 0.10.
+    4. BETTER: win_rate_ci.low - loss_rate_ci.high > margin.
+    5. NO MATERIAL DIFFERENCE: -margin <= net.low, net.high <= margin and
+       loss_rate_ci.high <= margin.
+    6. INCONCLUSIVE otherwise.
+
+    Without ``win_rate_ci`` / ``loss_rate_ci`` neither BETTER nor NO MATERIAL
+    DIFFERENCE can be shown. Unjudged runs stop after rule 3 with CHECKS ONLY.
+    """
 
     reasons: list[str] = []
     if n < min_n:
         return INSUFFICIENT, [f"only {n} {'judged ' if judged else ''}items; need at least {min_n}"]
     if judged and judge_attempts and judge_errors / judge_attempts > MAX_JUDGE_ERROR_RATE:
         return INSUFFICIENT, [f"judge failed on {judge_errors} of {judge_attempts} items (over 20%)"]
+    if judged and n and order_disagree / n > MAX_ORDER_DISAGREE_RATE:
+        return INSUFFICIENT, [
+            f"the judge disagreed with itself when answers were swapped on {order_disagree / n:.0%} of items; "
+            "use a stronger judge"
+        ]
+    total = type_total if type_total is not None else n + transport_excluded
+    too_many_excluded = bool(total) and transport_excluded / total > MAX_TRANSPORT_EXCLUDED_RATE
+    excluded_reason = (
+        f"candidate gave no answer (timeout or connect error, not retried) on {transport_excluded} of {total} "
+        f"items ({transport_excluded / total:.0%}, over 10%); those could be losses. Rerun `throttle shadow`"
+    ) if too_many_excluded else ""
     worse = checks_worse(checks)
     for name in worse:
         cand, inc = checks[name]["candidate"], checks[name]["incumbent"]
@@ -394,6 +452,8 @@ def decide(
     if not judged:
         if worse:
             return WORSE, reasons
+        if too_many_excluded:
+            return INCONCLUSIVE, [excluded_reason]
         return CHECKS_ONLY, ["automatic checks only; no judge, so no quality claim"]
     low = (net_ci or {}).get("low")
     high = (net_ci or {}).get("high")
@@ -404,10 +464,22 @@ def decide(
         if high < -margin:
             reasons.insert(0, f"{span} is below -{margin:.2f}")
         return WORSE, reasons
-    if low > margin:
-        return BETTER, [f"{span} is above +{margin:.2f}"]
+    if too_many_excluded:
+        return INCONCLUSIVE, [excluded_reason]
+    win_low = (win_rate_ci or {}).get("low")
+    loss_high = (loss_rate_ci or {}).get("high")
+    if win_low is not None and loss_high is not None and win_low - loss_high > margin:
+        return BETTER, [
+            f"win rate low bound {win_low:.2f} minus loss rate high bound {loss_high:.2f} is above +{margin:.2f}; {span}"
+        ]
     if -margin <= low and high <= margin:
-        return NO_DIFF, [f"{span} lies within +/-{margin:.2f}"]
+        if loss_high is not None and loss_high <= margin:
+            return NO_DIFF, [f"{span} lies within +/-{margin:.2f} and the loss rate is at most {loss_high:.0%}"]
+        bound = f"{loss_high:.0%}" if loss_high is not None else "unknown"
+        return INCONCLUSIVE, [
+            f"{span} lies within +/-{margin:.2f}, but the loss rate could be as high as {bound} "
+            f"(95% CI) at this sample size; shadow more requests"
+        ]
     return INCONCLUSIVE, [f"{span} is too wide to call at margin {margin:.2f}; shadow more requests"]
 
 
@@ -418,8 +490,9 @@ def decide(
 
 @dataclass
 class TypeOutcome:
-    outcomes: list[str] = field(default_factory=list)   # WIN/TIE/LOSS/ERROR, one per item judged
+    outcomes: list[str] = field(default_factory=list)   # WIN/TIE/LOSS/ORDER_DISAGREE/ERROR, one per item
     skipped: int = 0
+    not_sent: int = 0      # outcomes decided without a judge call (a failed answer)
 
 
 async def _judge_all(
@@ -438,6 +511,7 @@ async def _judge_all(
         async def one(kind: str, pair: Pair) -> None:
             if pair.shadow.ok is False:
                 results[kind].outcomes.append(judge_mod.LOSS)
+                results[kind].not_sent += 1
                 return
             async with gate:
                 if stopped:
@@ -477,6 +551,7 @@ def summarize_type(
     outcome: TypeOutcome | None,
     margin: float,
     min_n: int,
+    transport_excluded: int = 0,
 ) -> dict[str, Any]:
     digest, path = save_evalset(root, kind, candidate, pairs)
     inc_checks: dict[str, list[bool | None]] = defaultdict(list)
@@ -508,34 +583,50 @@ def summarize_type(
     candidate_errors = sum(1 for p in pairs if not p.shadow.ok)
 
     counts = Counter(outcome.outcomes if outcome else [])
-    wins, ties, losses, errors = (counts[judge_mod.WIN], counts[judge_mod.TIE],
-                                  counts[judge_mod.LOSS], counts[judge_mod.ERROR])
-    judged_n = wins + ties + losses
-    diffs = [1] * wins + [0] * ties + [-1] * losses
+    wins, ties, losses, errors, disagree = (
+        counts[judge_mod.WIN], counts[judge_mod.TIE], counts[judge_mod.LOSS],
+        counts[judge_mod.ERROR], counts[judge_mod.ORDER_DISAGREE],
+    )
+    judged_n = wins + ties + losses + disagree
+    sent = judged_n + errors - (outcome.not_sent if outcome else 0)
+    diffs = [1] * wins + [0] * (ties + disagree) + [-1] * losses
     net_ci = stats.paired_bootstrap_interval_95(diffs, seed=int(digest[:8], 16)) if outcome else None
+    win_ci = stats.wilson_interval_95(wins, judged_n)
+    loss_ci = stats.wilson_interval_95(losses, judged_n)
+    total = len(pairs) + transport_excluded
     if outcome is not None:
         verdict, reasons = decide(
             judged=True, n=judged_n, min_n=min_n, margin=margin, net_ci=net_ci, checks=checks,
-            judge_errors=errors, judge_attempts=judged_n + errors,
+            judge_errors=errors, judge_attempts=sent, order_disagree=disagree,
+            win_rate_ci=win_ci, loss_rate_ci=loss_ci,
+            transport_excluded=transport_excluded, type_total=total,
         )
         if outcome.skipped:
             reasons.append(f"{outcome.skipped} items not judged: judge budget ran out")
+        if disagree and verdict != INSUFFICIENT:
+            reasons.append(f"judge disagreed with itself on {disagree} items when answers were swapped (scored as ties)")
     else:
-        verdict, reasons = decide(judged=False, n=len(pairs), min_n=min_n, margin=margin, net_ci=None, checks=checks)
+        verdict, reasons = decide(judged=False, n=len(pairs), min_n=min_n, margin=margin, net_ci=None, checks=checks,
+                                  transport_excluded=transport_excluded, type_total=total)
     if candidate_errors:
         reasons.append(f"candidate failed on {candidate_errors} items (counted as losses)")
+    if transport_excluded and not any("not retried" in x for x in reasons):
+        reasons.append(f"{transport_excluded} of {total} items left out: candidate timeout or connect error, not retried")
     return {
         "n": len(pairs),
         "judged": judged_n,
         "evalset_sha256": digest,
         "evalset_path": str(path),
         "wins": wins, "ties": ties, "losses": losses,
+        "order_disagree": disagree,
         "judge_errors": errors,
         "judge_skipped": outcome.skipped if outcome else 0,
+        "judge_sent": sent if outcome else 0,
         "candidate_errors": candidate_errors,
-        "win_rate_ci": stats.wilson_interval_95(wins, judged_n),
-        "tie_rate_ci": stats.wilson_interval_95(ties, judged_n),
-        "loss_rate_ci": stats.wilson_interval_95(losses, judged_n),
+        "transport_excluded": transport_excluded,
+        "win_rate_ci": win_ci,
+        "tie_rate_ci": stats.wilson_interval_95(ties + disagree, judged_n),
+        "loss_rate_ci": loss_ci,
         "net_ci": net_ci,
         "checks": checks,
         "candidate_latency_ms_p50": latency,
@@ -561,7 +652,11 @@ def run_eval(
 ) -> dict[str, Any]:
     """Evaluate and write ``<root>/evals/<run_id>.json``; returns the document."""
 
-    sets = build_eval_sets(root, candidate, classify=classify, only_ids=only_ids)
+    excluded: dict[str, int] = {}
+    sets = build_eval_sets(root, candidate, classify=classify, only_ids=only_ids, excluded=excluded)
+    for kind in excluded:
+        sets.setdefault(kind, [])
+    sets = dict(sorted(sets.items()))
     outcomes: dict[str, TypeOutcome] | None = None
     stopped = None
     if judge_config is not None and sets:
@@ -588,7 +683,7 @@ def run_eval(
             kind: summarize_type(
                 kind, pairs, candidate=candidate, root=root,
                 outcome=(outcomes or {}).get(kind) if outcomes is not None else None,
-                margin=margin, min_n=min_n,
+                margin=margin, min_n=min_n, transport_excluded=excluded.get(kind, 0),
             )
             for kind, pairs in sets.items()
         },
@@ -643,7 +738,8 @@ def render_table(document: Mapping[str, Any]) -> str:
     rows: list[Any] = [s.dim(header)]
     for kind, t in document["types"].items():
         judged = t["judged"]
-        wtl = f"{_pct(t['wins'], judged)}/{_pct(t['ties'], judged)}/{_pct(t['losses'], judged)}" if document["judge"] else "-"
+        tied = t["ties"] + t.get("order_disagree", 0)
+        wtl = f"{_pct(t['wins'], judged)}/{_pct(tied, judged)}/{_pct(t['losses'], judged)}" if document["judge"] else "-"
         net = t.get("net_ci") or {}
         ci = f"[{net['low']:+.2f}, {net['high']:+.2f}]" if net.get("low") is not None else "-"
         rows.append(f"{kind[:14]:<15}{t['n']:>5}  {wtl:<14}{ci:<17}{s.verdict(t['verdict'])}")
