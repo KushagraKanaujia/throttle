@@ -18,5 +18,3 @@ throttle check --url http://localhost:8000 --model my-model \
 ```
 
 > **Warning:** The cache mode is part of the workload identity. A cold check and a warm check are never compared with each other; the result is NO WINNER ("the prompt cache mode changed").
-
-`throttle cost` and `throttle measure` tag prompts the same way and accept `--warm-cache` too.

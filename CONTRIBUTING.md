@@ -63,10 +63,10 @@ python ci/run_tests.py --start-directory tests
 
 ```bash
 # Run a single test file
-python -m pytest tests/test_measure_bootstrap.py -v
+python -m pytest tests/test_check.py -v
 
 # Run a specific test
-python -m pytest tests/test_cli.py::TestCLI::test_measure_command -v
+python -m pytest tests/test_cli.py::ParserAndPlanTests::test_parser_subcommands_match_expected -v
 
 # Stop on first failure
 python -m pytest tests/ -x
@@ -91,16 +91,14 @@ python -m pytest tests/test_proxy_integration.py tests/test_proxy.py -v
 ```
 
 All tests should pass before submitting a pull request. The suite covers:
-- All CLI modes (plan, smoke, benchmark, diagnose, experimental-tuning, golden, compare, proxy)
+- All CLI modes (plan, smoke, benchmark, golden, compare, check, autotune, gate, proxy)
 - URL/proxy safety validation
 - Response validation and streaming termination
 - Cost separation and billing models
 - Confidence interval and boundary logic
 - Manifest tampering detection
 - Saved run comparisons
-- GuideLLM subprocess boundary
 - Six-run golden protocol validation
-- Experimental tuning collector/analyzer/safety chain
 - Proxy cache behavior, scope isolation, and in-flight deduplication (unit tests)
 - Proxy integration tests against live Ollama backend (skipped if Ollama unavailable)
 
@@ -191,11 +189,12 @@ When reporting bugs, please include:
 throttle/
 ├── src/throttle/          # Main package source
 │   ├── cli.py            # CLI entry point and command definitions
-│   ├── measure.py        # Core measurement logic and bootstrap statistics
-│   ├── compare.py        # Comparison and statistical analysis
-│   ├── report.py         # HTML report generation
+│   ├── check.py          # throttle check: $/M tokens with CIs and verdicts
+│   ├── benchmark.py      # plan / smoke / benchmark measurement engine
+│   ├── compare.py        # Saved-report comparison and statistical analysis
+│   ├── autotune.py       # throttle autotune (local, free)
 │   ├── proxy.py          # Caching proxy server
-│   ├── watch.py          # Real-time endpoint monitoring
+│   ├── own/              # Own-your-intelligence loop commands
 │   └── ...
 ├── tests/                # Test suite (unittest-based, run with pytest)
 ├── ci/                   # CI scripts and locked dependencies

@@ -1,6 +1,5 @@
 # Local environments and Python build/cache state
 .venv/
-.guidellm-venv/
 venv/
 __pycache__/
 *.py[cod]

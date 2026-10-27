@@ -57,17 +57,20 @@ throttle check --share-id CHECK_ID   # share a chosen check
 
 See [Verdicts](../concepts/verdicts.md) for exit codes and exactly when each verdict is used.
 
-<details><summary>Full `throttle check --help` output (0.4.2)</summary>
+<details><summary>Full `throttle check --help` output (0.7.0)</summary>
 
 ```text
 usage: throttle check [-h] [--url URL] [--model MODEL] [--api-key-env NAME]
                       [--allow-insecure-http] [--metrics-url METRICS_URL]
-                      [--no-metrics] [--gpu-hourly-rate USD]
+                      [--no-metrics] [--gpu-hourly-rate USD] [--gpus N]
                       [--metric {output,input,total}] [--monthly-tokens N]
                       [--label LABEL] [--config KEY=VALUE] [--blocks BLOCKS]
                       [--requests-per-block REQUESTS_PER_BLOCK]
                       [--concurrency CONCURRENCY] [--max-tokens MAX_TOKENS]
                       [--warmup WARMUP] [--prompts PROMPTS] [--warm-cache]
+                      [--workload {default,agent}] [--turns N]
+                      [--sessions-concurrency C] [--tool-output-tokens T]
+                      [--assistant-turn-tokens A] [--system-prompt-tokens S]
                       [--request-timeout SECONDS]
                       [--max-requests MAX_REQUESTS]
                       [--max-tokens-per-request MAX_TOKENS_PER_REQUEST]
@@ -76,8 +79,8 @@ usage: throttle check [-h] [--url URL] [--model MODEL] [--api-key-env NAME]
                       [--max-elapsed-seconds MAX_ELAPSED_SECONDS]
                       [--max-estimated-spend USD] [--history] [--limit LIMIT]
                       [--history-dir HISTORY_DIR] [--against CHECK_ID]
-                      [--no-save] [--fail-if-costlier PCT] [--json PATH]
-                      [--share] [--share-id CHECK_ID]
+                      [--no-save] [--no-calibrate] [--fail-if-costlier PCT]
+                      [--json PATH] [--share] [--share-id CHECK_ID]
 
 Measure what this endpoint costs in dollars per million tokens, remember
 the serving config it was measured on, and compare with the last check of
@@ -95,12 +98,21 @@ A 95% CI is computed within one run, so it cannot see run-to-run drift
 also needs a run-to-run noise bound (t x sqrt(2) x SD) estimated from
 repeat checks of an unchanged config in the last 24 h, and a measured
 change larger than it. Until there are 3 such earlier checks (2 df), or
-when the baseline is more than 24 h old, the verdict is NOT CALIBRATED:
-run the same check a few more times without changing anything. A change
-in the ASSUMED GPU rate alone is never a verdict.
+when the baseline is more than 24 h old, the verdict is NOT CALIBRATED.
+So a first check calibrates itself: with no recent repeats of this config
+it runs up to 3 times back to back (each recorded as its own check, all
+within --max-elapsed-seconds). --no-calibrate runs once. A change in the
+ASSUMED GPU rate alone is never a verdict.
+
+The path: 1. run it once (it calibrates)  2. change one setting
+3. run the same command again for a verdict.
 
 options:
   -h, --help            show this help message and exit
+  --gpus N              how many GPUs serve this endpoint (default 1, or a
+                        'gpus' --config value). The per-GPU price stays
+                        ASSUMED, but a change in GPU count is a real config
+                        change, so its cost counts in the verdict
 
 endpoint:
   --url, --endpoint-url URL
@@ -160,6 +172,35 @@ workload (keep identical between checks):
   --request-timeout SECONDS
                         per-request timeout (default: 120)
 
+agent workload (--workload agent; keep identical between checks):
+  --workload {default,agent}
+                        'default': single-turn prompts, each with a unique
+                        tag. 'agent': multi-turn synthetic agent sessions.
+                        Each session shares one system prompt plus tool
+                        schema, and every turn resends the conversation so far
+                        plus a scripted assistant turn and a tool result, so a
+                        prefix cache can reuse it within the session (a per-
+                        run tag in the system prompt stops one run's cache
+                        helping the next). A block is --sessions-concurrency
+                        concurrent sessions of --turns sequential turns;
+                        --requests-per-block and --prompts do not apply. Agent
+                        and default checks are never compared
+  --turns N             agent: turns per session (default: 6)
+  --sessions-concurrency C
+                        agent: sessions run at once, and sessions per block
+                        (default: --concurrency)
+  --tool-output-tokens T
+                        agent: approximate size in tokens of the synthetic
+                        tool result appended each turn (default: 300)
+  --assistant-turn-tokens A
+                        agent: approximate size in tokens of the scripted
+                        assistant turn appended to the history each turn. The
+                        live reply is measured but never fed back, so every
+                        run sends the same prompts (default: 150)
+  --system-prompt-tokens S
+                        agent: approximate size in tokens of the shared system
+                        prompt plus tool schema (default: 1500)
+
 safety limits (checked before any traffic; same request, token, concurrency and spend defaults as smoke/benchmark):
   --max-requests MAX_REQUESTS
                         refuse a check that would send more requests than
@@ -190,6 +231,19 @@ history and CI:
   --against CHECK_ID    compare with this check id instead of the latest one
                         for the endpoint
   --no-save             compare but do not add this check to history
+  --no-calibrate        run one check only. By default, when there is no
+                        recent noise measurement for this endpoint, config and
+                        workload, the first check runs up to 3 times back to
+                        back (each recorded as its own check, all within
+                        --max-elapsed-seconds) so run-to-run noise is measured
+                        in one command, within --max-requests and --max-total-
+                        requested-tokens in total. Not done with --no-save,
+                        --fail-if-costlier or --against, after a config
+                        change, or when CI or GITHUB_ACTIONS is set to a true
+                        value (CI runs one check). With --json, a calibrating
+                        command writes its last check plus a 'calibration'
+                        object (ids, noise, first_comparison: run 1 against
+                        the real baseline)
   --fail-if-costlier PCT
                         exit with code 4 if this check is a calibrated MORE
                         EXPENSIVE than the previous one by at least PCT

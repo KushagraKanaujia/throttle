@@ -1,5 +1,5 @@
-"""`throttle gate`: exit codes, local judgment from check JSON files and ids,
-and the optional Throttle Cloud call (tests/cloud_stub.py, no network).
+"""`throttle gate`: exit codes and local judgment from check JSON files and ids.
+The gate is fully local: it never sends anything anywhere.
 
 Checks are produced by the real `throttle check` against autotune's
 SimulatedServer, whose speed depends on the --config values.
@@ -10,12 +10,11 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import httpx
 import pytest
 
 import throttle.check as check_module
-import throttle.cloud as cloud
 import throttle.config as config_module
-from cloud_stub import KEY, CloudStub
 from throttle.autotune import SimulatedServer
 from throttle.cli import main
 
@@ -26,13 +25,9 @@ URL = "http://127.0.0.1:8000"
 def env(tmp_path, monkeypatch):
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
     monkeypatch.setenv(check_module.HISTORY_ENV, str(tmp_path / "history"))
-    for name in (cloud.API_KEY_ENV, cloud.CLOUD_URL_ENV, "OPENAI_API_KEY", "CI", "GITHUB_ACTIONS"):
+    for name in ("OPENAI_API_KEY", "CI", "GITHUB_ACTIONS"):
         monkeypatch.delenv(name, raising=False)
     monkeypatch.setattr(config_module, "DEFAULT_CONFIG_PATH", tmp_path / "no-config.yaml")
-    monkeypatch.setattr(cloud, "RETRY_DELAY_SECONDS", 0.0)
-    stub = CloudStub()
-    monkeypatch.setattr(cloud, "_TRANSPORT", stub.transport())
-    return stub
 
 
 def check(capsys, tmp_path: Path, name: str, config: dict[str, str], gpus: int = 1) -> Path:
@@ -71,7 +66,7 @@ def test_cheaper_passes(env, capsys, tmp_path):
     assert "Verdict: CHEAPER" in out and "PASS: CHEAPER." in out
     result = json.loads((tmp_path / "g.json").read_text())
     assert result["pass"] is True and result["judged_by"] == "local"
-    assert env.requests == []  # not logged in: fully local
+    assert "cloud" not in result
 
 
 def test_more_expensive_fails(env, capsys, tmp_path):
@@ -128,70 +123,21 @@ def test_usage_errors_exit_2(env, capsys, tmp_path):
     base = baseline(capsys, tmp_path, runs=1)
     code, _, err = gate(capsys, "--baseline", str(base), "--candidate", "nope")
     assert code == 2 and "--candidate nope" in err
-    code, _, err = gate(capsys, "--baseline", "chk_cloud_only", "--candidate", str(base))
-    assert code == 2 and "needs `throttle login`" in err
+    code, _, err = gate(capsys, "--baseline", "chk_unknown", "--candidate", str(base))
+    assert code == 2 and "--baseline chk_unknown: no such file" in err
 
 
-def test_logged_in_gate_is_recorded_in_the_cloud_with_an_idempotency_key(env, capsys, tmp_path):
-    cloud.write_credentials(KEY)
+def test_gate_sends_nothing_and_still_accepts_no_cloud(env, capsys, tmp_path, monkeypatch):
     base = baseline(capsys, tmp_path)
     cand = check(capsys, tmp_path, "cand", {"seqs": "256", "tp": "1"})
+
+    def refuse(*args, **kwargs):
+        raise AssertionError("the gate tried to make an HTTP request")
+
+    monkeypatch.setattr(httpx.Client, "send", refuse)
+    monkeypatch.setattr(httpx.AsyncClient, "send", refuse)
     code, out, err = gate(capsys, "--baseline", str(base), "--candidate", str(cand))
     assert code == 0, err
-    assert env.paths() == ["/api/v1/ci/gate"]
-    assert "recorded in Throttle Cloud (charged $0.10, $9.90 credits left)" in out
-    body = env.bodies[0]
-    assert set(body) == {"baseline", "candidate"}
-    assert "127.0.0.1" not in json.dumps(body)
-    key = env.requests[0].headers["idempotency-key"]
-    assert key.startswith("gate:")
-    # the same gate again: same key, not charged twice
-    gate(capsys, "--baseline", str(base), "--candidate", str(cand))
-    assert env.requests[1].headers["idempotency-key"] == key
-    assert env.charges == ["/api/v1/ci/gate"]
-
-
-def test_no_cloud_skips_the_call(env, capsys, tmp_path):
-    cloud.write_credentials(KEY)
-    base = baseline(capsys, tmp_path)
-    cand = check(capsys, tmp_path, "cand", {"seqs": "256", "tp": "1"})
-    assert gate(capsys, "--baseline", str(base), "--candidate", str(cand), "--no-cloud")[0] == 0
-    assert env.requests == []
-
-
-def test_cloud_out_of_credits_still_judges_locally(env, capsys, tmp_path):
-    cloud.write_credentials(KEY)
-    env.credits_micro = 0
-    base = baseline(capsys, tmp_path)
-    cand = check(capsys, tmp_path, "cand", {"seqs": "64", "tp": "2"}, gpus=2)
-    code, out, err = gate(capsys, "--baseline", str(base), "--candidate", str(cand))
-    assert code == 1  # the local MORE EXPENSIVE still fails the gate
-    assert "Out of Throttle Cloud credits" in err and "judged locally" in err
-
-
-def test_cloud_only_baseline_is_judged_by_the_cloud(env, capsys, tmp_path, monkeypatch):
-    monkeypatch.setenv(cloud.API_KEY_ENV, KEY)
-    cand = check(capsys, tmp_path, "cand", {"seqs": "256", "tp": "1"})
-    code, out, err = gate(capsys, "--baseline", "chk_123", "--candidate", str(cand))
-    assert code == 0, err
-    assert env.bodies[0]["baseline_check_id"] == "chk_123"
-    assert "Verdict (Throttle Cloud): CHEAPER" in out
-    env.forced["/api/v1/ci/gate"] = 403
-    code, out, err = gate(capsys, "--baseline", "chk_123", "--candidate", str(cand))
-    assert code == 2
-    assert "plan does not include the CI cost gate" in err
-
-
-def test_unreachable_cloud_is_a_warning_not_a_failure(env, capsys, tmp_path):
-    cloud.write_credentials(KEY)
-    base = baseline(capsys, tmp_path)
-    cand = check(capsys, tmp_path, "cand", {"seqs": "256", "tp": "1"})
-    env.fail_first = 100
-    code, out, err = gate(capsys, "--baseline", str(base), "--candidate", str(cand))
-    assert code == 0
-    assert "Could not reach Throttle Cloud" in err and "judged locally" in err
     assert "PASS: CHEAPER." in out
-    env.forced["/api/v1/ci/gate"] = 502
-    env.fail_first = 0
-    code, out, err = gate(capsys, "--baseline", str(base), "--candidate", str(cand))
-    assert code == 0 and "judged locally" in err
+    # --no-cloud is kept as a silent no-op so existing CI workflows keep working.
+    assert gate(capsys, "--baseline", str(base), "--candidate", str(cand), "--no-cloud")[0] == 0

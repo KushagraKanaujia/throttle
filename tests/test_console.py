@@ -216,27 +216,10 @@ def test_ui_parser_defaults_to_loopback() -> None:
     assert args.no_open is False
 
 
-def test_upgrade_plans_and_offline_qr_codes(client: Client) -> None:
-    plans = client.get("/api/upgrade").json()
-    assert list(plans) == ["cloud"]
-    cloud = plans["cloud"]
-    assert cloud["url"] == "https://www.throttle-pro.com/pricing"
-    assert cloud["email"] == "kush@throttle-pro.com" and cloud["subject"] == "Throttle pilot"
-    assert cloud["price"] == "Start free: $10 of credits"
-    assert "Throttle Cloud cuts it" in cloud["note"]
-    assert "Enterprise" in cloud["note"]
-    text = json.dumps(plans)
-    for retired in ("$19", "Cost Audit", "early access", "No savings guarantee", "one-time",
-                    "2 weeks", "20%", "$500", "floor", "design partners", "3 months"):
-        assert retired not in text
-    # "pilot", "pro" and "audit" are old targets: still served, and they encode the pricing URL.
-    svgs = set()
-    for target in ("cloud", "pilot", "pro", "audit"):
-        response = client.get("/api/qr.svg", params={"target": target})
-        assert response.status_code == 200
-        assert response.headers["content-type"].startswith("image/svg+xml")
-        assert response.text.startswith("<svg") and "h1v1h-1z" in response.text
-        svgs.add(response.text)
-    assert len(svgs) == 1
-    # Only the fixed pricing URL can be encoded.
-    assert client.get("/api/qr.svg", params={"target": "https://evil.example"}).status_code == 422
+
+
+def test_cloud_upsell_endpoints_are_gone(client: Client) -> None:
+    assert client.get("/api/upgrade").status_code == 404
+    assert client.get("/api/qr.svg", params={"target": "cloud"}).status_code == 404
+    nav = json.dumps(client.get("/api/docs-nav").json())
+    assert "Throttle Cloud" not in nav and "more/pilot" not in nav

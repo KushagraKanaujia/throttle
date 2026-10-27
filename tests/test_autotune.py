@@ -1,8 +1,6 @@
-"""`throttle autotune`: search space parsing, the search and its guards,
-cloud metering (402/403/401, idempotency, offline), the dry run, and one real
-launch of a stub server subprocess on 127.0.0.1.
-
-Cloud calls go to tests/cloud_stub.py through httpx.MockTransport.
+"""`throttle autotune`: search space parsing, the search and its guards, the
+dry run, and one real launch of a stub server subprocess on 127.0.0.1.
+Autotune is fully local and free: no login, no metering.
 """
 
 from __future__ import annotations
@@ -16,9 +14,7 @@ import pytest
 
 import throttle.autotune as autotune
 import throttle.check as check_module
-import throttle.cloud as cloud
 import throttle.config as config_module
-from cloud_stub import KEY, CloudStub
 from throttle.cli import build_parser, main
 
 FAKE_SERVER = Path(__file__).parent / "fixtures" / "fake_openai_server.py"
@@ -30,13 +26,9 @@ def env(tmp_path, monkeypatch):
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
     monkeypatch.setenv(check_module.HISTORY_ENV, str(tmp_path / "history"))
     monkeypatch.setenv("HOME", str(tmp_path / "home"))
-    for name in (cloud.API_KEY_ENV, cloud.CLOUD_URL_ENV, "OPENAI_API_KEY", "CI", "GITHUB_ACTIONS"):
+    for name in ("OPENAI_API_KEY", "CI", "GITHUB_ACTIONS"):
         monkeypatch.delenv(name, raising=False)
     monkeypatch.setattr(config_module, "DEFAULT_CONFIG_PATH", tmp_path / "no-config.yaml")
-    monkeypatch.setattr(cloud, "RETRY_DELAY_SECONDS", 0.0)
-    stub = CloudStub()
-    monkeypatch.setattr(cloud, "_TRANSPORT", stub.transport())
-    return stub
 
 
 def parse(*argv: str):
@@ -112,24 +104,20 @@ def test_render_inserts_values_verbatim_and_drops_empty_flags():
         (["--launch", "serve {tp}", "--space", "tp=1,2", "--fail-if-costlier", "5"], "--fail-if-costlier"),
     ],
 )
-def test_usage_errors_before_anything_runs_or_is_charged(env, capsys, argv, message):
-    cloud.write_credentials(KEY)
+def test_usage_errors_before_anything_runs(env, capsys, argv, message):
     model = [] if "--model" in argv else ["--model", "m"]
     code, out, err = run(capsys, *argv, *model, "--url", "http://127.0.0.1:8000",
                          "--gpu-hourly-rate", "2")
     assert code == 2
     assert message in err
-    assert env.requests == []
 
 
 def test_priciest_trial_is_checked_against_safety_limits_first(env, capsys):
-    cloud.write_credentials(KEY)
     code, out, err = run(capsys, "--launch", "serve {tp}", "--space", "tp=1,8",
                          "--url", "http://127.0.0.1:8000", "--model", "m",
                          "--gpu-hourly-rate", "4", "--max-estimated-spend", "1")
     assert code == 2
     assert "the 8-GPU trial would be refused" in err
-    assert env.requests == []
 
 
 def cli_with_sim(monkeypatch):
@@ -141,51 +129,22 @@ def cli_with_sim(monkeypatch):
     return sim
 
 
-def test_not_logged_in_autotune_runs_locally_and_free(env, capsys, tmp_path, monkeypatch):
+def test_autotune_runs_locally_and_free(env, capsys, tmp_path, monkeypatch):
     sim = cli_with_sim(monkeypatch)
     code, out, err = run(capsys, *DEMO, *SMALL, "--history-dir", str(tmp_path / "at"),
                          "--max-trials", "2", "--json", str(tmp_path / "r.json"))
     assert code == 0, err
-    assert out.count(autotune.EARLY_ACCESS_LINE) == 1
-    assert env.requests == []  # nothing metered, nothing uploaded
     assert sim.trials == 3
     result = json.loads((tmp_path / "r.json").read_text())
-    assert result["cloud_url"] is None and len(result["trials"]) == 3
-    assert "metered" not in out
+    assert "cloud_url" not in result and len(result["trials"]) == 3
+    for word in ("metered", "credits", "login", "Cloud"):
+        assert word not in out + err
 
 
-def test_dry_run_never_contacts_the_cloud(env, capsys, tmp_path):
+def test_dry_run_is_labelled_simulated(env, capsys, tmp_path):
     code, out, err = run(capsys, "--dry-run", "--history-dir", str(tmp_path / "at"), *SMALL)
     assert code == 0, err
-    assert env.requests == []
     assert "DRY RUN" in out and "SIMULATED" in out
-    assert autotune.EARLY_ACCESS_LINE not in out
-
-
-def test_logged_in_but_cloud_unreachable_warns_and_runs_locally(env, capsys, tmp_path, monkeypatch):
-    cloud.write_credentials(KEY)
-    sim = cli_with_sim(monkeypatch)
-    env.fail_first = 1000
-    code, out, err = run(capsys, *DEMO, *SMALL, "--history-dir", str(tmp_path / "at"),
-                         "--max-trials", "2")
-    assert code == 0, err
-    assert "Could not reach Throttle Cloud" in err and "Running locally" in err
-    assert sim.trials == 3
-    assert set(env.paths()) == {"/api/v1/me"}  # no trial or result calls after that
-
-
-def test_cloud_lost_mid_run_continues_locally(env, capsys, tmp_path, monkeypatch):
-    cloud.write_credentials(KEY)
-    sim = cli_with_sim(monkeypatch)
-    env.forced["/api/v1/autotune/trials"] = 503
-    code, out, err = run(capsys, *DEMO, *SMALL, "--history-dir", str(tmp_path / "at"),
-                         "--max-trials", "2")
-    assert code == 0, err
-    assert "Continuing locally, not metered" in out
-    assert sim.trials == 3
-    # one metering attempt (plus its retry), then local: no result upload either
-    assert env.paths().count("/api/v1/autotune/trials") == 2
-    assert not any(p.endswith("/result") for p in env.paths())
 
 
 def test_autotune_help_says_rate_is_per_gpu_and_hides_check_only_flags(capsys):
@@ -291,112 +250,14 @@ def test_baseline_in_the_middle_walks_both_ways(env, capsys, tmp_path):
     assert result["found_cheaper"] is True
 
 
-def test_trial_checks_are_saved_and_never_pushed(env, capsys, tmp_path):
-    cloud.write_credentials(KEY)
-    _, _, result = dry(capsys, tmp_path, "--push")
+def test_trial_checks_are_saved(env, capsys, tmp_path):
+    _, _, result = dry(capsys, tmp_path)
     run_dir = tmp_path / "at" / result["run_id"]
     records, skipped = check_module.load_history(run_dir)
     assert skipped == 0
     assert len(records) == sum(len(t["check_ids"]) for t in result["trials"])
     assert (run_dir / "autotune.json").exists()
     assert all(r["fingerprint"]["label"].startswith("autotune-") for r in records)
-    assert env.requests == []  # --push on autotune never uploads trial checks
-
-
-# -- cloud metering --------------------------------------------------------------
-
-
-def metered(capsys, env, tmp_path, *extra: str):
-    args = parse("--dry-run", "--history-dir", str(tmp_path / "at"), "--json",
-                 str(tmp_path / "r.json"), *SMALL, *extra)
-    sim = autotune.SimulatedServer("demo-model", args.concurrency)
-    code, out, err = run_with(capsys, args, backend=sim, client=cloud.CloudClient(KEY))
-    result = json.loads((tmp_path / "r.json").read_text()) if (tmp_path / "r.json").exists() else None
-    return code, out, err, result, sim
-
-
-def test_every_trial_is_metered_before_it_runs_with_an_idempotency_key(env, capsys, tmp_path):
-    code, out, err, result, sim = metered(capsys, env, tmp_path, "--max-trials", "4")
-    assert code == 0, err
-    trial_posts = [r for r in env.requests if r.url.path == "/api/v1/autotune/trials"]
-    assert len(trial_posts) == len(result["trials"]) == sim.trials
-    run_id = result["run_id"]
-    assert [r.headers["idempotency-key"] for r in trial_posts] == [
-        f"autotune:{run_id}:trial:{i}" for i in range(len(trial_posts))
-    ]
-    bodies = [json.loads(r.content) for r in trial_posts]
-    assert [b["trial_index"] for b in bodies] == list(range(len(bodies)))
-    assert bodies[0]["config"] == result["baseline_config"]
-    assert env.paths()[0] == "/api/v1/me"
-    assert env.paths()[-1] == f"/api/v1/autotune/runs/{run_id}/result"
-    final = env.bodies[-1]
-    assert final["best_config"] == result["best_config"]
-    assert final["baseline_usd_per_m"] == result["baseline"]["usd_per_m"]
-    assert final["best_usd_per_m"] == result["best"]["usd_per_m"]
-    assert len(final["trials"]) == len(result["trials"])
-    assert "launch" not in json.dumps(final) and "127.0.0.1" not in json.dumps(final)
-    assert result["cloud_url"] == "https://cloud.throttle-pro.com/autotune/run1"
-    assert "$1.00" in out and "credits left" in out
-    assert env.credits() == f"{10 - len(trial_posts):.2f}"
-
-
-def test_402_mid_run_stops_cleanly_with_the_best_so_far(env, capsys, tmp_path):
-    env.credits_micro = 3_000_000  # baseline + 2 candidates
-    code, out, err, result, sim = metered(capsys, env, tmp_path)
-    assert code == 0, err
-    assert sim.trials == 3  # the 4th trial was refused before its server started
-    assert "Out of Throttle Cloud credits ($0.00 left)" in out
-    assert "https://www.throttle-pro.com/pricing" in out
-    assert result["stopped"].startswith("Out of Throttle Cloud credits")
-    assert result["trials"][-1]["status"] == "not run"
-    assert result["found_cheaper"] is True  # seqs 128 and 256 were measured first
-    assert env.paths()[-1].endswith("/result")
-
-
-def test_402_before_the_baseline_runs_nothing(env, capsys, tmp_path):
-    env.credits_micro = 0
-    code, out, err, result, sim = metered(capsys, env, tmp_path)
-    assert code == 1
-    assert sim.trials == 0
-    assert "Out of Throttle Cloud credits" in out
-
-
-@pytest.mark.parametrize("status,text", [(403, "plan does not include Autotune"),
-                                          (401, "rejected the API key")])
-def test_403_and_401_stop_before_any_trial(env, capsys, tmp_path, status, text):
-    env.forced["/api/v1/autotune/trials"] = status
-    code, out, err, result, sim = metered(capsys, env, tmp_path)
-    assert code == 1
-    assert sim.trials == 0
-    assert text in out
-
-
-def test_offline_cloud_does_not_block_autotune(env, capsys, tmp_path):
-    env.fail_first = 100
-    code, out, err, result, sim = metered(capsys, env, tmp_path, "--max-trials", "2")
-    assert code == 0, err
-    assert sim.trials == 3
-    assert "Could not reach Throttle Cloud" in err
-    assert result["cloud_url"] is None
-
-
-def test_result_upload_failure_is_a_warning(env, capsys, tmp_path):
-    env.forced["/api/v1/autotune/runs/"] = 500
-    code, out, err, result, sim = metered(capsys, env, tmp_path, "--max-trials", "2")
-    assert code == 0
-    assert "was not saved to Throttle Cloud" in err
-    assert result["cloud_url"] is None
-
-
-def test_logged_in_cli_autotune_uses_saved_key(env, capsys, tmp_path, monkeypatch):
-    cloud.write_credentials(KEY)
-    cli_with_sim(monkeypatch)
-    code, out, err = run(capsys, *DEMO, *SMALL, "--history-dir", str(tmp_path / "at"),
-                         "--max-trials", "2")
-    assert code == 0, err
-    assert env.paths().count("/api/v1/autotune/trials") == 3
-    assert env.requests[0].headers["authorization"] == f"Bearer {KEY}"
-    assert autotune.EARLY_ACCESS_LINE not in out
 
 
 # -- a real server process ---------------------------------------------------------
@@ -434,7 +295,7 @@ def test_real_launcher_starts_measures_and_stops_each_server(env, capsys, tmp_pa
     port = free_port()
     args = launcher_args(tmp_path, port, ["speed=1,10"], "--warmup", "1",
                          server_flags=" --base-seconds 0.25")
-    code, out, err = run_with(capsys, args, client=cloud.CloudClient(KEY))
+    code, out, err = run_with(capsys, args)
     assert code == 0, err + out
     result = json.loads((tmp_path / "r.json").read_text())
     assert result["simulated"] is False
@@ -464,10 +325,9 @@ def test_real_launcher_refuses_when_a_server_is_already_running(env, capsys, tmp
         while not launcher._healthy() and time.monotonic() < deadline:
             time.sleep(0.05)
         args = launcher_args(tmp_path, port, ["speed=1,3"])
-        code, out, err = run_with(capsys, args, client=cloud.CloudClient(KEY))
+        code, out, err = run_with(capsys, args)
         assert code == 2
         assert "already answering" in err
-        assert "/api/v1/autotune/trials" not in env.paths()  # nothing charged
     finally:
         proc.terminate()
         proc.wait(timeout=10)
@@ -481,7 +341,7 @@ def test_real_launcher_reports_a_crashing_server(env, capsys, tmp_path, fast_pol
         "--model", "fake", "--gpu-hourly-rate", "2", "--history-dir", str(tmp_path / "at"),
         "--json", str(tmp_path / "r.json"), *SMALL, "--warmup", "0", "--startup-timeout", "20",
     )
-    code, out, err = run_with(capsys, args, client=cloud.CloudClient(KEY))
+    code, out, err = run_with(capsys, args)
     assert code == 0, err + out
     result = json.loads((tmp_path / "r.json").read_text())
     crashed = result["trials"][1]

@@ -4,6 +4,38 @@ All notable changes to Throttle will be documented in this file.
 
 ## [Unreleased]
 
+Throttle is repositioning to "own your intelligence". This release removes
+what the new product does not need. Pricing moves to a share of measured
+savings, so the credit plans and every login/metering path are gone.
+
+### Removed
+- Throttle Cloud and the credit plans: `throttle login`, `logout`, `whoami`
+  and `upgrade`, the `cloud` and `upgrade` modules, the vendored QR-code
+  generator, `throttle check --push/--project`, the post-verdict upgrade
+  nudge, and the console's Cloud page (`/api/upgrade`, `/api/qr.svg`).
+- Cloud metering in `throttle autotune` and the Cloud call in `throttle gate`.
+  Both now run fully locally and free, with no login. `gate --no-cloud` is
+  still accepted (and ignored) so existing CI workflows keep working;
+  `autotune.json` no longer has a `cloud_url` field.
+- The GuideLLM backend: `--backend guidellm` and its flags on
+  `plan`/`smoke`/`benchmark`/`golden`, and the `guidellm` extra. Reports keep
+  the `guidellm_validation_gaps_acknowledged` field (always false) so the
+  schema is unchanged.
+- The `max_num_seqs` research tools: `throttle diagnose` and
+  `throttle experimental-tuning`, with their bottleneck analyzer and safety
+  validator, and `validation/experimental-tuning-vllm-docs/`.
+- The simulator commands: the old `throttle demo`, the hidden
+  `throttle validate-sim`, and the `simulator` and `workload` modules.
+- The old `throttle report` (a Chart.js HTML page comparing two `measure`
+  files).
+- `throttle cost` and `throttle measure`: `throttle check` measures \$/M tokens
+  against a live endpoint with 95% CIs, calibration and verdicts, which covers
+  both. `throttle compare` no longer reads `measure` JSON files.
+- Stale docs: `docs/internal/`, `docs/cloud.md`, `docs/V1_SPEC.md`,
+  `docs/USER_TESTING.md`, `QUICKSTART.md`, and the console docs pages for the
+  removed commands. The README "70% cheaper" sample output (from mock
+  endpoints) is gone.
+
 ## [0.7.0] - 2026-10-26
 
 Throttle cuts what your LLM inference costs on your own GPUs: whether a

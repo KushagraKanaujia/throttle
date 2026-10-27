@@ -37,10 +37,10 @@ A laptop has no real GPU price, so `1.50` is an assumed rate. The dollar figure 
 
 ```bash
 pipx install throttle-pro
-throttle demo
+throttle autotune --dry-run
 ```
 
-`throttle demo` simulates a baseline and a tuned configuration and prints a side-by-side cost comparison in seconds. Every number it prints is labelled SIMULATED.
+`throttle autotune --dry-run` simulates a server and every trial, so you can see the output without a GPU. Every number it prints is labelled SIMULATED.
 
 ## What happens next
 

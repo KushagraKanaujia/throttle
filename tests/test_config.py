@@ -22,7 +22,7 @@ def _make_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser()
     parser.add_argument("--concurrency", nargs="+", type=_positive_int)
     parser.add_argument("--max-tokens", type=_positive_int)
-    parser.add_argument("--backend", choices=("native", "guidellm"), default="native")
+    parser.add_argument("--backend", choices=("native", "other"), default="native")
     return parser
 
 
