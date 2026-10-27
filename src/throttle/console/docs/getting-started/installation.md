@@ -32,6 +32,6 @@ pipx upgrade throttle-pro
 throttle --help
 ```
 
-With no server running, `throttle demo` confirms the install end to end. With a server, point `throttle check` at its OpenAI-compatible URL (with or without `/v1`).
+With no server running, `throttle check --help` shows what a check needs. With a server, point `throttle check` at its OpenAI-compatible URL (with or without `/v1`).
 
 > **Tip:** Throttle sends requests only to the endpoint you name. Prompts, responses and keys never leave your machine. See [Privacy](../more/privacy.md).

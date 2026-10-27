@@ -20,18 +20,8 @@ throttle compare --baseline http://localhost:30000 --baseline-model Qwen/Qwen2.5
     --eval-set evals.jsonl --runs 3 --gpu-price 2.49
 ```
 
-Output shape, from the repo's own test (`tests/test_evalcompare.py`, two mock
-endpoints; not a GPU benchmark):
-
-```
-                      baseline                      candidate
-  $ / 1M output tok   $0.346 ($0.340..$1.13)        $0.102 ($0.101..$0.107)
-  $ / 1k passing ans. $0.0173 ($0.0170..$0.0563)    $0.00512 ($0.00504..$0.00533)
-  pass rate           100%                          100%
-  median (min..max) over the runs; "within noise" = the run ranges overlap
-
-Candidate is 70% cheaper per passing answer and passes the same checks: SWITCH
-```
+It prints \$ per million output tokens and \$ per thousand passing answers for
+each side, with the range over the runs, and ends with one verdict line.
 
 It only knows the checks you write (`json`, `exact`, `contains:`, `regex:`);
 a prompt with no check is timed and priced but never judged.
@@ -82,15 +72,8 @@ that answers are correct; use `throttle compare` with your own checks for that.
 **Find the cheaper config: `throttle autotune`.** Restarts your server with
 each config in a search space, measures each like `check`, and hands you the
 cheapest verified-cheaper config with a ready-to-paste launch command.
-Autotune is free during early access; `throttle login` saves runs to Throttle
-Cloud. **`throttle gate`** is a CI cost gate on two saved checks: it judges
-locally and for free without a login, and when logged in it also records the
-result in Throttle Cloud (\$0.10 of credits; `--no-cloud` keeps it local).
-
-**Throttle Cloud** (saved runs, team check history, `check --push`): start
-with \$10 of free credits, no card. Plans and the Enterprise pilot:
-[throttle-pro.com/pricing](https://www.throttle-pro.com/pricing), or run
-`throttle upgrade`.
+**`throttle gate`** is a CI cost gate on two saved checks. Both run fully on
+your machine, free, with no login.
 
 How Throttle decides: [docs/METHODOLOGY.md](https://github.com/KushagraKanaujia/throttle/blob/main/docs/METHODOLOGY.md)
 
@@ -134,8 +117,8 @@ Your laptop has no real GPU price, so the \$1.50/hr is an assumed rate; use
 what your GPUs actually cost when you point it at a real server. A busy
 laptop can be too noisy for any verdict; Throttle says so when it is.
 
-**No GPU at all:** `pipx install throttle-pro && throttle demo` runs a
-simulated comparison in about a second (every number is labelled SIMULATED).
+**No GPU at all:** `pipx install throttle-pro && throttle autotune --dry-run`
+runs Autotune against a simulated server (every number is labelled SIMULATED).
 
 ## Throttle Console (`throttle ui`)
 
@@ -154,10 +137,10 @@ It runs on 127.0.0.1, reads your check history (`~/.throttle/checks`, or
 internet. Verdicts come from the same code as `throttle check`, so the two
 always agree.
 
-## Cut the bill: `throttle autotune` (free during early access)
+## Cut the bill: `throttle autotune` (free, local)
 
-Try Autotune first on a simulated server: no GPU, no login, nothing charged,
-every number labelled SIMULATED.
+Try Autotune first on a simulated server: no GPU needed, every number
+labelled SIMULATED.
 
 ```sh
 throttle autotune --dry-run --monthly-tokens 2B
@@ -197,33 +180,8 @@ projected monthly dollars saved at `--monthly-tokens` (and the conservative
 verifiably cheaper, it says so and tells you to keep your config. `--space`
 also takes a YAML or JSON file; `--json PATH` writes every trial.
 
-**Free during early access.** Without a login, Autotune runs fully on your
-machine and nothing is metered or uploaded; it prints one line saying so.
-After `throttle login`, runs are saved to Throttle Cloud and each trial, the
-baseline included, uses \$1.00 of credits, charged before the trial runs (new
-accounts start with \$10). Out of credits, Autotune stops cleanly and reports
-the best config found so far. If Throttle Cloud cannot be reached, it warns
-and carries on locally; it never blocks a run.
-
-**Also in Throttle Cloud:**
-
-```sh
-throttle whoami                              # account, plan, credits left
-throttle check ... --push                    # save a check to your team's history, print its link ($0.25)
-throttle gate --baseline base.json --candidate new.json   # CI cost gate ($0.10 when logged in)
-```
-
-What leaves your machine: numbers, the model name, the config fingerprint,
-engine and GPU. Never prompts, responses, endpoint URLs, hostnames or keys.
-Nothing is uploaded unless you are logged in and run a cloud command (or set
-`push: true` in `~/.throttle/config.yaml`). Every field is listed in
-[docs/cloud.md](https://github.com/KushagraKanaujia/throttle/blob/main/docs/cloud.md).
-`THROTTLE_API_KEY` overrides the saved key (use it in CI).
-
-`throttle upgrade` prints the plans, the Enterprise pilot (a hands-on pilot on
-your stack, kush@throttle-pro.com) and a QR code for
-[throttle-pro.com/pricing](https://www.throttle-pro.com/pricing), generated on
-your machine; `--url-only` prints just the link and `--no-qr` skips the drawing.
+Autotune runs fully on your machine: no login, nothing metered, nothing
+uploaded. It only talks to the server it launches.
 
 ## Should you switch models? `throttle compare`
 
@@ -364,16 +322,16 @@ change a serving setting ──► throttle check ──► $/M tokens (95% CI) 
 
 | | Command | What you get |
 | --- | --- | --- |
-| **Price it** | `throttle cost`, `throttle watch` | Dollars per million tokens, measured against a live endpoint (`cost`) or read from vLLM `/metrics` (`watch`). The GPU $/hr is yours and always labelled ASSUMED; tokens and time are MEASURED. |
+| **Price it** | `throttle check`, `throttle watch` | Dollars per million tokens, measured against a live endpoint (`check`) or read from vLLM `/metrics` (`watch`). The GPU $/hr is yours and always labelled ASSUMED; tokens and time are MEASURED. |
 | **Re-check it after every config change** | `throttle check` | $/M tokens with a 95% confidence interval, what changed in the config, and a verdict against the last check. CHEAPER or MORE EXPENSIVE only when the measured change is larger than a run-to-run noise bound estimated from at least 3 recent repeat checks **and** the intervals don't overlap. Otherwise NO WINNER, or NOT CALIBRATED when there is no recent noise measurement yet (a first check measures it by repeating itself 3 times in one command). `--fail-if-costlier` makes it a CI gate. |
-| **Cut it** (Throttle Cloud) | `throttle autotune` | Restarts your server with candidate configs from a search space you give, judges each against a calibrated baseline with the `throttle check` rules, and returns the cheapest config that is a verified CHEAPER without OUTPUT CHANGED, the projected monthly \$ saved and a ready-to-paste launch command. |
+| **Cut it** | `throttle autotune` | Restarts your server with candidate configs from a search space you give, judges each against a calibrated baseline with the `throttle check` rules, and returns the cheapest config that is a verified CHEAPER without OUTPUT CHANGED, the projected monthly \$ saved and a ready-to-paste launch command. |
 | **Prove the savings** | `throttle savings` | A conservative dollar figure for a verified CHEAPER change: the smaller of (baseline CI low - candidate CI high) and ((1 - run-to-run noise bound) x baseline mean - candidate mean), x your production tokens, refused unless the verdict is calibrated, on the same model and workload, with unchanged outputs. |
 | **Prove a config change** | `throttle plan` → `smoke` → `benchmark` → `golden` | Traffic that is planned and capped before any request goes out, repeated measurement blocks, 95% intervals, and a six-position counterbalanced protocol for a decision-grade baseline-vs-candidate answer. |
 | **Profile agents** | `throttle proxy --enable-session-tracking` + `throttle sessions` | A per-session breakdown of time spent generating versus waiting, an estimate of redundant prefill, and suggested backend settings to check. |
 
 Throttle provisions nothing. Every command above only measures and reports;
 `--config KEY=VALUE` only records what you changed. The one command that
-touches your server is `throttle autotune` (Throttle Cloud), which starts and
+touches your server is `throttle autotune`, which starts and
 stops it with the launch command you give it.
 
 ## Receipts
@@ -410,67 +368,21 @@ Add the `embeddings` extra (`pipx install 'throttle-pro[embeddings]'`) only if
 you want the proxy's opt-in semantic cache tier. To hack on Throttle itself,
 see [Install from source](#install-from-source).
 
-## Quick demo (5 minutes, no GPU)
+## Quick start (5 minutes, Ollama on a laptop)
 
-**1. The simulator (no server, no network, about 1 second):**
-
-```sh
-throttle demo
-```
-
-```text
-Metric                                       Baseline        Tuned        Delta
---------------------------------------------------------------------------------
-Wall clock time (seconds)                       77.87        63.14       -14.73
-GPU hours                                    0.021630     0.017538    -0.004092
-Blended cost ($/M tokens, in + out)              0.08         0.07        -0.02
-Input cost ($/M tokens)                          0.35         0.28        -0.07
-Output cost ($/M tokens)                         0.11         0.09        -0.02
-Total cost ($)                                 0.0324       0.0263      -0.0061
-...
-All values above are [SIMULATED] - they depend entirely on assumed
-throughput parameters, not real hardware measurements.
-```
-
-Steps 2 to 5 need [Ollama](https://ollama.com/download) running locally with
+These steps need [Ollama](https://ollama.com/download) running locally with
 `ollama pull llama3.2:3b`. That is enough on a laptop. Run `throttle` with no
-arguments for the same getting-started steps in the terminal.
-
-**2. Price your endpoint.** The hourly rate is one you supply. A laptop has no
+arguments for the same getting-started steps in the terminal. A laptop has no
 real GPU price, so the examples here assume $1.50/hour unless they say
-otherwise:
-
-```sh
-throttle cost --url http://localhost:11434 --model llama3.2:3b \
-  --gpu-hourly-rate 1.50 --num-requests 5
-```
-
-Recorded on a MacBook (Apple M3 Pro, local Ollama 0.32.5, `llama3.2:3b`;
-GPU rate ASSUMED):
-
-```text
-Measured Cost [MEASURED time x ASSUMED $1.50/hr]:
-  GPU hours: 0.001494
-  Total cost: $0.0022
-  Blended cost: $2.87 per million tokens (input + output, 780 tokens)
-  Input cost: $3.78 per million tokens
-  Output cost: $11.98 per million tokens
-  Note: input and output $/M each charge the whole run to one token type;
-  they are not additive. Compare the blended figure with a per-token bill.
-```
-
-The input and output figures each charge the full run cost to that one token
-type, so don't add them together; the blended line is the one to hold next to
-a per-token bill. The prompt is synthetic and requests run one at a time.
+otherwise.
 
 `--url` and `--endpoint-url` are the same flag, and both `http://host:port`
-and `http://host:port/v1` work here and in `measure`, `check` and
-`plan`/`smoke`/`benchmark`. (`proxy` takes `--backend-url`.) `--model` can be
-left out of `cost`, `measure` and `check` only: if the server lists exactly
-one model at `/v1/models`, that model is used and named in the output; if it
-lists several, the error names them.
+and `http://host:port/v1` work in `check` and `plan`/`smoke`/`benchmark`.
+(`proxy` takes `--backend-url`.) `--model` can be left out of `check`: if the
+server lists exactly one model at `/v1/models`, that model is used and named
+in the output; if it lists several, the error names them.
 
-**3. Re-check cost after a config change.** `throttle check` is the command to
+**1. Re-check cost after a config change.** `throttle check` is the command to
 rerun. It measures $/M tokens in repeated blocks, fingerprints the serving
 config it can see (`/v1/models`, vLLM `/metrics` `*_info` labels, plus
 anything you declare with `--config KEY=VALUE`), saves the result to
@@ -566,7 +478,7 @@ See
 [`throttle check`: verdicts and exit codes](#throttle-check-verdicts-and-exit-codes)
 for the exact rules and what a changed GPU rate does.
 
-**4. Optional: the caching proxy.** Caching is one cost lever. It is off by
+**2. Optional: the caching proxy.** Caching is one cost lever. It is off by
 default, and it only helps when your traffic repeats itself. Start the proxy
 in one terminal:
 
@@ -603,7 +515,7 @@ too few words with the first for the default lexical tier, so it went to the
 model. The opt-in semantic tier (`--enable-embeddings`) would catch it, at a
 cost described under [Caching proxy](#caching-proxy).
 
-**5. Profile an agent.** Start the proxy with session tracking:
+**3. Profile an agent.** Start the proxy with session tracking:
 
 ```sh
 throttle proxy --backend-url http://localhost:11434 --port 8091 --enable-session-tracking
@@ -748,8 +660,8 @@ writes the check, its comparison and the noise groups as JSON, and
 `--no-save` compares without adding the check to history.
 
 `check` sends its own fixed workload (built-in prompts, 5 blocks x 4
-requests, concurrency 2, max 64 output tokens by default), so its $/M is not
-comparable with `throttle cost`; compare checks with checks. Keep the
+requests, concurrency 2, max 64 output tokens by default), so compare checks
+with checks. Keep the
 workload flags identical between checks, or the comparison is NO WINNER. It
 is capped before any traffic like `smoke`: at most 10,000 requests, 1,024
 output tokens per request, 2,000,000 requested output tokens, concurrency 64,
@@ -806,10 +718,8 @@ from cache, so once the prefix was cached the warm run looked about 25x
 cheaper per input token. Use cold (the default) unless your production
 traffic really repeats prefixes.
 
-`cost` and `measure` tag their prompts the same way by default and take
-`--warm-cache` too; `measure` records the mode in its JSON and `throttle
-compare` does not rank a cold file against a warm one. `smoke`, `benchmark`
-and `golden` still resend their fixed prompt set, because the recorded
+`smoke`, `benchmark`
+and `golden` resend their fixed prompt set, because the recorded
 workload sha256 (and a golden decision's comparability) is defined over those
 exact prompts; declare what the server does with `--cache-policy` (`warm` if
 prefix caching is on, `disabled` only if it is off). `check` keeps recording
@@ -920,7 +830,7 @@ setup.
 
 `throttle gate --baseline BASE --candidate NEW` compares two `throttle check
 --json` files (or check ids) and exits 1 on MORE EXPENSIVE or OUTPUT CHANGED,
-0 otherwise; logged in, it also records the gate in Throttle Cloud. A
+0 otherwise. It runs fully locally. A
 copy-paste GitHub Actions workflow is in
 [docs/ci-gate.md](https://github.com/KushagraKanaujia/throttle/blob/main/docs/ci-gate.md).
 
@@ -979,8 +889,8 @@ size yet, so a short session can still produce a `[HIGH]` finding.
 
 - `throttle plan` shows the destination, request count, token ceiling, time
   limit and cost model **before any traffic is sent**.
-- Benchmark-family outputs (demo, smoke, benchmark, golden) label their
-  evidence kind: `[SIMULATED]`, smoke (`NON-DECISION-GRADE`), exploratory
+- Benchmark-family outputs (smoke, benchmark, golden) label their
+  evidence kind: smoke (`NON-DECISION-GRADE`), exploratory
   sweep, or golden `decision_eligible`.
 - A failed, truncated or malformed response invalidates its block. Throttle
   never reports an optimum it didn't test.
@@ -1006,13 +916,11 @@ make a configuration decision. They answer different questions:
 
 | Goal | Command | Can reach `decision_eligible: true`? |
 | --- | --- | --- |
-| See the cost model with no hardware | `throttle demo` | No (simulated) |
-| Price a live endpoint | `throttle cost` / `throttle watch` | No |
+| Price a live endpoint | `throttle check` / `throttle watch` | No |
 | Re-check $/M after each config change | `throttle check` | No (a calibrated CHEAPER / MORE EXPENSIVE is a guard rail, not a controlled experiment) |
 | Cache production traffic / profile agents | `throttle proxy` / `throttle sessions` | Not applicable |
 | Check connectivity and response validity | `throttle smoke` | No |
 | Explore concurrency or request-rate levels | `throttle benchmark --concurrency 1 2 4 8 ...` | No |
-| Generate one safety-audited candidate test value | `throttle experimental-tuning ...` | No |
 | Decide between one controlled baseline and candidate | `throttle golden ...` | Yes, if every protocol and evidence gate passes |
 
 A concurrency sweep is intentionally descriptive. It is useful for finding a
@@ -1169,23 +1077,10 @@ and privacy warning before proceeding. With unknown billing it deliberately
 blocks traffic until the operator explicitly acknowledges that the spend
 calculation is unavailable.
 
-GuideLLM is an optional, out-of-process cross-check backend. The pinned release
-is exactly 0.7.3 and its official Python support is 3.10–3.13, so use a 3.13
-environment for that extra. Throttle enables GuideLLM traffic only on POSIX
-platforms (Linux/macOS), where it can terminate the entire isolated subprocess
-group; Windows fails closed before traffic:
-
-```sh
-python3.13 -m venv .guidellm-venv
-. .guidellm-venv/bin/activate
-python -m pip install -e '.[guidellm]'
-guidellm --version
-```
-
 ## Start with a zero-traffic plan
 
 `plan` does not read the API-key environment variable, resolve DNS, construct
-an HTTP client, or invoke GuideLLM.
+or an HTTP client.
 
 ```sh
 throttle plan \
@@ -1325,9 +1220,7 @@ For valid native conditions, the report includes:
 
 Native SSE chunks are not guaranteed to be token boundaries. Throttle therefore
 does not relabel chunk gaps as ITL: native `itl_ms` is explicitly unavailable,
-while `inter_chunk_latency_ms` is separate. The GuideLLM cross-check exposes its
-own ITL aggregate with its source identified, but cannot pass Throttle's strict
-completion gate.
+while `inter_chunk_latency_ms` is separate.
 
 Any failed, malformed, oversized, incomplete, or truncated response invalidates
 the entire block and condition for decisions. Diagnostic counts remain, while
@@ -1358,7 +1251,7 @@ GPU requests. Run totals report `cache_enabled`, `cache_hits`, `cache_misses`,
 and `cache_hit_rate` separately. The cache uses Jaccard similarity on tokenized
 prompts and is thread-safe for concurrent requests.
 
-Cache telemetry flows through experimental tuning validation and saved-run
+Cache telemetry flows through saved-run
 comparison. This is a local optimization tool; cache behavior does not transfer
 to production deployments unless the production server implements equivalent
 semantic caching.
@@ -1485,44 +1378,6 @@ See `throttle smoke --help` or `throttle benchmark --help` for the flags. The
 engine reserves request/token budget before launch and stops new scheduling at
 a limit. In-flight work is cancelled where the client controls it. SIGINT writes
 an atomic, mode-0600, sanitized partial JSON report and exits 130.
-
-## Pinned GuideLLM backend
-
-Throttle pins [GuideLLM 0.7.3](https://github.com/vllm-project/guidellm/releases/tag/v0.7.3)
-and invokes `guidellm run` without a shell. It verifies the exact version first,
-removes inherited proxy and GuideLLM variables, passes the API key only through
-`GUIDELLM__SPEC__BACKEND__API_KEY`, disables redirects, enables TLS verification,
-disables GuideLLM's unconstrained backend health probe, forces tokenizer loading
-from the local cache with Hugging Face offline mode, removes inherited Hugging
-Face credential variables and ambient TLS trust/key-log overrides, captures no
-child console output, parses a versioned numeric allow-list, and deletes its
-mode-0700 temporary directory.
-
-GuideLLM 0.7.3 cannot prove `finish_reason` or response token provenance and
-does not enforce response-byte size. Its aggregate may also synthesize missing
-usage from the requested token shape. Therefore this backend is deliberately
-cross-check-only, requires an explicit acknowledgement, uses GuideLLM
-`synthetic_text` rather than claiming parity with supplied JSONL, and always
-sets `decision_eligible: false`:
-
-```sh
-throttle benchmark \
-  --backend guidellm \
-  --guidellm-prompt-tokens 256 \
-  --allow-guidellm-validation-gaps \
-  ...
-```
-
-The adapter accepts only endpoint forms whose route is exactly equivalent to
-GuideLLM's `/v1/chat/completions` route (root, `/v1`, or that full path), and
-fails closed on custom base paths. If a child is killed or its report cannot be
-validated, exact traffic totals become unavailable and conservative bounds are
-persisted; declared concurrency is never relabeled as an observed peak.
-
-The official [GuideLLM benchmark guide](https://github.com/vllm-project/guidellm/blob/v0.7.3/docs/getting-started/benchmark.md)
-documents its concurrent and constant profiles. vLLM itself recommends
-GuideLLM for production-oriented server benchmarking in its
-[benchmarking guide](https://github.com/vllm-project/vllm/blob/main/docs/benchmarking/cli.md).
 
 ## Compare saved runs
 
@@ -1671,140 +1526,18 @@ is not a universal performance, savings, or production recommendation.
 
 
 
-## Pre-flight bottleneck diagnosis
-`throttle diagnose` is a lightweight, non-destructive probe that runs prior to any formal benchmarking or `golden` protocol. It classifies the dominant serving bottleneck regime so you do not waste resources running sweeps on config dimensions that do not address your actual constraint.
-
-```bash
-throttle diagnose \
-  --model Qwen/Qwen3-8B \
-  --url https://inference.example/v1 \
-  --api-key-env VLLM_API_KEY \
-  --concurrency 1 4 8 \
-  --requests-per-block 20 \
-  --cost-model dedicated-hourly \
-  --gpus 1 \
-  --total-hourly-price 0.50 \
-  --output diagnose.json
-```
-
-Like `smoke`, `diagnose` refuses to send traffic without a price; use
-`--cost-model unknown --allow-unknown-cost` to run it with no dollar figure.
-
-The command runs 1 block of 20 requests per concurrency level with 3 warm-ups (maximum 200 total requests) under a strict 60-second execution ceiling.
-
-Based on client-side timing heuristics, it classifies the server into one of five regimes:
-- **dispatch-bound** (launch overhead): CPU overhead dominates; recommended tuning: `cuda_graph_capture`, `batch_size`.
-- **orchestration-bound** (host jitter): high inter-request latency; recommended tuning: `scheduler_config`, `request_batching_strategy`, `python_vs_cpp_runtime`.
-- **compute-bound** (GPU arithmetic): throughput scales linearly; recommended tuning: `max_num_seqs`, `max_num_batched_tokens`, quantization.
-- **memory-bound** (VRAM limits): TTFT degrades sharply; recommended tuning: `kv_cache_block_size`, `prefix_caching`, `max_model_len`.
-- **mixed**: multiple competing bottlenecks; run exploratory sweeps to isolate.
-
-If the error rate exceeds 50%, or samples are insufficient, it returns `classification: inconclusive`. Both `inconclusive` and `mixed` exit with code `3`. It always sets `decision_eligible: false` and cannot be used with `throttle compare`.
-
-## Experimental suggestion-only tuning
-
-`throttle experimental-tuning` is a separate, explicitly opt-in path for one
-vLLM deployment. Existing `plan`, `smoke`, `benchmark`, `compare`, and `golden`
-behavior is unchanged. The command runs one ordinary native smoke workload
-while reading a separately supplied Prometheus URL, then passes the bounded
-metrics window and exploratory analysis through the independent safety
-boundary. It never changes the server. Throttle has no automatic telemetry or
-phone-home behavior; only this command reads the exporter, and only after the
-operator supplies `--metrics-url`.
-
-```sh
-throttle experimental-tuning \
-  --model Qwen/Qwen3-8B \
-  --url https://inference.example/v1 \
-  --metrics-url https://inference.example/metrics \
-  --api-key-env VLLM_API_KEY \
-  --concurrency 16 \
-  --engine-flag max_num_seqs=8 \
-  --engine-flag max_num_batched_tokens=2048 \
-  --engine-flags-provenance runtime_verified \
-  --attest-same-deployment-exclusive-metrics \
-  --cost-model dedicated-hourly \
-  --gpus 1 \
-  --total-hourly-price 0.50 \
-  --output experimental-smoke.json \
-  --experimental-output experimental-tuning.json
-```
-
-The command requires exactly one closed-loop concurrency and the two effective
-runtime flags shown above. It defaults to 201 measured requests plus three
-warm-ups so a normal run can clear the analyzer's minimum evidence count, but
-passing that floor does not make the evidence decision-grade. The default
-900-second limit applies to the traffic run; bounded exporter scrapes, safety
-analysis, and artifact writes add processing overhead outside that limit. Use
-`--attest-same-deployment-exclusive-metrics` only when the exporter belongs to
-the inference deployment under test and no unrelated inference traffic reaches
-it during the sampled window. If either fact is unknown, omit the flag; the
-result will fail closed as insufficient evidence instead of guessing. Exporter
-metrics are process-wide, and neither part of the attestation is independently
-proven.
-
-The metrics URL is never inferred from the inference URL. It must be explicit;
-the collector sends no authorization header or cookies, ignores ambient
-proxies, follows no redirects, permits plaintext only on exact loopback hosts,
-and retains neither the URL nor raw metric labels/body. This means an exporter
-that requires credentials is intentionally unsupported by this experimental
-path.
-
-Two mode-0600 artifacts remain separate:
-
-- `experimental-smoke.json` is an ordinary schema-2.0 `mode: smoke` report. Its
-  `decision_eligible` and condition `decision_grade` fields are false, and it
-  contains no experimental tuning fields.
-- `experimental-tuning.json` is a fixed experimental envelope containing the
-  detached safety-validated projection and a canonical SHA-256 binding to the
-  ordinary report. Inside that projection, decision eligibility, auto-apply,
-  configuration changes, Golden execution, Golden eligibility, and every
-  gate-bypass field are hard-locked false.
-
-Both parent directories must already exist and both output files must be new;
-the experimental command refuses to overwrite prior evidence. The report hash
-is an equality/linkability check, not a signature. It covers only the already
-sanitized ordinary artifact and does not add raw prompts, responses, endpoint
-details, or exporter labels.
-
-If collection or validation fails before a complete ordinary report exists,
-Throttle writes only a fixed sanitized failure artifact and no experimental
-envelope. It deliberately does not preserve unvalidated stage-owned partial
-fields.
-
-An emitted value is labelled as a candidate for another test, never a
-recommendation or guaranteed outcome. It changes only `max_num_seqs` by one
-bounded 25% search step. Before any configuration decision, the operator must
-run the separate six-position counterbalanced Golden protocol at the recorded
-offered concurrency. Reaching that client concurrency proves sufficient
-offered demand; it does not prove direct server-scheduler saturation.
-
-The deterministic evidence under
-[`validation/experimental-tuning-vllm-docs`](https://github.com/KushagraKanaujia/throttle/tree/main/validation/experimental-tuning-vllm-docs)
-checks the full offline request/exporter/collector/analyzer/safety/serialization
-path against metric names and labels pinned to an official vLLM release. It is
-software compatibility evidence, not a live GPU benchmark, measured savings,
-or proof that the suggested value improves a deployment.
-
 ## Report privacy and exit codes
 
 Reports contain hashes and aggregate numeric evidence, not endpoint URLs,
-hostnames, keys, authorization headers, prompts, responses, raw exception text,
-or GuideLLM raw output. Engine flag names/values are validated before they can
+hostnames, keys, authorization headers, prompts, responses or raw exception
+text. Engine flag names/values are validated before they can
 enter a manifest; accelerator fingerprints are stored only as SHA-256.
 (`throttle check` history is different: it is a local file that keeps each
 check's endpoint URL so it can compare checks of the same endpoint. It holds
 no keys, prompts or responses.)
 
 **No telemetry.** Throttle never phones home: it only sends requests to the
-endpoint you point it at, and to Throttle Cloud only when you are logged in and
-run a cloud command (`whoami`, `check --push`, `autotune`, `gate`; see
-[docs/cloud.md](https://github.com/KushagraKanaujia/throttle/blob/main/docs/cloud.md)).
-After a calibrated CHEAPER or MORE EXPENSIVE verdict,
-`throttle check` may print one line suggesting Throttle Cloud (`throttle upgrade`), at most once
-every 24 hours. The only state is a timestamp file (`.upgrade-nudge`) in the
-check history directory. It's skipped with `--json`, `--share` and
-`--fail-if-costlier`, when `CI` is set, and entirely with `THROTTLE_NO_NUDGE=1`.
+endpoint you point it at. There is no login and nothing is uploaded.
 
 These exit codes are for plan/smoke/benchmark/compare/golden. `throttle check`
 has its own (0, 1, 2, 4, 5), listed under
@@ -1816,12 +1549,6 @@ has its own (0, 1, 2, 4, 5), listed under
 - `2`: CLI usage error or incompatible saved reports.
 - `3`: valid but statistically/qualification-inconclusive benchmark or compare.
 - `130`: user cancellation with sanitized partial report.
-
-For `experimental-tuning`, `0` means a safety-audited candidate test value was
-available; `3` means the run was valid but evidence was insufficient or no
-clear signal existed. Neither exit code means a configuration decision. Stage
-failure returns `1`, usage/preflight failure returns `2`, and cancellation
-returns `130`.
 
 ## Test
 
@@ -1837,7 +1564,7 @@ the live-proxy integration tests need Ollama at `localhost:11434` with
 `HF_HUB_OFFLINE=1` so a missing model skips quickly instead of retrying the
 download.
 
-The suite blocks non-loopback DNS/socket use via an offline guard in CI. It covers modes, URL/proxy safety, response validation, streaming termination, hard stops, partial reports, cost separation, open/closed-loop scheduling, confidence and boundary logic, manifest tampering, saved comparisons, the GuideLLM subprocess boundary, the six-run golden gate, the caching proxy, agent session tracking, and the opt-in collector/analyzer/safety chain. Default commands are tested with collector bombs so they cannot accidentally start experimental metric collection.
+The suite blocks non-loopback DNS/socket use via an offline guard in CI. It covers modes, URL/proxy safety, response validation, streaming termination, hard stops, partial reports, cost separation, open/closed-loop scheduling, confidence and boundary logic, manifest tampering, saved comparisons, the six-run golden gate, the caching proxy, and agent session tracking.
 
 ## Explicitly deferred
 

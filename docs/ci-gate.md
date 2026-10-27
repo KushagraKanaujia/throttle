@@ -23,14 +23,7 @@ baseline's repeat checks in the local history, so keep the history between
 runs (the workflow below caches it). `--max-increase PCT` only fails increases
 of at least PCT percent.
 
-When `THROTTLE_API_KEY` is set (or you are logged in), the gate is also
-recorded in Throttle Cloud (`POST /api/v1/ci/gate`, \$0.10 of credits) so it
-shows in your team's history. `--no-cloud` keeps it local. A `--baseline`
-that is a Throttle Cloud check id (not a local file or id) is judged by
-Throttle Cloud. What is sent is listed in [cloud.md](cloud.md); it never
-includes prompts, responses, endpoint URLs or keys. If the cloud call fails
-(out of credits, unreachable), the gate still judges locally and only warns:
-an unreachable cloud never fails the gate.
+The gate runs fully locally and sends nothing anywhere.
 
 OUTPUT CHANGED compares answer length and token-cap hits between the two
 checks; it does not check that answers are correct.
@@ -125,8 +118,6 @@ jobs:
             $WORKLOAD --api-key-env VLLM_API_KEY --label "pr-${{ github.event.number }}" \
             --json candidate.json
       - name: Cost gate
-        env:
-          THROTTLE_API_KEY: ${{ secrets.THROTTLE_API_KEY }}   # optional: records the gate in Throttle Cloud
         run: |
           throttle gate --baseline "$THROTTLE_CHECK_HISTORY_DIR/baseline.json" \
             --candidate candidate.json --json gate.json
@@ -139,6 +130,6 @@ Notes:
 - Use the same workload options (`$WORKLOAD`) in both jobs: checks of
   different workloads are never compared (the gate passes with a "workload
   differs" reason).
-- Without `THROTTLE_API_KEY` the gate runs fully locally and is free.
+- The gate runs fully locally and is free.
 - `throttle check --fail-if-costlier PCT` is the older single-command gate
   (exit 4 / 5); see [github-action.md](github-action.md).

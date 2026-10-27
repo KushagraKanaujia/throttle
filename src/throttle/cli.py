@@ -10,13 +10,10 @@ import math
 import os
 import queue
 import re
-import stat
 import sys
 import textwrap
-import tempfile
 import threading
 import time
-import unicodedata
 from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
@@ -30,7 +27,6 @@ from .benchmark import (
     RunProgress,
     build_plan,
     load_prompts,
-    normalize_chat_completions_url,
     run_native,
     validate_config,
 )
@@ -38,19 +34,6 @@ from .compare import (
     ComparisonInputError,
     compare_reports,
     load_report,
-)
-from .diagnose import (
-    handle_diagnose,
-    print_diagnose,
-)
-from .experimental_tuning import (
-    ExperimentalTuningError,
-    prepare_metrics_collector,
-    run_experimental_tuning,
-    validated_experimental_envelope,
-    validated_experimental_report,
-    validate_experimental_config,
-    validate_experimental_run_report,
 )
 from .golden import (
     GOLDEN_SESSION_ARTIFACT_TYPE,
@@ -65,19 +48,10 @@ from .models import CostModel, EndpointConfig, LoadCondition, RunConfig, SafetyL
 from .check import (
     CHECK_DESCRIPTION,
     CHECK_EPILOG,
-    NONCE_FORMAT,
     add_check_arguments,
     handle_check,
-    new_run_id,
 )
 from .provenance import ACCELERATOR_BACKENDS
-from .request_errors import (
-    RequestFailed,
-    context_overflow_limit,
-    describe_http_failure,
-    gather_or_drain,
-    wait_or_stop,
-)
 from .result_store import (
     Provenance,
     ResultStoreError,
@@ -91,8 +65,6 @@ from .result_store import (
 DEFAULT_OUTPUT = Path("throttle-report.json")
 DEFAULT_COMPARE_OUTPUT = Path("throttle-comparison.json")
 DEFAULT_GOLDEN_OUTPUT_DIR = Path("throttle-golden")
-DEFAULT_EXPERIMENTAL_OUTPUT = Path("throttle-experimental-tuning.json")
-DEFAULT_DIAGNOSE_OUTPUT = Path("throttle-diagnose.json")
 ENV_NAME_PATTERN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 EXIT_OK = 0
@@ -102,46 +74,36 @@ EXIT_INCONCLUSIVE = 3
 EXIT_CANCELLED = 130
 
 GETTING_STARTED = """\
-Get your first $/M-token number (3 commands):
+Get your first $/M-token number:
 
-  1. See the output without a server (simulated, no traffic):
-       throttle demo
+  1. Measure a real endpoint and calibrate (local Ollama shown; any OpenAI-compatible
+     URL works, with or without /v1). The hourly rate is what your GPU(s) cost you.
+     The first check repeats itself 3 times back to back to measure run-to-run noise
+     (a few minutes on a laptop; --no-calibrate runs once):
+       throttle check --url http://localhost:11434 --model llama3.2:3b --gpu-hourly-rate 1.50 --label before
 
-  2. Measure a real endpoint (local Ollama shown; any OpenAI-compatible URL works,
-     with or without /v1). The hourly rate is what your GPU(s) cost you:
-       throttle cost --url http://localhost:11434 --model llama3.2:3b --gpu-hourly-rate 1.50
+  2. Change one setting (Ollama on macOS: quit the Ollama app, then run
+     OLLAMA_NUM_PARALLEL=4 ollama serve in another terminal).
 
-  3. Get a verdict on a config change, in three steps:
-     a. Run once to calibrate. The first check repeats itself 3 times back to back to
-        measure run-to-run noise (a few minutes on a laptop; --no-calibrate runs once):
-          throttle check --url http://localhost:11434 --model llama3.2:3b --gpu-hourly-rate 1.50 --label before
-     b. Change one setting (Ollama on macOS: quit the Ollama app, then run
-        OLLAMA_NUM_PARALLEL=4 ollama serve in another terminal).
-     c. Run again for the verdict (CHEAPER / MORE EXPENSIVE only beyond the noise and
-        the 95% CIs; otherwise NO WINNER). --config only records what you changed:
-          throttle check --url http://localhost:11434 --model llama3.2:3b --gpu-hourly-rate 1.50 --label after --config OLLAMA_NUM_PARALLEL=4
+  3. Run again for the verdict (CHEAPER / MORE EXPENSIVE only beyond the noise and
+     the 95% CIs; otherwise NO WINNER). --config only records what you changed:
+       throttle check --url http://localhost:11434 --model llama3.2:3b --gpu-hourly-rate 1.50 --label after --config OLLAMA_NUM_PARALLEL=4
 
-Cut the bill (Throttle Cloud, start free with $10 of credits; see throttle upgrade):
-  throttle login                          save your API key
-  throttle autotune --dry-run             try Autotune on a simulated server, free
+Cut the bill (free, local):
+  throttle autotune --dry-run             try Autotune on a simulated server
   throttle autotune --launch ... --space ...   find the cheapest config that passes OUTPUT CHANGED
   throttle gate --baseline A --candidate B     CI cost gate (exit 1 on MORE EXPENSIVE / OUTPUT CHANGED)
 
 Switch models or engines? (free, local):
   throttle compare --baseline URL --candidate URL --eval-set FILE ...  your prompts -> SWITCH?
   throttle coldstart --cmd "vllm serve ..." --url URL --model M        time a cold start
-  throttle check ... --push               save a check to your team's cloud history
 
 Other commands: plan / smoke / benchmark / golden (capped, evidence-labelled runs),
-measure + compare (repeated trials to JSON), watch (read vLLM /metrics),
-proxy + sessions (optional cache and agent profiling), report, diagnose.
+compare (saved reports), savings, watch (read vLLM /metrics),
+proxy + sessions (optional cache and agent profiling), ui.
+No server yet? Run 'throttle check --help'.
 Run 'throttle COMMAND --help' for details.
 """
-
-DEMO_COST_HINT = (
-    "throttle cost --url http://localhost:11434 --model <model> "
-    "--gpu-hourly-rate 1.50 --num-requests 5"
-)
 
 EXPLORATORY_SWEEP_WARNING = (
     "NOTE: this {kind} sweep is exploratory only and cannot reach "
@@ -318,7 +280,7 @@ def _add_safety_options(parser: argparse.ArgumentParser) -> None:
         type=_positive_float,
         help=(
             "whole-run ceiling (default: 120 for smoke, 900 for benchmark, "
-            "5400 for the six-position golden session, 60 for diagnose)"
+            "5400 for the six-position golden session)"
         ),
     )
     parser.add_argument("--max-errors", type=_positive_int, default=1)
@@ -417,64 +379,11 @@ def _add_cache_options(parser: argparse.ArgumentParser) -> None:
 
 def _add_run_options(parser: argparse.ArgumentParser) -> None:
     _add_endpoint_options(parser)
-    parser.add_argument("--backend", choices=("native", "guidellm"), default="native")
-    parser.add_argument(
-        "--guidellm-prompt-tokens",
-        type=_positive_int,
-        help="required with --backend guidellm; synthetic_text prompt length",
-    )
-    parser.add_argument(
-        "--guidellm-executable",
-        default="guidellm",
-        help="GuideLLM 0.7.3 executable (version is verified before traffic)",
-    )
-    parser.add_argument(
-        "--allow-guidellm-validation-gaps",
-        action="store_true",
-        help="acknowledge cross-check-only completion/response-size limitations",
-    )
     _add_cost_options(parser)
     _add_workload_options(parser)
     _add_safety_options(parser)
     _add_manifest_options(parser)
     _add_cache_options(parser)
-
-
-def _get_api_key(args: argparse.Namespace) -> str | None:
-    """Get API key from args or environment, return None if not set."""
-    if hasattr(args, 'api_key') and args.api_key:
-        return args.api_key
-    return os.environ.get('OPENAI_API_KEY')
-
-
-def _build_headers(api_key: str | None) -> dict[str, str]:
-    """Build HTTP headers with optional Authorization bearer token."""
-    headers = {"Content-Type": "application/json"}
-    if api_key:
-        headers["Authorization"] = f"Bearer {api_key}"
-    return headers
-
-
-def _chat_completions_url(value: str) -> str:
-    """Accept http://host:port, http://host:port/v1, or the exact route.
-
-    Mirrors the path rules of ``normalize_chat_completions_url`` (used by
-    plan/smoke/check) without its HTTPS policy, so cost/measure keep accepting
-    the URLs they accepted before.
-    """
-
-    from urllib.parse import urlsplit
-
-    base = value.strip().rstrip("/")
-    if base.endswith("/chat/completions"):
-        return base
-    if not urlsplit(base).path:
-        return base + "/v1/chat/completions"
-    return base + "/chat/completions"
-
-
-def _models_url(chat_url: str) -> str:
-    return chat_url[: -len("/chat/completions")] + "/models"
 
 
 def _server_root_url(value: str) -> str:
@@ -485,81 +394,6 @@ def _server_root_url(value: str) -> str:
         if base.endswith(suffix):
             base = base[: -len(suffix)]
     return base
-
-
-def _list_models(client: Any, chat_url: str, headers: Mapping[str, str]) -> list[str] | None:
-    """Return model ids from {base}/models, or None when the listing is unavailable."""
-
-    try:
-        response = client.get(_models_url(chat_url), headers=dict(headers))
-        if response.status_code != 200:
-            return None
-        data = response.json().get("data")
-        if not isinstance(data, list):
-            return None
-        return [str(item["id"]) for item in data if isinstance(item, dict) and item.get("id")]
-    except Exception:
-        return None
-
-
-def _print_endpoint_failure(
-    client: Any,
-    chat_url: str,
-    status: int,
-    model: str,
-    headers: Mapping[str, str],
-    body: str = "",
-) -> None:
-    """Explain a non-200 from the chat route: wrong URL vs wrong model."""
-
-    print(f"Error: POST {chat_url} returned HTTP {status}")
-    models = _list_models(client, chat_url, headers) if 400 <= status < 500 else None
-    if models is not None and model not in models:
-        listed = ", ".join(models) if models else "(none)"
-        print(f"  Model '{model}' is not served here. Models at {_models_url(chat_url)}: {listed}")
-        if models:
-            print(f"  Re-run with --model {models[0]}")
-    elif models is not None:
-        snippet = " ".join(body.split())[:200]
-        print(f"  The server lists model '{model}' but rejected the request: {snippet or '(empty body)'}")
-    elif status == 404:
-        print(f"  No model listing at {_models_url(chat_url)} either, so the URL is likely wrong.")
-        print("  Give the server root (http://host:port) or its /v1 base; both are accepted.")
-    elif status in (401, 403):
-        print("  The server wants a key: pass --api-key or set OPENAI_API_KEY.")
-
-
-def _resolve_model(
-    client: Any, chat_url: str, model: str | None, headers: Mapping[str, str]
-) -> str | None:
-    """Return the model to request, or None after printing why none was chosen."""
-
-    if model:
-        return model
-    models = _list_models(client, chat_url, headers)
-    if models is None:
-        print(f"Error: --model is required (could not list models at {_models_url(chat_url)})")
-        return None
-    if len(models) == 1:
-        print(f"Model: {models[0]} (the only model this server lists; pass --model to choose)")
-        return models[0]
-    listed = ", ".join(models) if models else "(none)"
-    print(f"Error: --model is required; this server lists: {listed}")
-    return None
-
-
-def _synthetic_overflow_remedy(command: str, workload: Sequence[tuple[float, int, int]]) -> str:
-    """How to make a fixed synthetic workload fit a server's context window."""
-
-    words, max_tokens = max(((p, m) for _, p, m in workload), key=sum)
-    # Words over-count "Test " tokens; 64 covers the chat template and prompt tag.
-    fits = 1 << (words + max_tokens + 64 - 1).bit_length()
-    return (
-        f"{command} sends a fixed synthetic workload; its longest request is a "
-        f"{words}-word prompt with max_tokens {max_tokens}. Start the server with a "
-        f"larger --max-model-len ({fits} should fit it), or measure a shorter workload "
-        "with `throttle check --prompts FILE --max-tokens N`."
-    )
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -598,79 +432,6 @@ def build_parser() -> argparse.ArgumentParser:
     )
     _add_run_options(benchmark)
     benchmark.add_argument("--output", type=Path, default=DEFAULT_OUTPUT)
-
-    diagnose = subparsers.add_parser(
-        "diagnose",
-        help="pre-flight bottleneck regime classification (not decision-grade)",
-        description=(
-            "Run a short probe at multiple concurrency levels and classify "
-            "the dominant bottleneck regime. Use this before throttle golden "
-            "to identify which config dimensions are worth testing."
-        ),
-    )
-    _add_endpoint_options(diagnose)
-    diagnose.add_argument("--backend", choices=("native",), default="native")
-    _add_cost_options(diagnose)
-    _add_workload_options(diagnose)
-    _add_safety_options(diagnose)
-    diagnose.add_argument(
-        "--output", type=Path, default=DEFAULT_DIAGNOSE_OUTPUT
-    )
-
-    experimental = subparsers.add_parser(
-        "experimental-tuning",
-        help="run an opt-in, suggestion-only server-metrics analysis",
-        description=(
-            "Same inference deployment; no unrelated inference traffic. Both "
-            "facts are operator-attested, not independently proven. Run one "
-            "native closed-loop smoke workload while polling one explicit vLLM "
-            "metrics exporter. Output is suggestion-only: it never changes "
-            "configuration, decision eligibility, or Golden eligibility."
-        ),
-        epilog=(
-            "Defaults: one smoke block with 201 measured requests, 3 separate "
-            "warm-ups, and a 900-second traffic-run ceiling, plus bounded "
-            "exporter-scrape and processing overhead. Supply exactly one "
-            "--concurrency and runtime-effective max_num_seqs and "
-            "max_num_batched_tokens engine flags."
-        ),
-    )
-    _add_run_options(experimental)
-    experimental.add_argument(
-        "--metrics-url",
-        required=True,
-        help=(
-            "explicit vLLM Prometheus endpoint; no credentials, redirects, "
-            "ambient proxies, or non-loopback plaintext are allowed"
-        ),
-    )
-    experimental.add_argument(
-        "--attest-same-deployment-exclusive-metrics",
-        action="store_true",
-        help=(
-            "attest that this exporter belongs to the same inference "
-            "deployment and that no unrelated inference traffic reaches it "
-            "during the sampled window; neither fact is independently proven"
-        ),
-    )
-    experimental.add_argument(
-        "--output",
-        type=Path,
-        default=DEFAULT_OUTPUT,
-        help=(
-            "ordinary schema-2.0 non-decision-grade smoke report; parent "
-            "directory must already exist and the create-only file must not exist"
-        ),
-    )
-    experimental.add_argument(
-        "--experimental-output",
-        type=Path,
-        default=DEFAULT_EXPERIMENTAL_OUTPUT,
-        help=(
-            "separate bound safety-validation envelope; parent directory "
-            "must already exist and the create-only file must not exist"
-        ),
-    )
 
     golden = subparsers.add_parser(
         "golden",
@@ -778,22 +539,6 @@ def build_parser() -> argparse.ArgumentParser:
     compare.add_argument("--output", type=Path, default=DEFAULT_COMPARE_OUTPUT)
     add_live_arguments(compare)
 
-    report = subparsers.add_parser(
-        "report", help="generate HTML report with chart comparing measure outputs"
-    )
-    report.add_argument(
-        "reports",
-        nargs=2,
-        type=Path,
-        help="two measure output JSON files to compare",
-    )
-    report.add_argument(
-        "--out",
-        type=Path,
-        required=True,
-        help="output HTML file path",
-    )
-
     golden_report = subparsers.add_parser(
         "golden-report",
         help="generate self-contained HTML report from golden protocol artifacts",
@@ -832,188 +577,6 @@ def build_parser() -> argparse.ArgumentParser:
         help="operator email for report footer (default: 'kush@throttle-pro.com')",
     )
 
-    demo = subparsers.add_parser(
-        "demo",
-        help="run a fast simulator demo comparing baseline vs tuned configuration",
-        description=(
-            "Generate a sample workload, simulate vLLM-like continuous batching inference "
-            "for two configurations (baseline and tuned), and print a side-by-side cost comparison. "
-            "Runs entirely locally with no GPU or network required. Completes in under 5 minutes."
-        ),
-    )
-    demo.add_argument(
-        "--light-load",
-        action="store_true",
-        help="use a light workload that does not saturate either configuration (demonstrates NO SIGNIFICANT DIFFERENCE path)",
-    )
-
-    cost = subparsers.add_parser(
-        "cost",
-        help="measure cost per million tokens against a live endpoint",
-        description=(
-            "Send a small workload to an OpenAI-compatible endpoint, measure actual "
-            "throughput and timing, and calculate dollars per million tokens. "
-            "Requires a running inference server."
-        ),
-    )
-    cost.add_argument(
-        "--endpoint-url",
-        "--url",
-        dest="endpoint_url",
-        required=True,
-        help=(
-            "inference server URL: http://host:port or http://host:port/v1 "
-            "(--url is accepted too)"
-        ),
-    )
-    cost.add_argument(
-        "--model",
-        default=None,
-        help=(
-            "model name to request (default: the server's only model, read "
-            "from /v1/models; required when it serves several)"
-        ),
-    )
-    cost.add_argument(
-        "--gpu-hourly-rate",
-        "--gpu-rate-per-hour",
-        "--total-hourly-price",
-        dest="gpu_hourly_rate",
-        type=float,
-        required=True,
-        help="GPU hourly rate in dollars (e.g., 1.50 for A100 spot pricing)",
-    )
-    cost.add_argument(
-        "--num-requests",
-        type=int,
-        default=20,
-        help="number of test requests to send (default: 20)",
-    )
-    cost.add_argument(
-        "--api-key",
-        help="API key for authentication (also reads OPENAI_API_KEY env var)",
-    )
-    cost.add_argument(
-        "--warm-cache",
-        action="store_true",
-        help=(
-            "send the synthetic prompts unchanged (they share long prefixes, so "
-            "a prefix cache serves them warm). By default each prompt starts "
-            "with a unique tag such as '[run 482915 req 0012] ' so a prefix "
-            "cache cannot serve it"
-        ),
-    )
-
-
-    validate_sim = subparsers.add_parser(
-        "validate-sim",
-        help=argparse.SUPPRESS,
-        description=(
-            "Compare simulator predictions to actual measurements from a live endpoint. "
-            "This helps validate simulator assumptions and identify which parameters need "
-            "adjustment for your specific hardware setup."
-        ),
-    )
-    validate_sim.add_argument(
-        "--endpoint-url",
-        required=True,
-        help="inference server URL to validate against",
-    )
-    validate_sim.add_argument(
-        "--model",
-        default="default",
-        help="model name (default: 'default')",
-    )
-    validate_sim.add_argument(
-        "--gpu-hourly-rate",
-        type=float,
-        required=True,
-        help="GPU hourly rate in dollars",
-    )
-    validate_sim.add_argument(
-        "--api-key",
-        help="API key for authentication (also reads OPENAI_API_KEY env var)",
-    )
-
-    measure = subparsers.add_parser(
-        "measure",
-        help="measure cost per million tokens with statistical rigor",
-        description=(
-            "Run repeated measurements against a live endpoint to measure cost per "
-            "million tokens with confidence intervals. Results are saved to JSON for "
-            "later comparison. The operator is responsible for server configuration - "
-            "Throttle does not restart or reconfigure the server."
-        ),
-    )
-    measure.add_argument(
-        "--endpoint-url",
-        "--url",
-        dest="endpoint_url",
-        required=True,
-        help=(
-            "inference server URL: http://host:port or http://host:port/v1 "
-            "(--url is accepted too)"
-        ),
-    )
-    measure.add_argument(
-        "--model",
-        default=None,
-        help=(
-            "model name (default: the server's only model, read from /v1/models; "
-            "required when it serves several)"
-        ),
-    )
-    measure.add_argument(
-        "--gpu-hourly-rate",
-        "--gpu-rate-per-hour",
-        "--total-hourly-price",
-        dest="gpu_hourly_rate",
-        type=float,
-        required=True,
-        help="GPU hourly rate in dollars",
-    )
-    measure.add_argument(
-        "--label",
-        required=True,
-        help="label for this measurement (used as output filename)",
-    )
-    measure.add_argument(
-        "--repeat",
-        type=int,
-        default=10,
-        help="number of times to repeat the workload (default: 10, runtime ~100 seconds at default arrival rate)",
-    )
-    measure.add_argument(
-        "--arrival-rate",
-        type=float,
-        default=10.0,
-        help="arrival rate in requests per second (default: 10.0)",
-    )
-    measure.add_argument(
-        "--num-requests",
-        type=int,
-        default=100,
-        help="number of requests per trial (default: 100)",
-    )
-    measure.add_argument(
-        "--note",
-        help="optional note about server configuration",
-    )
-    measure.add_argument(
-        "--warm-cache",
-        action="store_true",
-        help=(
-            "resend identical prompts in every trial (a prefix cache serves them "
-            "warm). By default each prompt starts with a unique tag such as "
-            "'[run 482915 req 0012] ', so trials measure uncached prefill. "
-            "'throttle compare' will not rank cold against warm files"
-        ),
-    )
-    measure.add_argument(
-        "--api-key",
-        help="API key for authentication (also reads OPENAI_API_KEY env var)",
-    )
-
     # throttle check: repeat-use cost drift check (see throttle/check.py)
     check = subparsers.add_parser(
         "check",
@@ -1033,56 +596,17 @@ def build_parser() -> argparse.ArgumentParser:
     )
     add_savings_arguments(savings)
 
-    upgrade = subparsers.add_parser(
-        "upgrade",
-        help="Throttle Cloud: Autotune cuts what your inference costs (start free with $10 of credits)",
-        description=(
-            "Prints what Throttle Cloud does (Autotune, the CI cost gate, team history; "
-            "start free with $10 of credits), the Enterprise pilot, the pricing link "
-            "(https://www.throttle-pro.com/pricing) and a QR code for your phone. "
-            "Generated offline; nothing is sent."
-        ),
-    )
-    # Hidden alias so older docs keep working: prints the same page.
-    upgrade.add_argument("--audit", action="store_true", help=argparse.SUPPRESS)
-    upgrade.add_argument("--url-only", action="store_true", help="print only the link")
-    upgrade.add_argument("--no-qr", action="store_true", help="don't draw the QR code")
-
-    # Throttle Cloud (see throttle/cloud.py and docs/cloud.md)
-    from .cloud import add_login_arguments
-    login = subparsers.add_parser(
-        "login",
-        help="log in to Throttle Cloud with an API key (saved to ~/.config/throttle/credentials)",
-        description=(
-            "Verifies an API key with Throttle Cloud and saves it to "
-            "~/.config/throttle/credentials (mode 600). THROTTLE_API_KEY, when set, "
-            "overrides the saved key. Start free with $10 of credits: "
-            "https://www.throttle-pro.com/pricing"
-        ),
-    )
-    add_login_arguments(login)
-    subparsers.add_parser(
-        "logout", help="forget the saved Throttle Cloud API key",
-        description="Deletes ~/.config/throttle/credentials.",
-    )
-    subparsers.add_parser(
-        "whoami", help="show the Throttle Cloud account, plan and credits left",
-        description="Shows the logged-in Throttle Cloud account, its plan and the credits left.",
-    )
-
     from .autotune import AUTOTUNE_EPILOG, add_autotune_arguments
     autotune = subparsers.add_parser(
         "autotune",
         help="find the cheapest serving config that is verifiably cheaper and passes "
-        "OUTPUT CHANGED (free during early access)",
+        "OUTPUT CHANGED (free, runs locally)",
         description=textwrap.fill(
             "Searches serving configs: restarts your server with each one, measures "
             "$/M tokens like `throttle check` against a calibrated baseline, rejects "
             "OUTPUT CHANGED and anything inside the noise, and prints the best config, "
             "the $/M before and after, the projected monthly saving and a ready-to-paste "
-            "launch command. Free during early access: without a login it runs fully "
-            "locally; after `throttle login` each trial uses $1.00 of Throttle Cloud "
-            "credits and runs are saved to your account. --dry-run simulates the "
+            "launch command. Free and fully local. --dry-run simulates the "
             "server (no GPU needed).", width=79,
         ),
         epilog=AUTOTUNE_EPILOG,
@@ -1271,14 +795,6 @@ def build_parser() -> argparse.ArgumentParser:
     from .own.cli import register as register_own_commands
     register_own_commands(subparsers)
 
-    # argparse's help=SUPPRESS does not hide a subparser: it leaks as
-    # "==SUPPRESS==" in --help. Drop the hidden command from the listing only;
-    # it stays runnable.
-    subparsers._choices_actions = [
-        action
-        for action in subparsers._choices_actions
-        if action.dest != "validate-sim"
-    ]
     parser._throttle_subparsers = dict(subparsers.choices)  # type: ignore[attr-defined]
     return parser
 
@@ -1472,8 +988,6 @@ def _run_mode(args: argparse.Namespace) -> str:
         return args.run_mode
     if args.command == "golden":
         return "benchmark"
-    if args.command in {"experimental-tuning", "diagnose"}:
-        return "smoke"
     return args.command
 
 
@@ -1503,19 +1017,15 @@ def _build_config(
     tuple[tuple[dict[str, str], ...], ...],
 ]:
     mode = _run_mode(args)
-    experimental = args.command == "experimental-tuning"
-    diagnose = args.command == "diagnose"
-    if args.backend == "guidellm" and args.guidellm_prompt_tokens is None:
-        _parser_error(parser, "--backend guidellm requires --guidellm-prompt-tokens")
     if args.warmup_requests is not None and args.warmup_requests < 0:
         _parser_error(parser, "--warmup-requests must be non-negative")
     blocks = args.blocks if args.blocks is not None else (1 if mode == "smoke" else 3)
     requests_per_block = args.requests_per_block
     if requests_per_block is None and args.block_seconds is None:
-        requests_per_block = 201 if experimental else 20 if diagnose else 8 if mode == "smoke" else 67
+        requests_per_block = 8 if mode == "smoke" else 67
     warmups = args.warmup_requests
     if warmups is None:
-        warmups = 3 if (experimental or diagnose) else 1 if mode == "smoke" else 3
+        warmups = 1 if mode == "smoke" else 3
     if args.request_rate:
         conditions = tuple(
             LoadCondition("open_loop", float(rate), args.open_loop_max_in_flight)
@@ -1535,10 +1045,6 @@ def _build_config(
             if args.max_elapsed_seconds is not None
             else 5_400.0
             if args.command == "golden"
-            else 900.0
-            if experimental
-            else 60.0
-            if diagnose
             else 120.0
             if mode == "smoke"
             else 900.0
@@ -1551,7 +1057,7 @@ def _build_config(
     api_key = _resolve_key(parser, args, args.url) if resolve_key else ""
     config = RunConfig(
         mode=mode,
-        backend=args.backend,
+        backend="native",
         model=args.model,
         endpoint=EndpointConfig(url=args.url, api_key=api_key),
         cost=_cost_model(parser, args),
@@ -1587,7 +1093,6 @@ def _build_config(
         allow_unknown_cost=args.allow_unknown_cost,
         allow_insecure_http=args.allow_insecure_http,
         evidence_source=getattr(args, "evidence_source", "unverified_endpoint"),
-        guidellm_gaps_acknowledged=getattr(args, "allow_guidellm_validation_gaps", False),
         enable_cache=getattr(args, "enable_cache", False),
         cache_ttl_seconds=getattr(args, "cache_ttl_seconds", 3600.0),
         cache_max_size=getattr(args, "cache_max_size", 1000),
@@ -1598,9 +1103,6 @@ def _build_config(
         prompts = load_prompts(args.prompts)
         warmup_prompts = load_prompts(args.warmup_prompts, warmup=True)
         validate_config(config, for_traffic=resolve_key)
-        if config.backend == "guidellm":
-            from .guidellm_backend import preflight_guidellm_config
-            preflight_guidellm_config(config, for_traffic=resolve_key)
     except (OSError, ValueError, RuntimeError) as exc:
         _parser_error(parser, str(exc))
         
@@ -1608,125 +1110,10 @@ def _build_config(
         
 
 
-def _copy_prompt_workload(
-    prompts: Sequence[Sequence[Mapping[str, str]]],
-) -> tuple[tuple[dict[str, str], ...], ...]:
-    """Detach a workload so a called stage cannot redefine CLI evidence."""
-
-    return tuple(
-        tuple(
-            {"role": message["role"], "content": message["content"]}
-            for message in messages
-        )
-        for messages in prompts
-    )
-
-
 def _atomic_write(report: Mapping[str, Any], output: Path) -> None:
     committed = _atomic_write_guarded(report, output, lambda: True)
     if not committed:  # pragma: no cover - the unconditional guard is fixed true
         raise RuntimeError("atomic_write_commit_guard_failed")
-
-
-def _atomic_write_new(report: Mapping[str, Any], output: Path) -> None:
-    """Atomically create a mode-0600 artifact without replacing evidence."""
-
-    output = output.expanduser().resolve()
-    descriptor, temporary_name = tempfile.mkstemp(
-        prefix=".throttle-experimental-",
-        suffix=".tmp",
-        dir=output.parent,
-    )
-    temporary = Path(temporary_name)
-    try:
-        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
-            descriptor = -1
-            json.dump(report, handle, indent=2, sort_keys=True, allow_nan=False)
-            handle.write("\n")
-            handle.flush()
-            os.fsync(handle.fileno())
-        os.chmod(temporary, 0o600)
-        os.link(temporary, output)
-    finally:
-        if descriptor >= 0:
-            os.close(descriptor)
-        try:
-            temporary.unlink()
-        except FileNotFoundError:
-            pass
-
-
-def _preflight_new_artifact_path(path: Path) -> Path:
-    """Validate one absent target and probe its existing parent safely."""
-
-    requested = path.expanduser()
-    if os.path.lexists(requested):
-        raise FileExistsError("experimental_output_already_exists")
-    expanded = requested.resolve(strict=False)
-    if os.path.lexists(expanded):
-        raise FileExistsError("experimental_output_already_exists")
-    parent_metadata = os.lstat(expanded.parent)
-    if not stat.S_ISDIR(parent_metadata.st_mode):
-        raise NotADirectoryError("experimental_output_parent_not_directory")
-    name_max = os.pathconf(expanded.parent, "PC_NAME_MAX")
-    if (
-        not expanded.name
-        or (name_max >= 0 and len(os.fsencode(expanded.name)) > name_max)
-    ):
-        raise OSError("experimental_output_name_too_long")
-
-    descriptor: int | None = None
-    temporary: Path | None = None
-    created_identity: tuple[int, int] | None = None
-    try:
-        descriptor, temporary_name = tempfile.mkstemp(
-            prefix=".throttle-experimental-preflight-",
-            suffix=".tmp",
-            dir=expanded.parent,
-        )
-        temporary = Path(temporary_name)
-        os.fchmod(descriptor, 0o600)
-        metadata = os.fstat(descriptor)
-        created_identity = (metadata.st_dev, metadata.st_ino)
-        os.close(descriptor)
-        descriptor = None
-        current = os.lstat(temporary)
-        if (
-            not stat.S_ISREG(current.st_mode)
-            or (current.st_dev, current.st_ino) != created_identity
-        ):
-            raise OSError("experimental_output_probe_replaced")
-        os.unlink(temporary)
-        created_identity = None
-    finally:
-        if descriptor is not None:
-            os.close(descriptor)
-        if created_identity is not None and temporary is not None:
-            try:
-                current = os.lstat(temporary)
-            except FileNotFoundError:
-                pass
-            else:
-                if (
-                    stat.S_ISREG(current.st_mode)
-                    and (current.st_dev, current.st_ino) == created_identity
-                ):
-                    os.unlink(temporary)
-    if os.path.lexists(expanded):
-        raise FileExistsError("experimental_output_already_exists")
-    return expanded
-
-
-def _experimental_output_paths_may_alias(left: Path, right: Path) -> bool:
-    """Conservatively catch common case-insensitive APFS leaf aliases."""
-
-    try:
-        same_parent = os.path.samefile(left.parent, right.parent)
-    except OSError:
-        return True
-    return same_parent and unicodedata.normalize("NFKC", left.name).casefold() == (
-        unicodedata.normalize("NFKC", right.name).casefold()
-    )
 
 
 def _atomic_write_guarded(
@@ -1765,7 +1152,6 @@ def _atomic_write_guarded(
 def _print_plan(
     plan: Mapping[str, Any],
     *,
-    guidellm_prompt_tokens: int | None = None,
     runtime_declared: bool = True,
 ) -> None:
     print(f"Throttle plan — {str(plan['mode']).upper()} (zero traffic sent)")
@@ -1804,12 +1190,7 @@ def _print_plan(
         if not runtime_reasons
         else "Runtime evidence: " + ", ".join(runtime_reasons)
     )
-    if not plan["traffic_preflight"]["backend_supported_on_this_platform"]:
-        print(
-            "Traffic preflight: blocked because GuideLLM subprocess-tree safety "
-            "requires a POSIX platform"
-        )
-    elif plan["traffic_preflight"]["requires_unknown_cost_acknowledgement"]:
+    if plan["traffic_preflight"]["requires_unknown_cost_acknowledgement"]:
         print(
             "Traffic preflight: blocked until a price or --allow-unknown-cost is supplied.\n"
             "  For a $/M figure, give your hourly price: --gpu-hourly-rate 1.50 "
@@ -1842,19 +1223,6 @@ def _print_plan(
             "prompt content to this non-loopback destination without TLS."
         )
     print(plan["warning"])
-    if plan["backend"] == "guidellm":
-        print(
-            "GuideLLM workload: synthetic_text with "
-            f"{guidellm_prompt_tokens} prompt tokens; supplied prompt JSONL is not used "
-            "and no parity claim is made. This backend is cross-check-only because "
-            "strict completion validation and response-byte enforcement are unavailable. "
-            "Tokenizer files must already be cached locally; tokenizer network downloads "
-            "are disabled."
-        )
-        if not plan.get("guidellm_gaps_acknowledged", False):
-            print(
-                "GuideLLM traffic preflight: blocked until --allow-guidellm-validation-gaps is supplied"
-            )
 
 
 def _metric(value: Any, decimals: int = 2) -> str:
@@ -1935,49 +1303,6 @@ def _print_run(report: Mapping[str, Any], output: Path) -> None:
     )
     print(report["disclaimer"])
     print(f"Sanitized JSON report: {output}")
-
-
-def _print_experimental_tuning(
-    projection: Mapping[str, object],
-    output: Path,
-) -> None:
-    analysis = projection["analysis"]
-    assert isinstance(analysis, dict)
-    print("Throttle EXPERIMENTAL TUNING — SUGGESTION ONLY")
-    print("Safety boundary: passed")
-    print(
-        "Evidence scope: same-deployment matching and traffic isolation are "
-        "operator-attested, not independently proven; this does not prove "
-        "scheduler saturation or savings."
-    )
-    analysis_status = projection["analysis_status"]
-    print(f"Analysis status: {analysis_status}")
-    suggestion = analysis.get("suggestion")
-    if isinstance(suggestion, dict):
-        print(
-            "Candidate test only: max_num_seqs "
-            f"{suggestion['current_value']} -> "
-            f"{suggestion['candidate_test_value']}."
-        )
-        print(f"Hypothesis: {suggestion['hypothesis']}")
-        print(f"Risk: {suggestion['risk']}")
-    else:
-        reasons = (
-            analysis.get("quality_reasons")
-            if analysis_status == "insufficient_evidence"
-            else analysis.get("no_suggestion_reasons")
-        )
-        if isinstance(reasons, list) and reasons:
-            print("Suggestion unavailable: " + ", ".join(reasons))
-    print(
-        "Hard locks: decision eligible=false; auto-apply=false; "
-        "Golden performed=false; Golden eligible=false; changes applied=false."
-    )
-    print(
-        "Authorization boundary: this artifact cannot authorize its own CLI, "
-        "standard-report, Golden, or configuration path."
-    )
-    print(f"Sanitized experimental artifact: {output}")
 
 
 def _print_comparison(report: Mapping[str, Any], output: Path) -> None:
@@ -2294,315 +1619,13 @@ def _failure_report(mode: str, code: str) -> dict[str, Any]:
     }
 
 
-def _run_guidellm_backend(
-    config: RunConfig,
-    *,
-    prompt_tokens: int,
-    executable: str,
-    progress: RunProgress,
-    credential_env_name: str,
-) -> dict[str, Any]:
-    try:
-        from .guidellm_backend import run_guidellm_matrix
-    except ImportError as exc:
-        raise RuntimeError("guidellm_backend_unavailable") from exc
-    child_environment = dict(os.environ)
-    child_environment.pop(credential_env_name, None)
-    return run_guidellm_matrix(
-        config,
-        prompt_tokens=prompt_tokens,
-        executable=executable,
-        progress=progress,
-        environ=child_environment,
-    )
-
-
-def _write_experimental_failure(
-    args: argparse.Namespace,
-    *,
-    progress: RunProgress,
-    config: RunConfig,
-    prompts: Sequence[Sequence[Mapping[str, str]]],
-    warmup_prompts: Sequence[Sequence[Mapping[str, str]]],
-    cancelled: bool,
-) -> int:
-    code = "cancelled_by_user" if cancelled else "execution_failed"
-    report = progress.snapshot()
-    if type(report) is dict and report.get("status") == "complete":
-        try:
-            validate_experimental_run_report(
-                report,
-                config,
-                prompts=prompts,
-                warmup_prompts=warmup_prompts,
-            )
-        except Exception:
-            report = None
-    else:
-        report = None
-    if report is None:
-        report = _failure_report("smoke", code)
-        if cancelled:
-            report["status"] = "cancelled"
-    elif report.get("status") != "complete":
-        report["status"] = "cancelled" if cancelled else "failed"
-        report["decision_eligible"] = False
-        report["stop_reason"] = code
-    try:
-        _atomic_write_new(report, args.output)
-    except (OSError, TypeError, ValueError, OverflowError):
-        message = (
-            "Cancelled; sanitized smoke artifact could not be written."
-            if cancelled
-            else "Experimental tuning failed; sanitized smoke artifact could not "
-            "be written."
-        )
-        print(message, file=sys.stderr)
-        return EXIT_CANCELLED if cancelled else EXIT_FAILED
-    message = (
-        f"Cancelled; sanitized smoke artifact written to {args.output}."
-        if cancelled
-        else (
-            "Experimental tuning failed safely; sanitized smoke artifact written "
-            f"to {args.output}. No new experimental artifact was written."
-        )
-    )
-    print(message, file=sys.stderr)
-    return EXIT_CANCELLED if cancelled else EXIT_FAILED
-
-
-def _handle_experimental_tuning(
-    parser: argparse.ArgumentParser, args: argparse.Namespace
-) -> int:
-    if args.backend != "native":
-        _parser_error(parser, "experimental_requires_native_backend")
-    if (
-        args.request_rate is not None
-        or args.concurrency is None
-        or len(args.concurrency) != 1
-    ):
-        _parser_error(
-            parser,
-            "experimental_requires_single_closed_loop_condition",
-        )
-    if args.blocks is not None and args.blocks != 1:
-        _parser_error(parser, "experimental_requires_one_block")
-    try:
-        ordinary_output = _preflight_new_artifact_path(args.output)
-        experimental_output = _preflight_new_artifact_path(
-            args.experimental_output
-        )
-    except FileExistsError:
-        _parser_error(parser, "experimental_output_already_exists")
-    except (OSError, RuntimeError):
-        _parser_error(parser, "experimental_output_path_invalid")
-    if _experimental_output_paths_may_alias(
-        ordinary_output, experimental_output
-    ):
-        _parser_error(parser, "experimental_outputs_must_be_separate")
-    args.output = ordinary_output
-    args.experimental_output = experimental_output
-
-    try:
-        collector = prepare_metrics_collector(args.metrics_url)
-    except ExperimentalTuningError as exc:
-        _parser_error(parser, exc.code)
-        raise AssertionError("argparse.error must terminate")
-
-    config, prompts, warmup_prompts = _build_config(
-        parser,
-        args,
-        resolve_key=False,
-    )
-    try:
-        validate_experimental_config(config)
-    except ExperimentalTuningError as exc:
-        _parser_error(parser, exc.code)
-        raise AssertionError("argparse.error must terminate")
-
-    evidence_prompts = _copy_prompt_workload(prompts)
-    evidence_warmup_prompts = _copy_prompt_workload(warmup_prompts)
-    runner_prompts = _copy_prompt_workload(prompts)
-    runner_warmup_prompts = _copy_prompt_workload(warmup_prompts)
-
-    pre_key_config = replace(
-        config,
-        endpoint=EndpointConfig(
-            url=config.endpoint.url,
-            api_key="experimental-preflight-only",
-        ),
-    )
-    try:
-        validate_config(pre_key_config, for_traffic=True)
-    except (ValueError, RuntimeError) as exc:
-        _parser_error(parser, str(exc))
-
-    api_key = _resolve_key(parser, args, config.endpoint.url)
-    config = replace(
-        config,
-        endpoint=EndpointConfig(url=config.endpoint.url, api_key=api_key),
-    )
-    try:
-        validate_config(config, for_traffic=True)
-    except (ValueError, RuntimeError) as exc:
-        _parser_error(parser, str(exc))
-
-    progress = RunProgress()
-    traffic_scope = (
-        "operator_attested_exclusive"
-        if args.attest_same_deployment_exclusive_metrics
-        else "unconfirmed"
-    )
-    try:
-        outcome = asyncio.run(
-            run_experimental_tuning(
-                config,
-                runner_prompts,
-                runner_warmup_prompts,
-                collector=collector,
-                traffic_scope=traffic_scope,
-                progress=progress,
-                run_traffic=run_native,
-            )
-        )
-        ordinary_report = validated_experimental_report(
-            outcome,
-            config,
-            prompts=evidence_prompts,
-            warmup_prompts=evidence_warmup_prompts,
-        )
-        validated_experimental_envelope(
-            outcome,
-            config,
-            ordinary_report,
-            prompts=evidence_prompts,
-            warmup_prompts=evidence_warmup_prompts,
-        )
-    except (KeyboardInterrupt, asyncio.CancelledError):
-        return _write_experimental_failure(
-            args,
-            progress=progress,
-            config=config,
-            prompts=evidence_prompts,
-            warmup_prompts=evidence_warmup_prompts,
-            cancelled=True,
-        )
-    except ExperimentalTuningError as exc:
-        print(f"Experimental safety stop: {exc.code}.", file=sys.stderr)
-        return _write_experimental_failure(
-            args,
-            progress=progress,
-            config=config,
-            prompts=evidence_prompts,
-            warmup_prompts=evidence_warmup_prompts,
-            cancelled=False,
-        )
-    except Exception:
-        print(
-            "Experimental safety stop: experimental_internal_failure.",
-            file=sys.stderr,
-        )
-        return _write_experimental_failure(
-            args,
-            progress=progress,
-            config=config,
-            prompts=evidence_prompts,
-            warmup_prompts=evidence_warmup_prompts,
-            cancelled=False,
-        )
-
-    try:
-        _atomic_write_new(ordinary_report, args.output)
-    except (OSError, TypeError, ValueError, OverflowError):
-        print(
-            "Experimental measurement finished but the smoke report could not "
-            "be written; no experimental artifact was written.",
-            file=sys.stderr,
-        )
-        return EXIT_FAILED
-    try:
-        envelope = validated_experimental_envelope(
-            outcome,
-            config,
-            ordinary_report,
-            prompts=evidence_prompts,
-            warmup_prompts=evidence_warmup_prompts,
-        )
-        _atomic_write_new(envelope, args.experimental_output)
-    except (
-        ExperimentalTuningError,
-        OSError,
-        TypeError,
-        ValueError,
-        OverflowError,
-    ):
-        print(
-            "The smoke report was written, but the audited experimental artifact "
-            "could not be written.",
-            file=sys.stderr,
-        )
-        return EXIT_FAILED
-
-    try:
-        envelope = validated_experimental_envelope(
-            outcome,
-            config,
-            ordinary_report,
-            prompts=evidence_prompts,
-            warmup_prompts=evidence_warmup_prompts,
-        )
-        projection = envelope["safety_projection"]
-        if type(projection) is not dict:
-            raise TypeError("invalid experimental projection")
-        _print_run(ordinary_report, args.output)
-        _print_experimental_tuning(
-            projection,
-            args.experimental_output,
-        )
-    except (
-        ExperimentalTuningError,
-        KeyError,
-        TypeError,
-        ValueError,
-        ArithmeticError,
-    ):
-        print(
-            "Audited artifacts were written, but terminal rendering failed safely.",
-            file=sys.stderr,
-        )
-        return EXIT_FAILED
-    if ordinary_report.get("status") != "complete" or any(
-        not condition.get("valid")
-        for condition in ordinary_report.get("conditions", [])
-    ):
-        return EXIT_FAILED
-    return (
-        EXIT_OK
-        if projection.get("analysis_status") == "suggestion_available"
-        else EXIT_INCONCLUSIVE
-    )
-
-
-def _handle_diagnose(parser: argparse.ArgumentParser, args: argparse.Namespace) -> int:
-    return handle_diagnose(parser, args, _build_config, _atomic_write)
-
-
 def _handle_run(parser: argparse.ArgumentParser, args: argparse.Namespace) -> int:
     config, prompts, warmup_prompts = _build_config(parser, args, resolve_key=True)
     progress = RunProgress()
     try:
-        if config.backend == "native":
-            report = asyncio.run(
-                run_native(config, prompts, warmup_prompts, progress=progress)
-            )
-        else:
-            report = _run_guidellm_backend(
-                config,
-                prompt_tokens=args.guidellm_prompt_tokens,
-                executable=args.guidellm_executable,
-                progress=progress,
-                credential_env_name=args.api_key_env,
-            )
+        report = asyncio.run(
+            run_native(config, prompts, warmup_prompts, progress=progress)
+        )
     except (KeyboardInterrupt, asyncio.CancelledError):
         report = progress.snapshot() or _failure_report(
             config.mode, "cancelled_by_user"
@@ -3068,832 +2091,6 @@ def _handle_golden(parser: argparse.ArgumentParser, args: argparse.Namespace) ->
     return EXIT_OK if result["decision_eligible"] else EXIT_INCONCLUSIVE
 
 
-def _handle_demo(args: argparse.Namespace) -> int:
-    """Run simulator demo comparing baseline vs tuned configuration."""
-    from throttle.simulator import VLLMSimulator, SimulatorConfig
-    from throttle.workload import WorkloadGenerator
-    from throttle.cost_model import calculate_cost
-    import time
-
-    print("Throttle Configuration Comparison Demo")
-    print("=" * 60)
-    print()
-
-    # Choose workload parameters based on --light-load flag
-    if args.light_load:
-        # Light load: does not saturate either config (demonstrates NO SIGNIFICANT DIFFERENCE)
-        num_requests = 100
-        arrival_rate = 2.0
-        mean_prompt = 500
-        mean_output = 150
-        load_desc = "light (2 req/sec, ~150 output tokens)"
-    else:
-        # Default: saturating load that differentiates configs
-        num_requests = 300
-        arrival_rate = 30.0
-        mean_prompt = 300
-        mean_output = 1000
-        load_desc = "high concurrency (30 req/sec, ~1000 output tokens)"
-
-    # Generate workload once for both configs
-    print(f"[SIMULATED] Generating sample workload ({load_desc})...")
-    workload_gen = WorkloadGenerator(seed=42)
-    workload = workload_gen.generate_chat_workload(
-        num_requests=num_requests,
-        arrival_rate_requests_per_sec=arrival_rate,
-        mean_prompt_tokens=mean_prompt,
-        mean_output_tokens=mean_output,
-    )
-    print(f"[SIMULATED] Generated {len(workload)} requests")
-    print()
-
-    # Shared config parameters
-    gpu_rate = 1.50
-    prefill_throughput = 5000.0
-    decode_throughput = 100.0
-
-    # Baseline configuration: max_num_seqs=128
-    baseline_config = SimulatorConfig(
-        prefill_throughput_tokens_per_sec=prefill_throughput,
-        decode_throughput_tokens_per_sec=decode_throughput,
-        max_num_seqs=128,
-        saturation_knee_sequences=102,  # 80% of 128
-        kv_cache_capacity_tokens=500_000,
-        gpu_hourly_rate_dollars=gpu_rate,
-    )
-
-    # Tuned configuration: max_num_seqs=256
-    tuned_config = SimulatorConfig(
-        prefill_throughput_tokens_per_sec=prefill_throughput,
-        decode_throughput_tokens_per_sec=decode_throughput,
-        max_num_seqs=256,
-        saturation_knee_sequences=200,  # 80% of 256
-        kv_cache_capacity_tokens=500_000,
-        gpu_hourly_rate_dollars=gpu_rate,
-    )
-
-    print(f"Assumed GPU rate: ${gpu_rate:.2f}/hr [SIMULATED; every $ figure below uses it]")
-    print()
-    print("Configuration being compared:")
-    print(f"  Parameter: max_num_seqs")
-    print(f"  Baseline: 128 concurrent sequences")
-    print(f"  Tuned:    256 concurrent sequences")
-    print()
-
-    # Run baseline first (counterbalanced order)
-    print("[SIMULATED] Running baseline configuration...")
-    start_time = time.time()
-    baseline_sim = VLLMSimulator(baseline_config)
-    for arrival_time, prompt_tokens, output_tokens in workload:
-        baseline_sim.add_request(arrival_time, prompt_tokens, output_tokens)
-    baseline_completed, baseline_wall_clock = baseline_sim.run()
-    baseline_elapsed = time.time() - start_time
-    print(f"[SIMULATED] Baseline simulation complete in {baseline_elapsed:.2f} seconds")
-
-    # Run tuned second
-    print("[SIMULATED] Running tuned configuration...")
-    start_time = time.time()
-    tuned_sim = VLLMSimulator(tuned_config)
-    for arrival_time, prompt_tokens, output_tokens in workload:
-        tuned_sim.add_request(arrival_time, prompt_tokens, output_tokens)
-    tuned_completed, tuned_wall_clock = tuned_sim.run()
-    tuned_elapsed = time.time() - start_time
-    print(f"[SIMULATED] Tuned simulation complete in {tuned_elapsed:.2f} seconds")
-    print()
-
-    # Calculate costs for both
-    total_input = sum(r.prompt_tokens for r in baseline_completed)
-    total_output = sum(r.tokens_generated for r in baseline_completed)
-
-    baseline_cost = calculate_cost(
-        input_tokens=total_input,
-        output_tokens=total_output,
-        wall_clock_seconds=baseline_wall_clock,
-        gpu_hourly_rate_dollars=gpu_rate,
-    )
-
-    tuned_cost = calculate_cost(
-        input_tokens=total_input,
-        output_tokens=total_output,
-        wall_clock_seconds=tuned_wall_clock,
-        gpu_hourly_rate_dollars=gpu_rate,
-    )
-
-    # Calculate deltas
-    wall_clock_delta = tuned_wall_clock - baseline_wall_clock
-    gpu_hours_delta = tuned_cost.gpu_hours - baseline_cost.gpu_hours
-    input_cost_delta = tuned_cost.dollars_per_million_input_tokens - baseline_cost.dollars_per_million_input_tokens
-    output_cost_delta = tuned_cost.dollars_per_million_output_tokens - baseline_cost.dollars_per_million_output_tokens
-    total_cost_delta = tuned_cost.total_dollars - baseline_cost.total_dollars
-
-    # Confidence intervals (±20% conservative estimate for parameter uncertainty)
-    ci_margin = 0.20
-    wall_clock_ci = abs(wall_clock_delta * ci_margin)
-    input_cost_ci = abs(input_cost_delta * ci_margin)
-    output_cost_ci = abs(output_cost_delta * ci_margin)
-    total_cost_ci = abs(total_cost_delta * ci_margin)
-
-    # Print side-by-side comparison
-    print("Cost Comparison Results")
-    print("=" * 60)
-    print()
-    print(f"Workload:")
-    print(f"  Total requests: {len(baseline_completed)}")
-    print(f"  Total input tokens: {total_input:,}")
-    print(f"  Total output tokens: {total_output:,}")
-    print()
-    print(f"{'Metric':<40} {'Baseline':>12} {'Tuned':>12} {'Delta':>12}")
-    print("-" * 80)
-    print(f"{'Wall clock time (seconds)':<40} {baseline_wall_clock:>12.2f} {tuned_wall_clock:>12.2f} {wall_clock_delta:>12.2f}")
-    print(f"{'GPU hours':<40} {baseline_cost.gpu_hours:>12.6f} {tuned_cost.gpu_hours:>12.6f} {gpu_hours_delta:>12.6f}")
-    all_tokens = total_input + total_output
-    baseline_blended = baseline_cost.total_dollars / all_tokens * 1_000_000
-    tuned_blended = tuned_cost.total_dollars / all_tokens * 1_000_000
-    print(f"{'Blended cost ($/M tokens, in + out)':<40} {baseline_blended:>12.2f} {tuned_blended:>12.2f} {tuned_blended - baseline_blended:>12.2f}")
-    print(f"{'Input cost ($/M tokens)':<40} {baseline_cost.dollars_per_million_input_tokens:>12.2f} {tuned_cost.dollars_per_million_input_tokens:>12.2f} {input_cost_delta:>12.2f}")
-    print(f"{'Output cost ($/M tokens)':<40} {baseline_cost.dollars_per_million_output_tokens:>12.2f} {tuned_cost.dollars_per_million_output_tokens:>12.2f} {output_cost_delta:>12.2f}")
-    print(f"{'Total cost ($)':<40} {baseline_cost.total_dollars:>12.4f} {tuned_cost.total_dollars:>12.4f} {total_cost_delta:>12.4f}")
-    print()
-    print("Note: input and output $/M each charge the whole run to one token type,")
-    print(f"so they are not additive. This workload has {total_input:,} input and {total_output:,}")
-    print("output tokens; the type with fewer tokens shows the higher $/M.")
-    print("Compare the blended figure with a per-token bill.")
-    print()
-
-    # Confidence intervals and significance check
-    print("95% Confidence Intervals on Delta (±20% parameter uncertainty):")
-    print(f"  Wall clock delta: {wall_clock_delta:.2f} ± {wall_clock_ci:.2f} seconds")
-    print(f"  Input cost delta: ${input_cost_delta:.2f} ± ${input_cost_ci:.2f} per million")
-    print(f"  Output cost delta: ${output_cost_delta:.2f} ± ${output_cost_ci:.2f} per million")
-    print(f"  Total cost delta: ${total_cost_delta:.4f} ± ${total_cost_ci:.4f}")
-    print()
-
-    # Check if confidence intervals overlap zero
-    wall_clock_overlaps_zero = (wall_clock_delta - wall_clock_ci) <= 0 <= (wall_clock_delta + wall_clock_ci)
-    total_cost_overlaps_zero = (total_cost_delta - total_cost_ci) <= 0 <= (total_cost_delta + total_cost_ci)
-
-    if total_cost_overlaps_zero:
-        print("RESULT: NO SIGNIFICANT DIFFERENCE")
-        print()
-        print("The confidence interval on total cost delta includes zero. This means")
-        print("the assumed parameters (prefill throughput, decode throughput, etc.)")
-        print("have enough uncertainty that we cannot conclude which config is cheaper.")
-        print()
-        print("Measure a real endpoint instead (your URL, model and hourly rate):")
-        print(f"  {DEMO_COST_HINT}")
-    else:
-        if total_cost_delta < 0:
-            print("RESULT: Tuned configuration is cheaper")
-            pct_savings = abs(total_cost_delta / baseline_cost.total_dollars) * 100
-            print(f"  Estimated savings: ${abs(total_cost_delta):.4f} ({pct_savings:.1f}%)")
-        else:
-            print("RESULT: Baseline configuration is cheaper")
-            pct_increase = (total_cost_delta / baseline_cost.total_dollars) * 100
-            print(f"  Estimated increase: ${total_cost_delta:.4f} ({pct_increase:.1f}%)")
-        print()
-        print(f"This result is for a workload with {arrival_rate:.0f} req/sec arrival rate")
-        print(f"and ~{mean_output} output tokens per request. The saving would be smaller")
-        print("under lighter traffic where neither configuration saturates.")
-        print()
-        print("All estimates depend on ASSUMED throughput parameters.")
-        print("Measure a real endpoint instead (your URL, model and hourly rate):")
-        print(f"  {DEMO_COST_HINT}")
-    print()
-
-    # Sensitivity analysis
-    print("Sensitivity Analysis: Decode Throughput Impact")
-    print("=" * 60)
-    print()
-    print("The following shows how results change if decode throughput is")
-    print("halved or doubled from the assumed 100 tok/sec:")
-    print()
-
-    for multiplier, label in [(0.5, "50% (halved)"), (2.0, "200% (doubled)")]:
-        sens_decode = decode_throughput * multiplier
-
-        sens_baseline_config = SimulatorConfig(
-            prefill_throughput_tokens_per_sec=prefill_throughput,
-            decode_throughput_tokens_per_sec=sens_decode,
-            max_num_seqs=128,
-            saturation_knee_sequences=102,
-            kv_cache_capacity_tokens=500_000,
-            gpu_hourly_rate_dollars=gpu_rate,
-        )
-
-        sens_tuned_config = SimulatorConfig(
-            prefill_throughput_tokens_per_sec=prefill_throughput,
-            decode_throughput_tokens_per_sec=sens_decode,
-            max_num_seqs=256,
-            saturation_knee_sequences=200,
-            kv_cache_capacity_tokens=500_000,
-            gpu_hourly_rate_dollars=gpu_rate,
-        )
-
-        # Run sensitivity simulations
-        sens_baseline_sim = VLLMSimulator(sens_baseline_config)
-        for arrival_time, prompt_tokens, output_tokens in workload:
-            sens_baseline_sim.add_request(arrival_time, prompt_tokens, output_tokens)
-        _, sens_baseline_wall = sens_baseline_sim.run()
-
-        sens_tuned_sim = VLLMSimulator(sens_tuned_config)
-        for arrival_time, prompt_tokens, output_tokens in workload:
-            sens_tuned_sim.add_request(arrival_time, prompt_tokens, output_tokens)
-        _, sens_tuned_wall = sens_tuned_sim.run()
-
-        sens_baseline_cost = calculate_cost(
-            input_tokens=total_input,
-            output_tokens=total_output,
-            wall_clock_seconds=sens_baseline_wall,
-            gpu_hourly_rate_dollars=gpu_rate,
-        )
-
-        sens_tuned_cost = calculate_cost(
-            input_tokens=total_input,
-            output_tokens=total_output,
-            wall_clock_seconds=sens_tuned_wall,
-            gpu_hourly_rate_dollars=gpu_rate,
-        )
-
-        sens_delta = sens_tuned_cost.total_dollars - sens_baseline_cost.total_dollars
-
-        print(f"Decode throughput: {sens_decode:.0f} tok/sec ({label})")
-        print(f"  Baseline total cost: ${sens_baseline_cost.total_dollars:.4f}")
-        print(f"  Tuned total cost:    ${sens_tuned_cost.total_dollars:.4f}")
-        print(f"  Delta:               ${sens_delta:.4f}")
-        if sens_delta < 0:
-            print(f"  Result: Tuned is cheaper by ${abs(sens_delta):.4f}")
-        elif sens_delta > 0:
-            print(f"  Result: Baseline is cheaper by ${sens_delta:.4f}")
-        else:
-            print(f"  Result: Same cost")
-        print()
-
-    print("All values above are [SIMULATED] - they depend entirely on assumed")
-    print("throughput parameters, not real hardware measurements.")
-    print()
-
-    return EXIT_OK
-
-
-def _handle_cost(args: argparse.Namespace) -> int:
-    """Measure cost per million tokens against a live endpoint."""
-    import time
-    import statistics
-    from throttle.cost_model import calculate_cost
-    from throttle.workload import WorkloadGenerator
-
-    try:
-        import httpx
-    except ImportError:
-        print("Error: httpx is required for cost measurement")
-        print("Install with: pip install httpx")
-        return EXIT_FAILED
-
-    api_key = _get_api_key(args)
-    headers = _build_headers(api_key)
-    chat_url = _chat_completions_url(args.endpoint_url)
-
-    print(f"Measuring cost against {chat_url}")
-    print(f"GPU hourly rate: ${args.gpu_hourly_rate:.2f}/hour [ASSUMED: you supplied it]")
-    print(f"Test requests: {args.num_requests}")
-    try:
-        with httpx.Client(timeout=10.0) as probe:
-            model = _resolve_model(probe, chat_url, args.model, headers)
-    except httpx.RequestError as e:
-        print(f"Error: Failed to connect to endpoint: {e}")
-        print("Make sure the inference server is running and the URL is correct.")
-        return EXIT_FAILED
-    if model is None:
-        return EXIT_USAGE
-    args.model = model
-    print()
-
-    # Generate test workload
-    workload_gen = WorkloadGenerator(seed=42)
-    workload = workload_gen.generate_chat_workload(
-        num_requests=args.num_requests,
-        arrival_rate_requests_per_sec=1.0,
-        mean_prompt_tokens=100,
-        mean_output_tokens=50,
-    )
-
-    total_input_tokens = 0
-    total_output_tokens = 0
-    request_times = []
-    run_id = None if args.warm_cache else new_run_id()
-    if run_id:
-        print(
-            "Prompt cache: COLD (default): each prompt starts with a unique tag, e.g. "
-            f"'{NONCE_FORMAT.format(run_id=run_id, index=0)}', so a prefix cache cannot serve it"
-        )
-    else:
-        print(
-            "Prompt cache: WARM (--warm-cache): prompts are sent unchanged and share "
-            "long prefixes, so a server with prefix caching serves them warm"
-        )
-
-    print("Sending requests...")
-    overall_start = time.time()
-
-    try:
-        with httpx.Client(timeout=30.0) as client:
-            for i, (_, prompt_tokens, max_tokens) in enumerate(workload):
-                # Create a simple prompt
-                prompt = "Test " * prompt_tokens
-                if run_id:
-                    prompt = NONCE_FORMAT.format(run_id=run_id, index=i) + prompt
-
-                req_start = time.time()
-                response = client.post(
-                    chat_url,
-                    headers=headers,
-                    json={
-                        "model": args.model,
-                        "messages": [{"role": "user", "content": prompt}],
-                        "max_tokens": max_tokens,
-                    },
-                )
-                req_end = time.time()
-
-                if response.status_code != 200:
-                    if context_overflow_limit(response.status_code, response.text)[0]:
-                        print("Error: " + describe_http_failure(
-                            what=f"Request {i + 1}",
-                            url=chat_url,
-                            status=response.status_code,
-                            body=response.text,
-                            max_tokens=max_tokens,
-                            prompt_words=prompt_tokens,
-                            remedy=_synthetic_overflow_remedy("cost", workload),
-                        ))
-                        return EXIT_FAILED
-                    print(f"Request {i+1} failed.")
-                    _print_endpoint_failure(
-                        client, chat_url, response.status_code, args.model,
-                        headers, response.text,
-                    )
-                    return EXIT_FAILED
-
-                data = response.json()
-                usage = data.get("usage", {})
-                total_input_tokens += usage.get("prompt_tokens", 0)
-                total_output_tokens += usage.get("completion_tokens", 0)
-                request_times.append(req_end - req_start)
-
-                if (i + 1) % 5 == 0:
-                    print(f"  Completed {i+1}/{args.num_requests} requests...")
-
-    except httpx.RequestError as e:
-        print(f"Error: Failed to connect to endpoint: {e}")
-        print("Make sure the inference server is running and the URL is correct.")
-        return EXIT_FAILED
-    except Exception as e:
-        print(f"Error: {e}")
-        return EXIT_FAILED
-
-    overall_end = time.time()
-    wall_clock = overall_end - overall_start
-
-    print()
-    print("Measurement Results")
-    print("=" * 60)
-    print()
-
-    if total_input_tokens <= 0 or total_output_tokens <= 0:
-        print("Error: the endpoint did not report token usage (usage.prompt_tokens /")
-        print("usage.completion_tokens), so no $/M figure can be computed without guessing.")
-        return EXIT_FAILED
-
-    # Calculate cost
-    cost_result = calculate_cost(
-        input_tokens=total_input_tokens,
-        output_tokens=total_output_tokens,
-        wall_clock_seconds=wall_clock,
-        gpu_hourly_rate_dollars=args.gpu_hourly_rate,
-    )
-
-    # Calculate confidence intervals (95% CI using t-distribution approximation)
-    if len(request_times) >= 2:
-        mean_time = statistics.mean(request_times)
-        stdev_time = statistics.stdev(request_times)
-        margin = 1.96 * (stdev_time / (len(request_times) ** 0.5))
-        ci_lower = mean_time - margin
-        ci_upper = mean_time + margin
-    else:
-        ci_lower = ci_upper = request_times[0] if request_times else 0
-
-    print(f"Workload:")
-    print(f"  Requests: {args.num_requests}")
-    print(f"  Total input tokens: {total_input_tokens:,}")
-    print(f"  Total output tokens: {total_output_tokens:,}")
-    print()
-
-    print(f"Measured Performance:")
-    print(f"  Wall clock time: {wall_clock:.2f} seconds")
-    print(f"  Average request time: {statistics.mean(request_times):.3f}s (95% CI: [{ci_lower:.3f}, {ci_upper:.3f}])")
-    print()
-
-    total_tokens = total_input_tokens + total_output_tokens
-    blended = cost_result.total_dollars / total_tokens * 1_000_000
-
-    print(f"Measured Cost [MEASURED time x ASSUMED ${args.gpu_hourly_rate:.2f}/hr]:")
-    print(f"  GPU hours: {cost_result.gpu_hours:.6f}")
-    print(f"  Total cost: ${cost_result.total_dollars:.4f}")
-    print(f"  Blended cost: ${blended:.2f} per million tokens (input + output, {total_tokens:,} tokens)")
-    print(f"  Input cost: ${cost_result.dollars_per_million_input_tokens:.2f} per million tokens")
-    print(f"  Output cost: ${cost_result.dollars_per_million_output_tokens:.2f} per million tokens")
-    print("  Note: input and output $/M each charge the whole run to one token type;")
-    print("  they are not additive. Compare the blended figure with a per-token bill.")
-    print()
-    print(f"Workload: {args.num_requests} requests sent one at a time (concurrency 1),")
-    print("  synthetic 'Test Test ...' prompts (mean ~100 words), max_tokens mean ~50,")
-    print(
-        "  prompt cache "
-        + ("WARM (identical prefixes resent)." if args.warm_cache else "COLD (unique tag per prompt).")
-    )
-    print("  Your $/M under real traffic depends on concurrency and prompt mix.")
-    print()
-    print("Next step, for a verdict on a config change: 1. run `throttle check` once to")
-    print("calibrate (it repeats itself 3 times to measure run-to-run noise), 2. change one")
-    print("setting, 3. run it again with a new --label (e.g. --label after) for the verdict:")
-    print(
-        f"  throttle check --url {args.endpoint_url} --model {args.model} "
-        f"--gpu-hourly-rate {args.gpu_hourly_rate:g} --label before"
-    )
-    print("  and --config KEY=VALUE for the setting you changed.")
-    print("  check sends its own fixed workload (built-in prompts, concurrency 2, 5 blocks),")
-    print("  so its $/M will not match the figure above. Compare check with check, not with cost.")
-    print()
-
-    return EXIT_OK
-
-
-
-
-def _handle_compare_measure(report_paths: list[str]) -> int:
-    """Compare measure outputs with statistical testing."""
-    import json
-    import random
-    import statistics
-
-    # Load all measure outputs
-    measures = []
-    for path in report_paths:
-        with open(path) as f:
-            measures.append(json.load(f))
-
-    print("Throttle Compare - Measure Outputs")
-    print("=" * 80)
-    print()
-
-    # Extract data for each measure
-    results = []
-    for m in measures:
-        label = m["label"]
-        note = m.get("note", "")
-        median_input = m["median_dollars_per_million_input"]
-        median_output = m["median_dollars_per_million_output"]
-        ci_input = m["ci_95_input"]
-        ci_output = m["ci_95_output"]
-
-        # Get per-run costs for bootstrap
-        input_costs = [r["dollars_per_million_input"] for r in m["runs"]]
-        output_costs = [r["dollars_per_million_output"] for r in m["runs"]]
-
-        results.append({
-            "label": label,
-            "note": note,
-            "median_input": median_input,
-            "median_output": median_output,
-            "ci_input": ci_input,
-            "ci_output": ci_output,
-            "input_costs": input_costs,
-            "output_costs": output_costs,
-        })
-
-    # Measure files from before 0.4.1 resent identical prompts (warm cache).
-    # One entry per file, not per label: two files may share a label, and a
-    # dict keyed by label would hide the mismatch.
-    modes = [
-        (path, m["label"], (m.get("workload") or {}).get("prompt_cache_mode") or "warm")
-        for path, m in zip(report_paths, measures)
-    ]
-    if len({mode for _path, _label, mode in modes}) > 1:
-        print("NO WINNER: these measurements used different prompt cache modes:")
-        for path, label, mode in modes:
-            print(f"  {path} (label {label}): {mode}")
-        print(
-            "A cold run sends a unique prompt per request; a warm run repeats "
-            "identical prompts that a prefix cache can serve. Their $/M measure "
-            "different traffic, so they are not ranked. Re-measure with the same "
-            "mode (add or drop --warm-cache). Files from before 0.4.1 count as warm."
-        )
-        return EXIT_OK
-
-    # Check for overlaps between all pairs
-    overlaps = []
-    for i in range(len(results)):
-        for j in range(i + 1, len(results)):
-            r1, r2 = results[i], results[j]
-
-            # Check if input intervals overlap
-            input_overlap = not (r1["ci_input"][1] < r2["ci_input"][0] or
-                                r2["ci_input"][1] < r1["ci_input"][0])
-
-            # Check if output intervals overlap
-            output_overlap = not (r1["ci_output"][1] < r2["ci_output"][0] or
-                                  r2["ci_output"][1] < r1["ci_output"][0])
-
-            if input_overlap or output_overlap:
-                # Compute overlap amounts
-                if input_overlap:
-                    input_overlap_start = max(r1["ci_input"][0], r2["ci_input"][0])
-                    input_overlap_end = min(r1["ci_input"][1], r2["ci_input"][1])
-                    input_overlap_amount = input_overlap_end - input_overlap_start
-                else:
-                    input_overlap_amount = 0
-
-                if output_overlap:
-                    output_overlap_start = max(r1["ci_output"][0], r2["ci_output"][0])
-                    output_overlap_end = min(r1["ci_output"][1], r2["ci_output"][1])
-                    output_overlap_amount = output_overlap_end - output_overlap_start
-                else:
-                    output_overlap_amount = 0
-
-                overlaps.append({
-                    "label1": r1["label"],
-                    "label2": r2["label"],
-                    "input_overlap": input_overlap,
-                    "output_overlap": output_overlap,
-                    "input_overlap_amount": input_overlap_amount,
-                    "output_overlap_amount": output_overlap_amount,
-                })
-
-    # If overlaps exist, cannot rank
-    if overlaps:
-        print("NO SIGNIFICANT DIFFERENCE")
-        print()
-        for overlap in overlaps:
-            print(f"{overlap['label1']} vs {overlap['label2']}:")
-            if overlap['input_overlap']:
-                print(f"  Input intervals overlap by ${overlap['input_overlap_amount']:.2f}/M")
-            if overlap['output_overlap']:
-                print(f"  Output intervals overlap by ${overlap['output_overlap_amount']:.2f}/M")
-        print()
-        print("Cannot rank configurations with overlapping confidence intervals.")
-        print()
-
-        # Still print table but without ranking
-        print("Configuration Details:")
-        print()
-        print(f"{'Label':<20} {'Note':<30} {'$/M Input':<25} {'$/M Output':<25}")
-        print("-" * 100)
-        for r in results:
-            note = r['note'] or ""
-            note_display = note[:28] + ".." if len(note) > 30 else note
-            input_display = f"${r['median_input']:.2f} [{r['ci_input'][0]:.2f}, {r['ci_input'][1]:.2f}]"
-            output_display = f"${r['median_output']:.2f} [{r['ci_output'][0]:.2f}, {r['ci_output'][1]:.2f}]"
-            print(f"{r['label']:<20} {note_display:<30} {input_display:<25} {output_display:<25}")
-
-        return EXIT_OK
-
-    # No overlaps - can rank
-    # Sort by total cost (input + output)
-    results_sorted = sorted(results, key=lambda r: r['median_input'] + r['median_output'])
-
-    print("Ranked by Total Cost ($/M tokens)")
-    print()
-
-    # Print header
-    print(f"{'Rank':<6} {'Label':<20} {'Note':<30} {'$/M Input':<25} {'$/M Output':<25}")
-    print("-" * 106)
-
-    # Print each configuration
-    for rank, r in enumerate(results_sorted, 1):
-        note = r['note'] or ""
-        note_display = note[:28] + ".." if len(note) > 30 else note
-        input_display = f"${r['median_input']:.2f} [{r['ci_input'][0]:.2f}, {r['ci_input'][1]:.2f}]"
-        output_display = f"${r['median_output']:.2f} [{r['ci_output'][0]:.2f}, {r['ci_output'][1]:.2f}]"
-        print(f"{rank:<6} {r['label']:<20} {note_display:<30} {input_display:<25} {output_display:<25}")
-
-    # Compute pairwise deltas with bootstrap
-    if len(results_sorted) >= 2:
-        print()
-        print("Pairwise Differences (bootstrap difference method, 10000 resamples):")
-        print()
-
-        for i in range(len(results_sorted) - 1):
-            r1 = results_sorted[i]
-            r2 = results_sorted[i + 1]
-
-            # Bootstrap the difference
-            random.seed(42)
-            n_bootstrap = 10000
-            input_diffs = []
-            output_diffs = []
-
-            for _ in range(n_bootstrap):
-                # Resample from each configuration's runs
-                sample1_input = statistics.median(random.choices(r1["input_costs"], k=len(r1["input_costs"])))
-                sample2_input = statistics.median(random.choices(r2["input_costs"], k=len(r2["input_costs"])))
-                input_diffs.append(sample2_input - sample1_input)
-
-                sample1_output = statistics.median(random.choices(r1["output_costs"], k=len(r1["output_costs"])))
-                sample2_output = statistics.median(random.choices(r2["output_costs"], k=len(r2["output_costs"])))
-                output_diffs.append(sample2_output - sample1_output)
-
-            input_diffs.sort()
-            output_diffs.sort()
-            ci_lower_idx = int(0.025 * n_bootstrap)
-            ci_upper_idx = int(0.975 * n_bootstrap)
-
-            input_diff_median = statistics.median(input_diffs)
-            input_diff_ci = [input_diffs[ci_lower_idx], input_diffs[ci_upper_idx]]
-
-            output_diff_median = statistics.median(output_diffs)
-            output_diff_ci = [output_diffs[ci_lower_idx], output_diffs[ci_upper_idx]]
-
-            print(f"{r2['label']} - {r1['label']}:")
-            print(f"  Input:  ${input_diff_median:+.2f}/M  [{input_diff_ci[0]:+.2f}, {input_diff_ci[1]:+.2f}]")
-            print(f"  Output: ${output_diff_median:+.2f}/M  [{output_diff_ci[0]:+.2f}, {output_diff_ci[1]:+.2f}]")
-            print()
-
-    return EXIT_OK
-
-
-def _handle_report(args: argparse.Namespace) -> int:
-    """Generate HTML report comparing two measure outputs."""
-    import json
-    import statistics
-
-    # Load both reports
-    try:
-        with open(args.reports[0]) as f:
-            report1 = json.load(f)
-        with open(args.reports[1]) as f:
-            report2 = json.load(f)
-    except (FileNotFoundError, json.JSONDecodeError) as e:
-        print(f"Error loading reports: {e}")
-        return EXIT_FAILED
-
-    # Validate format
-    if "ci_95_input" not in report1 or "ci_95_input" not in report2:
-        print("Error: Reports must be measure output JSON files")
-        return EXIT_FAILED
-
-    # Extract data
-    label1 = report1["label"]
-    label2 = report2["label"]
-
-    r1_input_median = report1["median_dollars_per_million_input"]
-    r1_input_ci = report1["ci_95_input"]
-    r1_output_median = report1["median_dollars_per_million_output"]
-    r1_output_ci = report1["ci_95_output"]
-
-    r2_input_median = report2["median_dollars_per_million_input"]
-    r2_input_ci = report2["ci_95_input"]
-    r2_output_median = report2["median_dollars_per_million_output"]
-    r2_output_ci = report2["ci_95_output"]
-
-    # Determine if significant (using same logic as compare)
-    # Check if confidence intervals overlap
-    input_overlap = not (r1_input_ci[1] < r2_input_ci[0] or r2_input_ci[1] < r1_input_ci[0])
-    output_overlap = not (r1_output_ci[1] < r2_output_ci[0] or r2_output_ci[1] < r1_output_ci[0])
-
-    is_significant = not (input_overlap or output_overlap)
-    banner_text = "SIGNIFICANT DIFFERENCE" if is_significant else "NO SIGNIFICANT DIFFERENCE"
-    banner_color = "#dc3545" if is_significant else "#6c757d"
-
-    # Generate HTML
-    html = f"""<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Throttle Cost Comparison</title>
-    <script src="https://cdn.jsdelivr.net/npm/chart.js@4"></script>
-    <style>
-        body {{ font-family: system-ui, -apple-system, sans-serif; margin: 40px; background: #f8f9fa; }}
-        .container {{ max-width: 900px; margin: 0 auto; background: white; padding: 30px; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }}
-        h1 {{ color: #333; margin-bottom: 10px; }}
-        .banner {{ background: {banner_color}; color: white; padding: 15px; text-align: center; font-size: 20px; font-weight: bold; border-radius: 4px; margin: 20px 0; }}
-        .chart-container {{ position: relative; height: 400px; margin: 30px 0; }}
-        table {{ width: 100%; border-collapse: collapse; margin: 20px 0; }}
-        th, td {{ padding: 12px; text-align: left; border-bottom: 1px solid #dee2e6; }}
-        th {{ background: #f8f9fa; font-weight: 600; }}
-        .note {{ color: #6c757d; font-size: 14px; margin-top: 20px; }}
-    </style>
-</head>
-<body>
-    <div class="container">
-        <h1>Throttle Cost Comparison</h1>
-        <p>Comparing <strong>{label1}</strong> vs <strong>{label2}</strong></p>
-
-        <div class="banner">{banner_text}</div>
-
-        <div class="chart-container">
-            <canvas id="costChart"></canvas>
-        </div>
-
-        <table>
-            <thead>
-                <tr>
-                    <th>Configuration</th>
-                    <th>Input ($/M tokens)</th>
-                    <th>Output ($/M tokens)</th>
-                </tr>
-            </thead>
-            <tbody>
-                <tr>
-                    <td><strong>{label1}</strong></td>
-                    <td>${r1_input_median:.2f} <span style="color: #6c757d;">[${r1_input_ci[0]:.2f}, ${r1_input_ci[1]:.2f}]</span></td>
-                    <td>${r1_output_median:.2f} <span style="color: #6c757d;">[${r1_output_ci[0]:.2f}, ${r1_output_ci[1]:.2f}]</span></td>
-                </tr>
-                <tr>
-                    <td><strong>{label2}</strong></td>
-                    <td>${r2_input_median:.2f} <span style="color: #6c757d;">[${r2_input_ci[0]:.2f}, ${r2_input_ci[1]:.2f}]</span></td>
-                    <td>${r2_output_median:.2f} <span style="color: #6c757d;">[${r2_output_ci[0]:.2f}, ${r2_output_ci[1]:.2f}]</span></td>
-                </tr>
-            </tbody>
-        </table>
-
-        <p class="note">
-            95% confidence intervals shown in brackets.
-            {"Intervals do not overlap - difference is statistically significant." if is_significant else "Intervals overlap - difference is not statistically significant."}
-        </p>
-    </div>
-
-    <script>
-        const ctx = document.getElementById('costChart').getContext('2d');
-        new Chart(ctx, {{
-            type: 'bar',
-            data: {{
-                labels: ['{label1}', '{label2}'],
-                datasets: [
-                    {{
-                        label: 'Input ($/M tokens)',
-                        data: [{r1_input_median:.2f}, {r2_input_median:.2f}],
-                        backgroundColor: 'rgba(54, 162, 235, 0.7)',
-                        borderColor: 'rgba(54, 162, 235, 1)',
-                        borderWidth: 1,
-                        errorBars: {{
-                            '{label1}': {{minus: {r1_input_median - r1_input_ci[0]:.2f}, plus: {r1_input_ci[1] - r1_input_median:.2f}}},
-                            '{label2}': {{minus: {r2_input_median - r2_input_ci[0]:.2f}, plus: {r2_input_ci[1] - r2_input_median:.2f}}}
-                        }}
-                    }},
-                    {{
-                        label: 'Output ($/M tokens)',
-                        data: [{r1_output_median:.2f}, {r2_output_median:.2f}],
-                        backgroundColor: 'rgba(255, 99, 132, 0.7)',
-                        borderColor: 'rgba(255, 99, 132, 1)',
-                        borderWidth: 1,
-                        errorBars: {{
-                            '{label1}': {{minus: {r1_output_median - r1_output_ci[0]:.2f}, plus: {r1_output_ci[1] - r1_output_median:.2f}}},
-                            '{label2}': {{minus: {r2_output_median - r2_output_ci[0]:.2f}, plus: {r2_output_ci[1] - r2_output_median:.2f}}}
-                        }}
-                    }}
-                ]
-            }},
-            options: {{
-                responsive: true,
-                maintainAspectRatio: false,
-                plugins: {{
-                    title: {{
-                        display: true,
-                        text: 'Cost per Million Tokens (95% CI)',
-                        font: {{ size: 16 }}
-                    }},
-                    legend: {{
-                        position: 'top'
-                    }}
-                }},
-                scales: {{
-                    y: {{
-                        beginAtZero: true,
-                        title: {{
-                            display: true,
-                            text: '$ / Million Tokens'
-                        }}
-                    }}
-                }}
-            }}
-        }});
-    </script>
-</body>
-</html>
-"""
-
-    # Write HTML file
-    try:
-        with open(args.out, 'w') as f:
-            f.write(html)
-        print(f"Report written to: {args.out}")
-        return EXIT_OK
-    except OSError as e:
-        print(f"Error writing report: {e}")
-        return EXIT_FAILED
-
-
 def _handle_golden_report(args: argparse.Namespace) -> int:
     """Generate self-contained HTML report from golden protocol artifacts."""
     from throttle.golden_report import generate_html_report
@@ -3942,630 +2139,6 @@ def _handle_golden_report(args: argparse.Namespace) -> int:
         import traceback
         traceback.print_exc()
         return EXIT_FAILED
-
-
-def _handle_measure(args: argparse.Namespace) -> int:
-    """Measure cost per million tokens with repeated trials."""
-    from throttle.workload import WorkloadGenerator
-    from throttle.cost_model import calculate_cost
-    import time
-    import json
-    from datetime import datetime
-    import statistics
-
-    try:
-        import httpx
-    except ImportError:
-        print("Error: httpx is required for measure")
-        print("Install with: pip install httpx")
-        return EXIT_FAILED
-
-    api_key = _get_api_key(args)
-    headers = _build_headers(api_key)
-    chat_url = _chat_completions_url(args.endpoint_url)
-
-    print(f"Throttle Measure - {args.label}")
-    print("=" * 60)
-    print()
-
-    # Test endpoint connectivity first
-    print(f"Testing connection to {chat_url}...")
-    try:
-        with httpx.Client(timeout=10.0) as client:
-            model = _resolve_model(client, chat_url, args.model, headers)
-            if model is None:
-                return EXIT_USAGE
-            args.model = model
-            response = client.post(
-                chat_url,
-                headers=headers,
-                json={
-                    "model": args.model,
-                    "messages": [{"role": "user", "content": "test"}],
-                    "max_tokens": 1,
-                },
-            )
-            if response.status_code != 200:
-                _print_endpoint_failure(
-                    client, chat_url, response.status_code, args.model,
-                    headers, response.text,
-                )
-                return EXIT_FAILED
-    except httpx.RequestError as e:
-        print(f"Error: Cannot connect to endpoint: {e}")
-        return EXIT_FAILED
-
-    print("Connection successful.")
-    print()
-
-    # Workload parameters from args
-    arrival_rate = args.arrival_rate
-    num_requests = args.num_requests
-    mean_prompt_tokens = 200
-    mean_output_tokens = 150
-
-    print(f"Running {args.repeat} trials...")
-    print(f"  Workload: {num_requests} requests at {arrival_rate:.1f} req/sec")
-    print(f"  Mean prompt tokens: {mean_prompt_tokens}")
-    print(f"  Mean output tokens: {mean_output_tokens}")
-    print(f"  Fixed seed: trials measure server variance, not workload variance")
-    run_id = None if args.warm_cache else new_run_id()
-    cache_mode = "warm" if args.warm_cache else "cold"
-    if run_id:
-        print(
-            f"  Prompt cache: COLD (default): every prompt starts with a unique tag, "
-            f"e.g. '{NONCE_FORMAT.format(run_id=run_id, index=0)}'"
-        )
-    else:
-        print("  Prompt cache: WARM (--warm-cache): identical prompts every trial")
-    print()
-
-    workload_gen = WorkloadGenerator(seed=42)
-    all_runs = []
-
-    for run_idx in range(args.repeat):
-        print(f"Trial {run_idx + 1}/{args.repeat}...", end=" ", flush=True)
-
-        # Generate workload (same seed for all runs to measure server variance only)
-        workload = workload_gen.generate_chat_workload(
-            num_requests=num_requests,
-            arrival_rate_requests_per_sec=arrival_rate,
-            mean_prompt_tokens=mean_prompt_tokens,
-            mean_output_tokens=mean_output_tokens,
-        )
-
-        # Reuse validate-sim's concurrent dispatch
-        async def run_concurrent_workload():
-            import asyncio
-            import threading
-
-            measured_requests = []
-            real_total_input = 0
-            real_total_output = 0
-            peak_concurrent = 0
-            current_in_flight = 0
-            lock = threading.Lock()
-            stop = asyncio.Event()
-
-            async def send_request(arrival_time, prompt_tokens, max_tokens, request_idx):
-                nonlocal real_total_input, real_total_output, peak_concurrent, current_in_flight
-
-                # Wait until scheduled arrival time; send nothing once a request failed
-                if await wait_or_stop(stop, arrival_time):
-                    return None
-
-                # Track in-flight requests
-                with lock:
-                    current_in_flight += 1
-                    if current_in_flight > peak_concurrent:
-                        peak_concurrent = current_in_flight
-
-                prompt = "Test " * prompt_tokens
-                if run_id:
-                    tag_index = run_idx * num_requests + request_idx
-                    prompt = NONCE_FORMAT.format(run_id=run_id, index=tag_index) + prompt
-                req_start = time.perf_counter_ns()
-
-                async with httpx.AsyncClient(timeout=120.0) as client:
-                    try:
-                        response = await client.post(
-                            chat_url,
-                            headers=headers,
-                            json={
-                                "model": args.model,
-                                "messages": [{"role": "user", "content": prompt}],
-                                "max_tokens": max_tokens,
-                            },
-                        )
-                        req_end = time.perf_counter_ns()
-
-                        if response.status_code != 200:
-                            raise RequestFailed(describe_http_failure(
-                                what=f"Trial {run_idx + 1} request {request_idx + 1}",
-                                url=str(response.request.url),
-                                status=response.status_code,
-                                body=response.text,
-                                max_tokens=max_tokens,
-                                prompt_words=prompt_tokens,
-                                remedy=overflow_remedy,
-                            ))
-
-                        data = response.json()
-                        usage = data.get("usage", {})
-                        actual_input = usage.get("prompt_tokens", 0)
-                        actual_output = usage.get("completion_tokens", 0)
-
-                        with lock:
-                            real_total_input += actual_input
-                            real_total_output += actual_output
-                            current_in_flight -= 1
-
-                        req_duration_ns = req_end - req_start
-                        result = {
-                            "prompt_tokens": actual_input,
-                            "completion_tokens": actual_output,
-                            "duration_seconds": req_duration_ns / 1e9,
-                        }
-
-                        return result
-                    except Exception as e:
-                        stop.set()
-                        with lock:
-                            current_in_flight -= 1
-                        raise
-
-            # Launch all tasks concurrently
-            tasks = [
-                send_request(arrival_time, prompt_tokens, max_tokens, i)
-                for i, (arrival_time, prompt_tokens, max_tokens) in enumerate(workload)
-            ]
-
-            overall_start = time.perf_counter_ns()
-            # After a failure, stop sending and let in-flight requests finish, so
-            # none is left for asyncio.run to cancel mid-connect at shutdown (#22).
-            measured_requests = await gather_or_drain(tasks, stop)
-            overall_end = time.perf_counter_ns()
-            real_wall_clock = (overall_end - overall_start) / 1e9
-
-            return measured_requests, real_total_input, real_total_output, real_wall_clock, peak_concurrent
-
-        overflow_remedy = _synthetic_overflow_remedy("measure", workload)
-        try:
-            import asyncio
-            measured_requests, real_total_input, real_total_output, real_wall_clock, peak_concurrent = asyncio.run(run_concurrent_workload())
-        except RequestFailed as e:
-            print("FAILED")
-            print(f"Error: {e}")
-            return EXIT_FAILED
-        except Exception as e:
-            print(f"FAILED: {e}")
-            return EXIT_FAILED
-
-        real_cost = calculate_cost(
-            input_tokens=real_total_input,
-            output_tokens=real_total_output,
-            wall_clock_seconds=real_wall_clock,
-            gpu_hourly_rate_dollars=args.gpu_hourly_rate,
-        )
-
-        all_runs.append({
-            "run_index": run_idx,
-            "timestamp": datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z'),
-            "wall_clock_seconds": real_wall_clock,
-            "total_input_tokens": real_total_input,
-            "total_output_tokens": real_total_output,
-            "dollars_per_million_input": real_cost.dollars_per_million_input_tokens,
-            "dollars_per_million_output": real_cost.dollars_per_million_output_tokens,
-            "total_dollars": real_cost.total_dollars,
-            "peak_concurrent_requests": peak_concurrent,
-            "per_request_timings": measured_requests,
-        })
-
-        print(f"${real_cost.dollars_per_million_input_tokens:.2f}/M in, ${real_cost.dollars_per_million_output_tokens:.2f}/M out")
-
-    # Compute median and bootstrap 95% CI across runs
-    input_costs = [r["dollars_per_million_input"] for r in all_runs]
-    output_costs = [r["dollars_per_million_output"] for r in all_runs]
-    median_input = statistics.median(input_costs)
-    median_output = statistics.median(output_costs)
-
-    # Bootstrap percentile confidence intervals
-    import random
-    random.seed(42)
-    n_bootstrap = 10000
-    bootstrap_input = []
-    bootstrap_output = []
-    for _ in range(n_bootstrap):
-        resample = random.choices(range(len(all_runs)), k=len(all_runs))
-        bootstrap_input.append(statistics.median([input_costs[i] for i in resample]))
-        bootstrap_output.append(statistics.median([output_costs[i] for i in resample]))
-
-    bootstrap_input.sort()
-    bootstrap_output.sort()
-    ci_lower_idx = int(0.025 * n_bootstrap)
-    ci_upper_idx = int(0.975 * n_bootstrap)
-
-    input_ci_lower = bootstrap_input[ci_lower_idx]
-    input_ci_upper = bootstrap_input[ci_upper_idx]
-    output_ci_lower = bootstrap_output[ci_lower_idx]
-    output_ci_upper = bootstrap_output[ci_upper_idx]
-
-    print()
-    print(f"Results (95% CI via bootstrap percentile method, {n_bootstrap} resamples):")
-    print(f"  Input:  ${median_input:.2f}/M  [${input_ci_lower:.2f}, ${input_ci_upper:.2f}]")
-    print(f"  Output: ${median_output:.2f}/M  [${output_ci_lower:.2f}, ${output_ci_upper:.2f}]")
-    print()
-    print(f"Interval reflects server variance at a fixed workload, not variation in traffic mix.")
-    print()
-
-    # Write results to JSON
-    output = {
-        "label": args.label,
-        "endpoint_url": args.endpoint_url,
-        "model": args.model,
-        "gpu_hourly_rate": args.gpu_hourly_rate,
-        "note": args.note if args.note else None,
-        "workload": {
-            "num_requests": num_requests,
-            "arrival_rate_req_per_sec": arrival_rate,
-            "mean_prompt_tokens": mean_prompt_tokens,
-            "mean_output_tokens": mean_output_tokens,
-            "fixed_seed_explanation": "trials measure server variance, not workload variance",
-            "prompt_cache_mode": cache_mode,
-            "prompt_nonce": (
-                {"run_id": run_id, "format": NONCE_FORMAT,
-                 "index": "trial x requests-per-trial + request number, from 0"}
-                if run_id else None
-            ),
-        },
-        "num_trials": args.repeat,
-        "median_dollars_per_million_input": median_input,
-        "median_dollars_per_million_output": median_output,
-        "ci_95_input": [input_ci_lower, input_ci_upper],
-        "ci_95_output": [output_ci_lower, output_ci_upper],
-        "ci_method": "bootstrap percentile",
-        "ci_resamples": n_bootstrap,
-        "runs": all_runs,
-    }
-
-    output_file = f"{args.label}.json"
-    with open(output_file, 'w') as f:
-        json.dump(output, f, indent=2)
-
-    print(f"Results written to: {output_file}")
-    print()
-    print("Next step: change one server setting, measure again with a new --label, then:")
-    print(f"  throttle compare {output_file} <other-label>.json")
-    print()
-
-    return EXIT_OK
-
-
-def _handle_validate_sim(args: argparse.Namespace) -> int:
-    """Validate simulator accuracy against real measurements at three load levels."""
-    import os
-
-    # Require explicit opt-in via environment variable
-    if os.environ.get("THROTTLE_ENABLE_EXPERIMENTAL") != "1":
-        print("Error: validate-sim is an experimental command.", file=sys.stderr)
-        print("", file=sys.stderr)
-        print("This command has known issues:", file=sys.stderr)
-        print("  - Serial execution bug (requests sent one-by-one, not concurrently)", file=sys.stderr)
-        print("  - Results are not decision-eligible", file=sys.stderr)
-        print("", file=sys.stderr)
-        print("To enable experimental commands, set:", file=sys.stderr)
-        print("  export THROTTLE_ENABLE_EXPERIMENTAL=1", file=sys.stderr)
-        return EXIT_USAGE
-
-    from throttle.simulator import VLLMSimulator, SimulatorConfig
-    from throttle.workload import WorkloadGenerator
-    from throttle.cost_model import calculate_cost
-    import time
-    import json
-    from datetime import datetime
-
-    try:
-        import httpx
-    except ImportError:
-        print("Error: httpx is required for validation")
-        print("Install with: pip install httpx")
-        return EXIT_FAILED
-
-    api_key = _get_api_key(args)
-    headers = _build_headers(api_key)
-
-    chat_completions_url = normalize_chat_completions_url(
-        args.endpoint_url,
-        allow_insecure_http=True,
-    )
-
-    print("Throttle Simulator Validation")
-    print("=" * 60)
-    print()
-
-    # Test endpoint connectivity first
-    print(f"Testing connection to {args.endpoint_url}...")
-    try:
-        with httpx.Client(timeout=10.0) as client:
-            response = client.post(
-                chat_completions_url,
-                headers=headers,
-                json={
-                    "model": args.model,
-                    "messages": [{"role": "user", "content": "test"}],
-                    "max_tokens": 1,
-                },
-            )
-            if response.status_code != 200:
-                print(f"Error: Endpoint returned status {response.status_code}")
-                print("Cannot reach endpoint. Check the URL and ensure the server is running.")
-                return EXIT_FAILED
-    except httpx.RequestError as e:
-        print(f"Error: Cannot connect to endpoint: {e}")
-        print("Check that the endpoint URL is correct and the server is running.")
-        return EXIT_FAILED
-
-    print("Connection successful.")
-    print()
-
-    # Simulator config with all default parameters
-    sim_config = SimulatorConfig(
-        prefill_throughput_tokens_per_sec=5000.0,
-        decode_throughput_tokens_per_sec=100.0,
-        max_num_seqs=256,
-        saturation_knee_sequences=200,
-        kv_cache_capacity_tokens=500_000,
-        preemption_overhead_per_token_sec=0.0002,
-        saturation_penalty_at_max=2.0,
-        gpu_hourly_rate_dollars=args.gpu_hourly_rate,
-    )
-
-    # Test at three arrival rates to see if error grows with load
-    test_scenarios = [
-        {"name": "Light load", "arrival_rate": 1.0, "num_requests": 20},
-        {"name": "Medium load", "arrival_rate": 5.0, "num_requests": 50},
-        {"name": "Heavy load", "arrival_rate": 10.0, "num_requests": 100},
-    ]
-
-    validation_results = {
-        "endpoint_url": args.endpoint_url,
-        "model": args.model,
-        "gpu_hourly_rate": args.gpu_hourly_rate,
-        "timestamp": datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z'),
-        "simulator_config": {
-            "prefill_throughput_tokens_per_sec": sim_config.prefill_throughput_tokens_per_sec,
-            "decode_throughput_tokens_per_sec": sim_config.decode_throughput_tokens_per_sec,
-            "max_num_seqs": sim_config.max_num_seqs,
-            "saturation_knee_sequences": sim_config.saturation_knee_sequences,
-            "kv_cache_capacity_tokens": sim_config.kv_cache_capacity_tokens,
-            "preemption_overhead_per_token_sec": sim_config.preemption_overhead_per_token_sec,
-            "saturation_penalty_at_max": sim_config.saturation_penalty_at_max,
-        },
-        "scenarios": []
-    }
-
-    workload_gen = WorkloadGenerator(seed=42)
-    # Generated up front, in the same order as before, so a context-window
-    # failure can name the longest request of the whole run.
-    workloads = [
-        workload_gen.generate_chat_workload(
-            num_requests=scenario['num_requests'],
-            arrival_rate_requests_per_sec=scenario['arrival_rate'],
-            mean_prompt_tokens=200,
-            mean_output_tokens=150,
-        )
-        for scenario in test_scenarios
-    ]
-    overflow_remedy = _synthetic_overflow_remedy(
-        "validate-sim", [request for workload in workloads for request in workload]
-    )
-
-    for scenario, workload in zip(test_scenarios, workloads):
-        print(f"Running {scenario['name']} ({scenario['arrival_rate']:.0f} req/sec, {scenario['num_requests']} requests)...")
-        print()
-
-        # Run simulator
-        sim = VLLMSimulator(sim_config)
-        for arrival_time, prompt_tokens, output_tokens in workload:
-            sim.add_request(arrival_time, prompt_tokens, output_tokens)
-        sim_completed, sim_wall_clock = sim.run()
-
-        sim_total_input = sum(r.prompt_tokens for r in sim_completed)
-        sim_total_output = sum(r.tokens_generated for r in sim_completed)
-        sim_cost = calculate_cost(
-            input_tokens=sim_total_input,
-            output_tokens=sim_total_output,
-            wall_clock_seconds=sim_wall_clock,
-            gpu_hourly_rate_dollars=args.gpu_hourly_rate,
-        )
-
-        # Run real measurements with concurrent requests respecting arrival times
-        async def run_concurrent_workload():
-            import asyncio
-            import threading
-
-            measured_requests = []
-            real_total_input = 0
-            real_total_output = 0
-            first_token_times = []
-            peak_concurrent = 0
-            current_in_flight = 0
-            lock = threading.Lock()
-            stop = asyncio.Event()
-
-            async def send_request(arrival_time, prompt_tokens, max_tokens, request_idx):
-                nonlocal real_total_input, real_total_output, peak_concurrent, current_in_flight
-
-                # Wait until scheduled arrival time; send nothing once a request failed
-                if await wait_or_stop(stop, arrival_time):
-                    return None
-
-                # Track in-flight requests
-                with lock:
-                    current_in_flight += 1
-                    if current_in_flight > peak_concurrent:
-                        peak_concurrent = current_in_flight
-
-                prompt = "Test " * prompt_tokens
-                req_start = time.perf_counter_ns()
-
-                async with httpx.AsyncClient(timeout=120.0) as client:
-                    try:
-                        response = await client.post(
-                            chat_completions_url,
-                            headers=headers,
-                            json={
-                                "model": args.model,
-                                "messages": [{"role": "user", "content": prompt}],
-                                "max_tokens": max_tokens,
-                            },
-                        )
-                        req_end = time.perf_counter_ns()
-
-                        if response.status_code != 200:
-                            raise RequestFailed(describe_http_failure(
-                                what=f"{scenario['name']} request {request_idx + 1}",
-                                url=str(response.request.url),
-                                status=response.status_code,
-                                body=response.text,
-                                max_tokens=max_tokens,
-                                prompt_words=prompt_tokens,
-                                remedy=overflow_remedy,
-                            ))
-
-                        data = response.json()
-                        usage = data.get("usage", {})
-                        actual_input = usage.get("prompt_tokens", 0)
-                        actual_output = usage.get("completion_tokens", 0)
-
-                        with lock:
-                            real_total_input += actual_input
-                            real_total_output += actual_output
-                            current_in_flight -= 1
-
-                        req_duration_ns = req_end - req_start
-                        result = {
-                            "prompt_tokens": actual_input,
-                            "completion_tokens": actual_output,
-                            "duration_seconds": req_duration_ns / 1e9,
-                        }
-
-                        # Estimate TTFT
-                        if actual_output > 0:
-                            est_ttft_ns = req_duration_ns // (actual_output + 1)
-                            with lock:
-                                first_token_times.append(est_ttft_ns / 1e9)
-
-                        return result
-                    except Exception as e:
-                        stop.set()
-                        with lock:
-                            current_in_flight -= 1
-                        raise
-
-            # Launch all tasks concurrently
-            tasks = [
-                send_request(arrival_time, prompt_tokens, max_tokens, i)
-                for i, (arrival_time, prompt_tokens, max_tokens) in enumerate(workload)
-            ]
-
-            overall_start = time.perf_counter_ns()
-            # After a failure, stop sending and let in-flight requests finish, so
-            # none is left for asyncio.run to cancel mid-connect at shutdown (#22).
-            measured_requests = await gather_or_drain(tasks, stop)
-            overall_end = time.perf_counter_ns()
-            real_wall_clock = (overall_end - overall_start) / 1e9
-
-            return measured_requests, real_total_input, real_total_output, first_token_times, real_wall_clock, peak_concurrent
-
-        try:
-            measured_requests, real_total_input, real_total_output, first_token_times, real_wall_clock, peak_concurrent = asyncio.run(run_concurrent_workload())
-        except RequestFailed as e:
-            print(f"Error: {e}")
-            return EXIT_FAILED
-        except Exception as e:
-            print(f"Error: Request failed: {e}")
-            return EXIT_FAILED
-
-        # Assert peak concurrency > 1 for load validation
-        if peak_concurrent == 1:
-            print(f"ERROR: Peak concurrent requests was 1 - harness is still serial!")
-            print(f"This invalidates the load level test. Arrival rate had no effect.")
-            return EXIT_FAILED
-
-        real_cost = calculate_cost(
-            input_tokens=real_total_input,
-            output_tokens=real_total_output,
-            wall_clock_seconds=real_wall_clock,
-            gpu_hourly_rate_dollars=args.gpu_hourly_rate,
-        )
-
-        # Calculate metrics
-        sim_input_throughput = sim_total_input / sim_wall_clock if sim_wall_clock > 0 else 0
-        sim_output_throughput = sim_total_output / sim_wall_clock if sim_wall_clock > 0 else 0
-        real_input_throughput = real_total_input / real_wall_clock if real_wall_clock > 0 else 0
-        real_output_throughput = real_total_output / real_wall_clock if real_wall_clock > 0 else 0
-
-        avg_ttft = sum(first_token_times) / len(first_token_times) if first_token_times else 0
-
-        # Calculate errors
-        wall_clock_error_pct = ((sim_wall_clock - real_wall_clock) / real_wall_clock) * 100 if real_wall_clock > 0 else 0
-        input_throughput_error_pct = ((sim_input_throughput - real_input_throughput) / real_input_throughput) * 100 if real_input_throughput > 0 else 0
-        output_throughput_error_pct = ((sim_output_throughput - real_output_throughput) / real_output_throughput) * 100 if real_output_throughput > 0 else 0
-        cost_per_m_error_pct = ((sim_cost.dollars_per_million_input_tokens - real_cost.dollars_per_million_input_tokens) / real_cost.dollars_per_million_input_tokens) * 100 if real_cost.dollars_per_million_input_tokens > 0 else 0
-
-        # Print comparison
-        print(f"  Metric                      Simulated      Measured    Error")
-        print(f"  -------------------------  -----------  -----------  --------")
-        print(f"  Wall clock (s)             {sim_wall_clock:11.2f}  {real_wall_clock:11.2f}  {wall_clock_error_pct:+7.1f}%")
-        print(f"  Input tok/sec              {sim_input_throughput:11.1f}  {real_input_throughput:11.1f}  {input_throughput_error_pct:+7.1f}%")
-        print(f"  Output tok/sec             {sim_output_throughput:11.1f}  {real_output_throughput:11.1f}  {output_throughput_error_pct:+7.1f}%")
-        print(f"  TTFT (s)                   {'N/A':>11}  {avg_ttft:11.3f}  {'N/A':>8}")
-        print(f"  $/M input tokens           {sim_cost.dollars_per_million_input_tokens:11.2f}  {real_cost.dollars_per_million_input_tokens:11.2f}  {cost_per_m_error_pct:+7.1f}%")
-        print(f"  Peak concurrent requests   {'N/A':>11}  {peak_concurrent:11d}  {'N/A':>8}")
-        print()
-
-        # Store results
-        validation_results["scenarios"].append({
-            "name": scenario["name"],
-            "arrival_rate_req_per_sec": scenario["arrival_rate"],
-            "num_requests": scenario["num_requests"],
-            "simulated": {
-                "wall_clock_seconds": sim_wall_clock,
-                "input_throughput_tok_per_sec": sim_input_throughput,
-                "output_throughput_tok_per_sec": sim_output_throughput,
-                "dollars_per_million_input": sim_cost.dollars_per_million_input_tokens,
-                "dollars_per_million_output": sim_cost.dollars_per_million_output_tokens,
-                "total_dollars": sim_cost.total_dollars,
-            },
-            "measured": {
-                "wall_clock_seconds": real_wall_clock,
-                "input_throughput_tok_per_sec": real_input_throughput,
-                "output_throughput_tok_per_sec": real_output_throughput,
-                "avg_ttft_seconds": avg_ttft,
-                "dollars_per_million_input": real_cost.dollars_per_million_input_tokens,
-                "dollars_per_million_output": real_cost.dollars_per_million_output_tokens,
-                "total_dollars": real_cost.total_dollars,
-                "peak_concurrent_requests": peak_concurrent,
-                "per_request_timings": measured_requests,
-            },
-            "errors_pct": {
-                "wall_clock": wall_clock_error_pct,
-                "input_throughput": input_throughput_error_pct,
-                "output_throughput": output_throughput_error_pct,
-                "cost_per_million_input": cost_per_m_error_pct,
-            }
-        })
-
-    # Write JSON output
-    output_file = f"validation_{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')}.json"
-    with open(output_file, 'w') as f:
-        json.dump(validation_results, f, indent=2)
-
-    print(f"Full results written to: {output_file}")
-    print()
-
-    return EXIT_OK
 
 
 def _handle_proxy(args: argparse.Namespace) -> int:
@@ -4756,17 +2329,9 @@ def welcome_screen() -> str:
         if second:
             rows.append(f"   {second}")
         rows.extend(f"   {st.paint(command, '36')}" for command in commands)
-    pilot = (
-        f"{st.accent('Throttle Cloud')}: Autotune cuts what this costs."
-    )
-    terms = (
-        "Start free with $10 of credits: "
-    )
     return "\n".join([
         st.panel(rows, title=f"Throttle {__version__}"),
-        pilot,
-        terms + st.bold("throttle upgrade"),
-        st.dim("No server yet? throttle demo (simulated). All commands: throttle --help"),
+        st.dim("No server yet? throttle check --help. All commands: throttle --help"),
     ])
 
 
@@ -4793,7 +2358,6 @@ def main(argv: Sequence[str] | None = None) -> int:
         plan = build_plan(config, prompts, warmup_prompts)
         _print_plan(
             plan,
-            guidellm_prompt_tokens=args.guidellm_prompt_tokens,
             runtime_declared=any(
                 token == "--accelerator-backend" or token.startswith("--accelerator-backend=")
                 for token in raw_argv
@@ -4807,16 +2371,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         return EXIT_OK
     if args.command in {"smoke", "benchmark"}:
         return _handle_run(parser, args)
-    if args.command == "diagnose":
-        return _handle_diagnose(parser, args)
-    if args.command == "experimental-tuning":
-        return _handle_experimental_tuning(parser, args)
     if args.command == "golden":
         return _handle_golden(parser, args)
     if args.command == "golden-report":
         return _handle_golden_report(args)
-    if args.command == "report":
-        return _handle_report(args)
     if args.command == "compare":
         from .evalcompare import handle_live_compare, is_live
         if is_live(args):
@@ -4830,18 +2388,6 @@ def main(argv: Sequence[str] | None = None) -> int:
                 "compare needs two saved reports, or --baseline URL --candidate URL "
                 "--eval-set FILE for a live comparison"
             )
-        # Detect if these are measure outputs (have ci_95_input field) or benchmark reports
-        try:
-            with open(args.reports[0]) as f:
-                first_report = json.load(f)
-
-            if "ci_95_input" in first_report:
-                # Measure outputs - use new comparison logic
-                return _handle_compare_measure(args.reports)
-        except (FileNotFoundError, json.JSONDecodeError, KeyError, IndexError):
-            # Fall through to original benchmark report comparison
-            pass
-
         # Original benchmark report comparison
         try:
             if len(args.reports) not in {2, 6}:
@@ -4871,14 +2417,6 @@ def main(argv: Sequence[str] | None = None) -> int:
         if not report["compatibility"]["compatible"]:
             return EXIT_USAGE
         return EXIT_OK if report.get("decision_eligible") else EXIT_INCONCLUSIVE
-    if args.command == "demo":
-        return _handle_demo(args)
-    if args.command == "cost":
-        return _handle_cost(args)
-    if args.command == "measure":
-        return _handle_measure(args)
-    if args.command == "validate-sim":
-        return _handle_validate_sim(args)
     if args.command == "proxy":
         return _handle_proxy(args)
     if args.command == "watch":
@@ -4888,18 +2426,6 @@ def main(argv: Sequence[str] | None = None) -> int:
     if args.command == "savings":
         from .savings import handle_savings
         return handle_savings(args)
-    if args.command == "upgrade":
-        from .upgrade import handle_upgrade
-        return handle_upgrade(args)
-    if args.command == "login":
-        from .cloud import handle_login
-        return handle_login(args)
-    if args.command == "logout":
-        from .cloud import handle_logout
-        return handle_logout(args)
-    if args.command == "whoami":
-        from .cloud import handle_whoami
-        return handle_whoami(args)
     if args.command == "autotune":
         from .autotune import handle_autotune
         return handle_autotune(args)

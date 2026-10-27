@@ -18,7 +18,7 @@ CostKind = Literal[
 ]
 TrafficKind = Literal["closed_loop", "open_loop"]
 RunMode = Literal["smoke", "benchmark"]
-BackendKind = Literal["native", "guidellm"]
+BackendKind = Literal["native"]
 AcceleratorBackend = Literal["cuda", "metal", "rocm", "cpu"]
 OPEN_LOOP_RATE_RELATIVE_TOLERANCE = 0.05
 OPEN_LOOP_SCHEDULER_LAG_INTERVAL_TOLERANCE = 1.0
@@ -326,6 +326,8 @@ class RunConfig:
     allow_unknown_cost: bool = False
     allow_insecure_http: bool = False
     evidence_source: str = "unverified_endpoint"
+    # Always False: the GuideLLM backend was removed. Kept so the report
+    # schema field guidellm_validation_gaps_acknowledged stays stable.
     guidellm_gaps_acknowledged: bool = False
     # Appended to preserve the positional shape of the pre-manifest-1.1 API.
     accelerator_backend: AcceleratorBackend = "cuda"
