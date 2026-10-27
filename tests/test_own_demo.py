@@ -65,6 +65,8 @@ def test_demo_produces_the_designed_mix(run):
     totals = result.report["totals"]
     assert totals["conservative_savings_usd"] > 0
     assert 0 < totals["movable_share"] < 1
+    assert result.route_lines[0].startswith("DEMO route approved: extraction")
+    assert result.route_lines[1].startswith("DEMO route refused for agent")
 
 
 def test_demo_is_deterministic_for_a_seed(run, tmp_path):

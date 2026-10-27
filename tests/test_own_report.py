@@ -359,8 +359,9 @@ def test_json_schema(tmp_path):
                           "candidate_tokens_per_request", "owned_usd_per_month", "owned_note",
                           "conservative_savings_usd_per_month", "quality", "recommendation", "reasons"}
         assert w["recommendation"] in rep.RECOMMENDATIONS
-        assert set(w["quality"]) == {"verdict", "n", "judged", "wins", "ties", "losses", "win_rate", "tie_rate",
-                                     "loss_rate", "net_ci", "format_checks", "reasons"}
+        assert set(w["quality"]) == {"verdict", "n", "judged", "wins", "ties", "losses", "order_disagree",
+                                     "win_rate", "tie_rate", "loss_rate", "order_disagree_rate", "net_ci",
+                                     "format_checks", "reasons"}
     assert set(data["totals"]) == {"monthly_api_usd", "movable_api_usd", "movable_share", "owned_usd_per_month",
                                    "floor_applied", "conservative_savings_usd", "point_savings_usd", "savings_note"}
     for item in data["labels"]:

@@ -13,11 +13,13 @@ Offline, in a temporary data directory, deterministic for a seed:
    about equal; summarization slightly worse; code worse; agent worse with
    malformed tool calls.
 3. EVAL: the real evaluator and statistics, with a deterministic fake judge
-   that reads the outcome the fake model was designed to have (plus a little
-   position noise, which the both-orders rule turns into ties).
+   that reads the outcome the fake model was designed to have, the same way
+   in both answer orders.
 4. OWNED COST: a check-style record labelled DEMO (assumed GPU price,
    made-up $/M), read back through ``throttle check``'s history loader.
 5. REPORT: the real report, every number labelled DEMO.
+6. ROUTE: the real approval gate approves the biggest MOVE type and refuses
+   a KEEP ON API type. Nothing is served.
 
 Nothing here is a measurement of any real company or model.
 """
@@ -64,20 +66,19 @@ DEFAULT_SEED = 7
 DEFAULT_REQUESTS = 600
 
 TYPE_WEIGHTS = {
-    "classification": 0.22, "extraction": 0.17, "summarization": 0.15,
-    "code": 0.12, "agent": 0.18, "chat": 0.16,
+    "classification": 0.24, "extraction": 0.20, "summarization": 0.12,
+    "code": 0.10, "agent": 0.14, "chat": 0.20,
 }
 # (win share, loss share); the rest are ties. Designed, not measured.
 QUALITY_DESIGN = {
-    "classification": (0.02, 0.02),
-    "extraction": (0.01, 0.02),
-    "chat": (0.02, 0.02),
+    "classification": (0.02, 0.008),
+    "extraction": (0.02, 0.008),
+    "chat": (0.02, 0.008),
     "summarization": (0.08, 0.30),
     "code": (0.10, 0.50),
     "agent": (0.04, 0.46),
 }
 MALFORMED_AGENT_SHARE = 0.22   # of agent tool-call turns
-JUDGE_POSITION_NOISE = 0.04
 ANTHROPIC_SHARE = {"classification": 0.3, "extraction": 0.4, "summarization": 0.7,
                    "code": 0.2, "agent": 0.4, "chat": 0.5}
 
@@ -494,9 +495,6 @@ class FakeJudge:
         else:
             self.unmatched += 1
             return "TIE"
-        noise = int(hashlib.sha256(f"{self.seed}:{s.sid}:{first}".encode()).hexdigest()[:8], 16) / 0xFFFFFFFF
-        if noise < JUDGE_POSITION_NOISE:
-            return "A"        # position bias; the other order cancels it into a TIE
         cand_letter, inc_letter = ("B", "A") if first else ("A", "B")
         return cand_letter if s.tag == judge_mod.WIN else inc_letter
 
@@ -587,7 +585,7 @@ def site_json(report: Mapping[str, Any]) -> dict[str, Any]:
             "monthly_api_usd": _round(w.get("api_usd_per_month")),
             "projected_owned_usd": _round(owned["point"]) if owned else None,
             "verdict": w["recommendation"],
-            "quality": {"win": _round(q.get("win_rate"), 4), "tie": _round(q.get("tie_rate"), 4),
+            "quality": {"win": _round(q.get("win_rate"), 4), "tie": _round(_tie_like(q), 4),
                         "loss": _round(q.get("loss_rate"), 4),
                         "net_ci": [_round(x, 4) for x in q["net_ci"]] if q.get("net_ci") else [None, None]},
         })
@@ -603,6 +601,13 @@ def site_json(report: Mapping[str, Any]) -> dict[str, Any]:
     }
 
 
+def _tie_like(q: Mapping[str, Any]) -> float | None:
+    # The landing page shows three shares; an order disagreement scores 0 like a tie.
+    if q.get("tie_rate") is None:
+        return None
+    return q["tie_rate"] + (q.get("order_disagree_rate") or 0.0)
+
+
 def _round(value: float | None, digits: int = 2) -> float | None:
     return None if value is None else round(float(value), digits)
 
@@ -616,6 +621,28 @@ class DemoResult:
     seconds: float
     judge_unmatched: int
     captured: int
+    route_lines: list[str] = field(default_factory=list)
+
+
+def demo_routes(root: Path, report: Mapping[str, Any]) -> list[str]:
+    """Approve the biggest MOVE type with the real route gate, and show the
+    gate refusing a KEEP ON API type. Nothing is served in the demo."""
+
+    from . import route as route_mod
+
+    rows = sorted(report["workloads"], key=lambda w: -(w["api_usd_per_month"] or 0))
+    lines = []
+    move = next((w for w in rows if w["recommendation"] == report_mod.MOVE), None)
+    if move:
+        approved, check = route_mod.approve(root, move["type"], CANDIDATE_LABEL, CANDIDATE_URL, CANDIDATE_MODEL)
+        if approved:
+            lines.append(f"DEMO route approved: {route_mod._route_line(approved)} ({check.reason})")
+    keep = next((w for w in rows if w["recommendation"] == report_mod.KEEP), None)
+    if keep:
+        refused, check = route_mod.approve(root, keep["type"], CANDIDATE_LABEL, CANDIDATE_URL, CANDIDATE_MODEL)
+        if refused is None:
+            lines.append(f"DEMO route refused for {keep['type']}: {check.reason}")
+    return lines
 
 
 def run_demo(out: Path, *, seed: int = DEFAULT_SEED, requests: int = DEFAULT_REQUESTS,
@@ -658,7 +685,7 @@ def run_demo(out: Path, *, seed: int = DEFAULT_SEED, requests: int = DEFAULT_REQ
         report["demo_requests"] = requests
         json_path, html_path = report_mod.write_outputs(report, out)
         return DemoResult(report, json_path, html_path, site_json(report), time.perf_counter() - started,
-                          judge.unmatched, captured)
+                          judge.unmatched, captured, demo_routes(root, report))
     finally:
         if previous is None:
             os.environ.pop("THROTTLE_OWN_DIR", None)
@@ -706,6 +733,8 @@ def handle(args: argparse.Namespace) -> int:
         path.write_text(json.dumps(result.site, indent=2) + "\n", encoding="utf-8")
     print(report_mod.render_panel(result.report, [result.json_path, result.html_path]))
     st = style_mod.get()
+    for line in result.route_lines:
+        print(line)
     print(f"Done in {result.seconds:.1f}s. Open {st.bold(str(result.html_path))}")
     if args.site_json:
         print(f"Site JSON: {args.site_json}")
