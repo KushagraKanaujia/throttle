@@ -283,30 +283,34 @@ def test_old_flag_names_still_work():
 # --------------------------------------------------------------------------
 
 
-def test_no_args_prints_three_command_start_and_exits_zero(capsys, monkeypatch):
+def test_no_args_prints_the_loop_and_exits_zero(capsys, monkeypatch):
     monkeypatch.delenv("FORCE_COLOR", raising=False)
     code, out = run(capsys)
     assert code == 0
     lines = out.rstrip("\n").splitlines()
     assert len(lines) <= 20
     assert "Throttle " + __version__ in out
-    assert "Throttle cuts what your LLM inference costs on your own GPUs." in out
-    assert "1. Install Ollama" in out and "vLLM / SGLang" in out
-    # One path, no promise of a verdict from the first run: run once to
-    # calibrate, change one setting, run again.
-    assert "2. Run once to calibrate" in out and "throttle check --url http://localhost:11434" in out
-    assert "3. Change one setting, then run it again for a verdict." in out
-    assert "and a verdict:" not in out
-    assert "4. For agent traffic" in out and "throttle check --workload agent" in out
-    assert "No server yet? throttle check --help" in out
-    for retired in ("Throttle Cloud", "credits", "throttle upgrade", "throttle demo",
+    assert "Throttle: own your intelligence. Keep the savings." in out
+    # The loop, in order: demo -> capture -> workloads -> shadow -> eval -> report.
+    order = ["1. See the whole loop", "throttle demo", "2. Capture", "throttle capture",
+             "throttle workloads", "throttle shadow", "throttle eval", "throttle report"]
+    positions = [out.index(text) for text in order]
+    assert positions == sorted(positions)
+    assert "DEMO" in out
+    assert "No server yet? throttle demo" in out
+    assert "check --help" not in out
+    for retired in ("Throttle Cloud", "credits", "throttle upgrade", "Install Ollama",
                     "3 months", "2 weeks", "20%", "$500", "floor"):
         assert retired not in out, retired
     assert "\x1b[" not in out
     # Every command it tells the user to run must parse.
     parser = build_parser()
-    parser.parse_args(["check", "--url", "http://localhost:11434", "--model", "llama3.2:3b", "--gpu-hourly-rate", "1.50"])
-    parser.parse_args(["check", "--workload", "agent", "--url", "http://localhost:11434", "--model", "llama3.2:3b", "--gpu-hourly-rate", "1.50"])
+    parser.parse_args(["demo"])
+    parser.parse_args(["capture"])
+    parser.parse_args(["workloads"])
+    parser.parse_args(["shadow", "--candidate-url", "URL", "--candidate-model", "M", "--label", "NAME"])
+    parser.parse_args(["eval", "--candidate", "NAME"])
+    parser.parse_args(["report", "--candidate", "NAME"] + ["--gpu-hourly-rate", "1", "--gpus", "1"])
 
 
 def test_no_args_screen_with_force_color_and_ascii(capsys, monkeypatch):
@@ -317,8 +321,30 @@ def test_no_args_screen_with_force_color_and_ascii(capsys, monkeypatch):
     assert "\x1b[" in out
     from throttle.style import strip_ansi
     plain = strip_ansi(out)
-    assert "Throttle cuts what your LLM inference costs on your own GPUs." in plain
-    assert "throttle check --workload agent" in plain
+    assert "Throttle: own your intelligence. Keep the savings." in plain
+    assert "throttle shadow --candidate-url URL" in plain
+
+
+def test_help_epilog_walks_the_loop_and_every_command_parses(capsys):
+    from throttle.cli import GETTING_STARTED
+
+    order = ["throttle demo", "throttle capture", "throttle workloads", "throttle shadow",
+             "throttle eval", "throttle check", "throttle report"]
+    positions = [GETTING_STARTED.index(text) for text in order]
+    assert positions == sorted(positions)
+    assert "No server yet? Run 'throttle demo'." in GETTING_STARTED
+    parser = build_parser()
+    parser.parse_args(["demo"])
+    parser.parse_args(["shadow", "--candidate-url", "http://gpu-box:8000/v1", "--candidate-model", "M",
+                       "--label", "NAME"])
+    parser.parse_args(["eval", "--candidate", "NAME", "--judge-model", "gpt-4.1",
+                       "--judge-key-env", "OPENAI_API_KEY"])
+    parser.parse_args(["check", "--url", "http://gpu-box:8000", "--model", "M", "--total-hourly-price", "4.98",
+                       "--gpus", "2", "--label", "NAME"])
+    parser.parse_args(["capture", "--route"])
+    parser.parse_args(["route", "savings"])
+    parser.parse_args(["refresh"])
+    parser.parse_args(["report", "--candidate", "NAME", "--gpu-hourly-rate", "2.49", "--gpus", "2"])
 
 
 def test_help_lists_no_removed_command(capsys):
@@ -326,7 +352,7 @@ def test_help_lists_no_removed_command(capsys):
         main(["--help"])
     out = capsys.readouterr().out
     assert "==SUPPRESS==" not in out
-    assert "Get your first $/M-token number" in out
+    assert "Own your intelligence" in out
     for removed in ("validate-sim", "experimental-tuning", "diagnose", "upgrade", "login",
                     "logout", "whoami", "throttle cost", "throttle measure", "Throttle Cloud",
                     "credits", "guidellm"):

@@ -8,6 +8,41 @@ Throttle is repositioning to "own your intelligence". This release removes
 what the new product does not need. Pricing moves to a share of measured
 savings, so the credit plans and every login/metering path are gone.
 
+### Added
+The own-your-intelligence loop. Each stage is its own command, and all data
+stays local under `~/.throttle/own` (or `$THROTTLE_OWN_DIR`, or `--dir`).
+- `throttle capture`: a local pass-through proxy for the OpenAI and Anthropic
+  APIs (`/v1/chat/completions`, `/v1/messages`) with true streaming
+  pass-through and pattern redaction (`--redact off|mask|hash|metadata`).
+  Nothing is cached. `throttle capture stats` summarizes what was captured.
+- `throttle workloads`: types each captured call as classification,
+  extraction, summarization, agent, code or chat, and shows requests, tokens
+  and list-price spend per type from a dated, sourced price table. Calls
+  without usage are excluded and counted, never estimated. `--embed` adds
+  similarity clusters.
+- `throttle shadow`: replays a per-type sample of captured requests on your own
+  OpenAI-compatible model. Answers are stored for eval and never served.
+- `throttle eval`: automatic checks plus a pairwise LLM judge run in both
+  orders, with Wilson and paired-bootstrap 95% CIs, and a verdict per type:
+  BETTER, NO MATERIAL DIFFERENCE, WORSE, INCONCLUSIVE or INSUFFICIENT DATA.
+- `throttle report`: MOVE, KEEP ON API, NEEDS FINETUNE or NEEDS MORE DATA per
+  type, as report.json and a self-contained report.html. Owned cost and
+  savings appear only with a measured `throttle check` of the candidate.
+- `throttle route approve|list|revoke|savings` and `throttle capture --route`:
+  serve approved types from your own model, with fallback to the API on any
+  doubtful answer, and a realized-savings statement from an append-only
+  ledger. Forced routes are never billable.
+- `throttle refresh`: reruns the saved eval sets on a new open model and says
+  UPGRADE, STAY or NEEDS MORE DATA per type. `--watch-hf` checks Hugging Face
+  for newer models.
+- `throttle demo`: the whole loop offline on synthetic traffic, writing a
+  report.html where every number is labelled DEMO.
+
+### Changed
+- README, `throttle --help`, the no-argument welcome screen and the console
+  docs are rewritten around the loop. The console has a new "The loop"
+  section with one page per stage.
+
 ### Removed
 - Throttle Cloud and the credit plans: `throttle login`, `logout`, `whoami`
   and `upgrade`, the `cloud` and `upgrade` modules, the vendored QR-code

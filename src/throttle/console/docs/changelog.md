@@ -4,6 +4,17 @@
 
 Install the latest with `pipx install throttle-pro` or upgrade with `pipx upgrade throttle-pro`.
 
+## Unreleased (own/mvp)
+
+#### Added
+- The own-your-intelligence loop: `throttle capture`, `workloads`, `shadow`,
+  `eval`, `report`, `route`, `refresh` and `demo`. See [The loop](loop/overview.md).
+
+#### Removed
+- The hosted credit plans and login, the old simulator `throttle demo`,
+  `throttle cost`, `throttle measure`, `throttle diagnose` and the GuideLLM
+  backend.
+
 ## 0.6.0 (2026-10-07)
 
 #### Added

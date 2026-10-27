@@ -1,49 +1,49 @@
 # Quickstart
 
-*Get a real cost-per-million-tokens number in about two minutes.*
+*See the whole loop in a minute, then run it on your own traffic.*
 
-Pick whichever path fits what you have.
-
-### Free GPU (Colab / Kaggle)
-
-No local GPU needed. The notebook starts a small model on a free T4, runs `throttle check`, changes one setting and prints a verdict.
-
-- **[Open in Colab](https://colab.research.google.com/github/KushagraKanaujia/throttle/blob/main/notebooks/throttle-quickstart.ipynb)**: Runtime → Change runtime type → T4 GPU, then Run all.
-- **[Open in Kaggle](https://kaggle.com/kernels/welcome?src=https://github.com/KushagraKanaujia/throttle/blob/main/notebooks/throttle-quickstart.ipynb)**: Turn on a GPU accelerator in the notebook settings first.
-
-### Local Ollama
-
-#### 1. Pull a small model
+## 1. Install
 
 ```bash
-ollama pull llama3.2:3b
+pip install git+https://github.com/KushagraKanaujia/throttle@own/mvp
 ```
 
-#### 2. Install Throttle
+The loop lives on the `own/mvp` branch for now. The `throttle-pro` package on PyPI is behind and does not have it yet.
+
+## 2. Run the demo
 
 ```bash
-pipx install throttle-pro
+throttle demo
 ```
 
-#### 3. Measure it
+It runs capture, workloads, shadow, eval and report on made-up traffic, offline, with no keys and no GPU. Open `throttle-demo/report.html`. Every number is labelled DEMO. See [Demo](../loop/demo.md).
+
+## 3. Run it on your traffic
 
 ```bash
-throttle check --url http://localhost:11434 --model llama3.2:3b --gpu-hourly-rate 1.50
+# capture: a local pass-through proxy
+throttle capture
+export OPENAI_BASE_URL=http://127.0.0.1:8790/v1
+export ANTHROPIC_BASE_URL=http://127.0.0.1:8790
+
+# after a day or more of traffic
+throttle workloads
+
+# your own model on your own server
+throttle shadow --candidate-url http://gpu-box:8000/v1 \
+    --candidate-model Qwen/Qwen2.5-72B-Instruct --label qwen72b@vllm
+throttle eval --candidate qwen72b@vllm --judge-model gpt-4.1 --judge-key-env OPENAI_API_KEY
+
+# measure what it costs, then the report
+throttle check --url http://gpu-box:8000 --model Qwen/Qwen2.5-72B-Instruct \
+    --total-hourly-price 4.98 --gpus 2 --label qwen72b@vllm
+throttle report --candidate qwen72b@vllm --gpu-hourly-rate 2.49 --gpus 2
 ```
 
-A laptop has no real GPU price, so `1.50` is an assumed rate. The dollar figure scales with it; the tokens and time are measured.
-
-### No GPU at all
-
-```bash
-pipx install throttle-pro
-throttle autotune --dry-run
-```
-
-`throttle autotune --dry-run` simulates a server and every trial, so you can see the output without a GPU. Every number it prints is labelled SIMULATED.
+Each step has its own page under [The loop](../loop/overview.md).
 
 ## What happens next
 
-The first check prints your cost per million output tokens with a 95% confidence interval and saves it. With no recent history it repeats itself 3 times back to back (a few minutes on a laptop): those repeats measure your machine's run-to-run noise. Then change one setting and run the same command again to get a verdict. Three steps: run once to calibrate, change one setting, run again.
+When a kind of work says MOVE, approve it and serve it from your model with [Route](../loop/route.md). When a new open model ships, test it with [Refresh](../loop/refresh.md).
 
-- **[Your first cost check](first-check.md)**: Walk through a full before/after comparison, step by step.
+- **[Your first cost check](first-check.md)**: More on `throttle check`, the measurement the report prices your model with.

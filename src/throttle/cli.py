@@ -74,34 +74,37 @@ EXIT_INCONCLUSIVE = 3
 EXIT_CANCELLED = 130
 
 GETTING_STARTED = """\
-Get your first $/M-token number:
+Own your intelligence: prove which share of your OpenAI/Anthropic traffic an
+open-weight model you run can take over without losing quality, then move it.
 
-  1. Measure a real endpoint and calibrate (local Ollama shown; any OpenAI-compatible
-     URL works, with or without /v1). The hourly rate is what your GPU(s) cost you.
-     The first check repeats itself 3 times back to back to measure run-to-run noise
-     (a few minutes on a laptop; --no-calibrate runs once):
-       throttle check --url http://localhost:11434 --model llama3.2:3b --gpu-hourly-rate 1.50 --label before
+  0. See the whole loop on made-up data (offline, no keys, every number DEMO):
+       throttle demo
 
-  2. Change one setting (Ollama on macOS: quit the Ollama app, then run
-     OLLAMA_NUM_PARALLEL=4 ollama serve in another terminal).
+  1. Capture: a local pass-through proxy in front of the API you already call.
+     Then set OPENAI_BASE_URL=http://127.0.0.1:8790/v1 and/or
+     ANTHROPIC_BASE_URL=http://127.0.0.1:8790 in your app:
+       throttle capture
 
-  3. Run again for the verdict (CHEAPER / MORE EXPENSIVE only beyond the noise and
-     the 95% CIs; otherwise NO WINNER). --config only records what you changed:
-       throttle check --url http://localhost:11434 --model llama3.2:3b --gpu-hourly-rate 1.50 --label after --config OLLAMA_NUM_PARALLEL=4
+  2. Workloads: what kinds of work the traffic is, and what each costs at list price:
+       throttle workloads
 
-Cut the bill (free, local):
-  throttle autotune --dry-run             try Autotune on a simulated server
-  throttle autotune --launch ... --space ...   find the cheapest config that passes OUTPUT CHANGED
-  throttle gate --baseline A --candidate B     CI cost gate (exit 1 on MORE EXPENSIVE / OUTPUT CHANGED)
+  3. Shadow: replay a sample on your own model (never served to your users):
+       throttle shadow --candidate-url http://gpu-box:8000/v1 --candidate-model M --label NAME
 
-Switch models or engines? (free, local):
-  throttle compare --baseline URL --candidate URL --eval-set FILE ...  your prompts -> SWITCH?
-  throttle coldstart --cmd "vllm serve ..." --url URL --model M        time a cold start
+  4. Eval: is it as good, per kind of work (pairwise judge, both orders, 95% CIs):
+       throttle eval --candidate NAME --judge-model gpt-4.1 --judge-key-env OPENAI_API_KEY
 
-Other commands: plan / smoke / benchmark / golden (capped, evidence-labelled runs),
-compare (saved reports), savings, watch (read vLLM /metrics),
-proxy + sessions (optional cache and agent profiling), ui.
-No server yet? Run 'throttle check --help'.
+  5. Report: MOVE / KEEP ON API / NEEDS FINETUNE / NEEDS MORE DATA. Savings only
+     with a measured `throttle check` of the candidate server:
+       throttle check --url http://gpu-box:8000 --model M --total-hourly-price 4.98 --gpus 2 --label NAME
+       throttle report --candidate NAME --gpu-hourly-rate 2.49 --gpus 2
+
+Then: throttle route approve ... + throttle capture --route (serve it, with API
+fallback), throttle route savings, and throttle refresh when a new open model ships.
+
+Serving your own model: check ($/M tokens with 95% CIs), autotune, coldstart,
+compare, gate, savings, watch, ui. Evidence runs: plan / smoke / benchmark / golden.
+No server yet? Run 'throttle demo'.
 Run 'throttle COMMAND --help' for details.
 """
 
@@ -400,8 +403,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="throttle",
         description=(
-            "Measure what LLM inference costs in dollars per million tokens, and "
-            "which serving-config change lowers it."
+            "Own your intelligence: move the share of your OpenAI/Anthropic traffic "
+            "that an open-weight model you run can do as well, and keep the savings."
         ),
         epilog=GETTING_STARTED,
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -2301,18 +2304,23 @@ def _render_watch_snap(snap) -> None:
     print()
 
 
-WELCOME_TAGLINE = "Throttle cuts what your LLM inference costs on your own GPUs."
+WELCOME_TAGLINE = "Throttle: own your intelligence. Keep the savings."
 WELCOME_STEPS = (
-    ("Install Ollama: ollama pull llama3.2:3b", "or use your vLLM / SGLang OpenAI-compatible URL.", ()),
-    ("Run once to calibrate (a few minutes on a laptop):", None, (
-        "throttle check --url http://localhost:11434 \\",
-        "    --model llama3.2:3b --gpu-hourly-rate 1.50",
+    ("See the whole loop on made-up data:", "offline, no keys, every number labelled DEMO.", (
+        "throttle demo",
     )),
-    ("Change one setting, then run it again for a verdict.", None, ()),
-    ("For agent traffic (multi-turn sessions, tool results):", None, (
-        "throttle check --workload agent \\",
-        "    --url http://localhost:11434 \\",
-        "    --model llama3.2:3b --gpu-hourly-rate 1.50",
+    ("Capture your OpenAI / Anthropic traffic:", None, (
+        "throttle capture",
+    )),
+    ("See the kinds of work and what each costs:", None, (
+        "throttle workloads",
+    )),
+    ("Shadow on your own model, then eval it:", None, (
+        "throttle shadow --candidate-url URL ...",
+        "throttle eval --candidate NAME ...",
+    )),
+    ("Report what can move, and what it saves:", None, (
+        "throttle report --candidate NAME ...",
     )),
 )
 
@@ -2331,7 +2339,7 @@ def welcome_screen() -> str:
         rows.extend(f"   {st.paint(command, '36')}" for command in commands)
     return "\n".join([
         st.panel(rows, title=f"Throttle {__version__}"),
-        st.dim("No server yet? throttle check --help. All commands: throttle --help"),
+        st.dim("No server yet? throttle demo. All commands: throttle --help"),
     ])
 
 
