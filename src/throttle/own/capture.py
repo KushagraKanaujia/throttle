@@ -416,6 +416,7 @@ class _Pending:
     error: str | None = None
     finished: float | None = None
     recorded: bool = False
+    route: Any = None  # route.RouteDecision when a router saw this request
 
 
 def create_capture_app(
@@ -427,7 +428,10 @@ def create_capture_app(
     salt: str | bytes | None = None,
     on_exchange: Sequence[ExchangeCallback] = (),
     client: httpx.AsyncClient | None = None,
+    router: Any = None,
 ) -> FastAPI:
+    """``router`` (a :class:`throttle.own.route.Router`) may answer a request
+    from an owned model; on any doubt or error the request goes upstream unchanged."""
     if redaction not in records.REDACTION_MODES:
         raise ValueError(f"unknown redaction mode {redaction!r}")
     salt_bytes = salt.encode("utf-8") if isinstance(salt, str) else (salt or secrets.token_bytes(32))
@@ -449,6 +453,8 @@ def create_capture_app(
             yield
         finally:
             await state.drain()
+            if router is not None:
+                await router.aclose()
             if owns_client:
                 await http.aclose()
 
@@ -471,7 +477,7 @@ def create_capture_app(
         error = p.error
         if error is None and not 200 <= p.status < 300:
             error = f"upstream {p.status}: {_error_label(response) or 'error'}"
-        return records.Exchange(
+        exchange = records.Exchange(
             provider=p.provider,
             endpoint=p.endpoint,
             model=model,
@@ -485,6 +491,12 @@ def create_capture_app(
             redaction=state.redaction,
             error=error,
         )
+        if p.route is not None:
+            exchange.served_by = p.route.served_by
+            exchange.fallback = p.route.fallback
+            exchange.route_reason = p.route.route_reason
+            exchange.workload_type = p.route.workload_type
+        return exchange
 
     async def finalize(p: _Pending) -> None:
         if p.recorded:
@@ -497,6 +509,42 @@ def create_capture_app(
             log.exception("could not build captured exchange")
             return
         await state.record(exchange)
+        if router is not None and p.route is not None and p.route.served:
+            try:
+                await asyncio.to_thread(router.record, exchange, p.route)
+            except Exception:  # noqa: BLE001
+                state.write_errors += 1
+                log.exception("could not write ledger line for %s", exchange.id)
+
+    async def decide(p: _Pending) -> Response | None:
+        """The owned answer as a client response, or None to go upstream."""
+        from .route import router_failure
+
+        try:
+            decision = await router.route(p.provider, p.endpoint, p.request_json, p.stream)
+            p.route = decision
+            if not decision.served:
+                return None
+            headers = {"x-throttle-served-by": "owned"}
+            if p.stream:
+                chunks = list(decision.sse)
+
+                async def replay() -> AsyncIterator[bytes]:
+                    for chunk in chunks:
+                        yield chunk
+
+                response: Response = StreamingResponse(replay(), media_type="text/event-stream", headers=headers)
+            else:
+                response = JSONResponse(decision.body, headers=headers)
+        except Exception as exc:  # noqa: BLE001 - a router bug never breaks the client
+            log.exception("router failed; forwarding to the upstream")
+            p.route = router_failure(exc)
+            return None
+        p.status = 200
+        p.response_json = decision.body
+        p.finished = time.perf_counter()
+        p.ttft_ms = decision.owned_latency_ms
+        return _with_background(response, finalize, p)
 
     def upstream_url(provider: str, request: Request) -> str:
         url = upstreams[provider] + request.url.path
@@ -529,6 +577,10 @@ def create_capture_app(
         request_json = parsed if isinstance(parsed, dict) else None
         wants_stream = bool(request_json and request_json.get("stream") is True)
         pending = _Pending(provider=provider, endpoint=request.url.path, request_json=request_json, started=started, stream=wants_stream)
+        if router is not None and request_json is not None:
+            owned = await decide(pending)
+            if owned is not None:
+                return owned
         try:
             upstream = await open_upstream(provider, request, body)
         except httpx.HTTPError as exc:
@@ -728,6 +780,8 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
         "metadata: keep no bodies (default: mask)",
     )
     parser.add_argument("--dir", type=Path, default=None, help="data folder (default: ~/.throttle/own or $THROTTLE_OWN_DIR)")
+    parser.add_argument("--route", action="store_true",
+                        help="serve approved workload types from your own model (see: throttle route)")
     actions = parser.add_subparsers(dest="capture_action", metavar="{stats}")
     stats = actions.add_parser("stats", help="summarize what has been captured")
     # SUPPRESS keeps `throttle capture --dir X stats` working too.
@@ -750,8 +804,16 @@ def _serve(args: argparse.Namespace, root: Path) -> int:
     from .. import style
 
     salt = os.environ.get("THROTTLE_OWN_SALT") or None
-    app = create_capture_app(args.openai_upstream, args.anthropic_upstream, redaction=args.redact, root=root, salt=salt)
+    router = None
+    if getattr(args, "route", False):
+        from .route import Router
+
+        router = Router(root)
+    app = create_capture_app(args.openai_upstream, args.anthropic_upstream, redaction=args.redact, root=root, salt=salt,
+                             router=router)
     print(startup_panel(args, root, style.get()), flush=True)
+    if router is not None:
+        print("\n".join(router.describe()), flush=True)
     uvicorn.run(app, host=args.host, port=args.port, log_level="warning")
     return 0
 
