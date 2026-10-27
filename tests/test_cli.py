@@ -415,6 +415,8 @@ class ParserAndPlanTests(unittest.TestCase):
                 "workloads",
                 "refresh",
                 "route",
+                "report",
+                "demo",
             },
         )
 
