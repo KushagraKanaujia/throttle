@@ -676,6 +676,11 @@ def render_html(report: Mapping[str, Any]) -> str:
     return "\n".join(parts) + "\n"
 
 
+def _owned_gap(workload: Mapping[str, Any]) -> str:
+    note = workload.get("owned_note") or ""
+    return "not projected" if note.startswith("not projected") else "not measured"
+
+
 def render_panel(report: Mapping[str, Any], paths: Sequence[Path] = ()) -> str:
     from .. import style as style_mod
 
@@ -690,7 +695,7 @@ def render_panel(report: Mapping[str, Any], paths: Sequence[Path] = ()) -> str:
     for w in report["workloads"]:
         owned = w["owned_usd_per_month"]
         rows.append(f"{w['type'][:14]:<15}{usd(w['api_usd_per_month']):>11}"
-                    f"{(usd(owned['point']) if owned else 'not measured'):>12}  {st.verdict(w['recommendation'])}")
+                    f"{(usd(owned['point']) if owned else _owned_gap(w)):>12}  {st.verdict(w['recommendation'])}")
     owned_total = report["totals"].get("owned_usd_per_month")
     if owned_total:
         rows.append("")

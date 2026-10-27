@@ -750,6 +750,9 @@ def render_table(document: Mapping[str, Any]) -> str:
     for kind, t in document["types"].items():
         if t["reasons"]:
             rows.append((f"{kind}: {t['reasons'][0]}", (style_mod.DIM,), "  "))
+        if document["judge"] and t.get("order_disagree"):
+            rows.append((f"{kind}: the judge flipped its answer on {t['order_disagree']} of {t['judged']} items "
+                         "when the answers were swapped; those count as ties above", (style_mod.AMBER,), "  "))
     rows.append((f"Judge: {judge['provider']} {judge['model']}, {document['judge_calls']} calls, both orders."
                   if judge else "No judge: automatic checks only.", (style_mod.DIM,)))
     if document.get("judge_stopped"):
