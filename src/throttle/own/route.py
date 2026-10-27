@@ -49,8 +49,19 @@ Limitations (MVP):
   ``cache_control``, ``tool_choice``) are not sent to the owned model.
 
 Realized-savings ledger: ``<root>/ledger/YYYY-MM.jsonl``, append-only, one
-line per owned-served request with the API list price avoided. See
-:func:`savings_statement` for how the bill number is built.
+line per owned-served request: exchange id, type, incumbent model, owned
+tokens, and the serve-time list price with no cache discount (an upper bound,
+kept for audit). ``throttle route savings`` builds the bill number from it:
+
+* Avoided cost prices the owned input + output tokens at the incumbent's list
+  price (the incumbent's own counts are unknown). Each type's share of input
+  that the API served from prompt cache, measured from that month's
+  API-served captures of the same type and model, is priced at the cached
+  rate. No cache history means all input is priced at the cached rate.
+* Only routes approved on a passing eval are billable. Forced routes are
+  shown on their own line and never billed.
+* Owned cost is GPU $/hr x GPUs x every hour of the month (always-on), or an
+  operator-reported invoice. Net <= 0 means no savings, no bill.
 """
 
 from __future__ import annotations
@@ -98,9 +109,20 @@ FALLBACK_REASONS = (
 
 ASSUMPTION_TOKENS = (
     "The API model's own token counts for these requests are not known. Avoided cost prices the "
-    "owned model's input + output tokens at the API model's list price. API prompt-cache discounts "
-    "are not applied."
+    "owned model's input + output tokens at the API model's list price."
 )
+ASSUMPTION_CACHE = (
+    "Prompt caching: for each workload type and API model, the cache-hit share is measured from this "
+    "month's API-served captured calls (cached input tokens / input tokens), and that share of the "
+    "avoided input tokens is priced at the cached-input rate. With no cache history for a type, all "
+    "avoided input is priced at the cached rate (no cache history, priced conservatively)."
+)
+ASSUMPTION_FORCED = (
+    "Routes approved with --force have no passing eval: their avoided cost is shown but not billable."
+)
+CACHE_MEASURED = "measured cache share"
+CACHE_NONE = "no cache history, priced conservatively"
+CACHE_NO_RATE = "no published cached rate, input priced at base rate"
 IN_PROGRESS = "This month is not over: owned cost counts the whole month, avoided cost only the requests so far."
 ASSUMPTION_OWNED = "Owned cost assumes the GPUs ran all hours of the period (always-on)."
 
@@ -569,8 +591,8 @@ def ledger_entry(exchange: records.Exchange, decision: RouteDecision, prices: pr
     assert route is not None
     usage = decision.owned_usage
     price = prices.lookup(exchange.provider, exchange.model)
-    # The incumbent's own counts are unknown; price the owned input + output
-    # tokens at the incumbent's list price, with no cache discount.
+    # Serve-time upper bound (no cache discount), kept for audit. The savings
+    # statement recomputes avoided cost with the month's measured cache share.
     priced_usage = records.Usage(input_tokens=usage.input_tokens, output_tokens=usage.output_tokens)
     avoided = pricing_mod.cost_usd(price, priced_usage)
     excluded = None
@@ -594,7 +616,7 @@ def ledger_entry(exchange: records.Exchange, decision: RouteDecision, prices: pr
         "incumbent_model": exchange.model,
         "owned_input_tokens": usage.input_tokens,
         "owned_output_tokens": usage.output_tokens,
-        "api_cost_avoided_usd": None if avoided is None else round(avoided, 10),
+        "api_cost_no_cache_usd": None if avoided is None else round(avoided, 10),
         "price_label": price.label if price is not None else None,
         "excluded": excluded,
     }
@@ -620,6 +642,63 @@ def parse_month(value: str | None) -> str:
     return value
 
 
+@dataclass
+class CacheShare:
+    """Share of the API model's input tokens that were prompt-cache hits for
+    one (type, provider, model), measured from API-served captured exchanges."""
+
+    cached: int = 0
+    input: int = 0
+    exchanges: int = 0
+
+    @property
+    def share(self) -> float | None:
+        return self.cached / self.input if self.input else None
+
+
+def cache_shares(root: Path, month: str, classify: Callable[[records.Exchange], str] | None = None
+                 ) -> dict[tuple[str, str, str], CacheShare]:
+    """Measured cache-hit share per (type, provider, model) over ``month``.
+    Exchanges whose usage does not report cached tokens are left out (unknown
+    is not zero), so they can only make the result more conservative."""
+    classify = classify or workloads.classify
+    shares: dict[tuple[str, str, str], CacheShare] = {}
+    for exchange in records.iter_exchanges(root):
+        usage = exchange.usage
+        if (exchange.ts[:7] != month or exchange.served_by != records.SERVED_API or not exchange.ok
+                or not usage.input_tokens or usage.cached_input_tokens is None):
+            continue
+        kind = exchange.workload_type or classify(exchange)
+        row = shares.setdefault((kind, exchange.provider, exchange.model), CacheShare())
+        row.cached += min(usage.cached_input_tokens, usage.input_tokens)
+        row.input += usage.input_tokens
+        row.exchanges += 1
+    return shares
+
+
+def avoided_cost(entry: Mapping[str, Any], prices: pricing_mod.PriceTable,
+                 shares: Mapping[tuple[str, str, str], CacheShare]) -> tuple[float | None, str, str | None]:
+    """``(usd, cache_basis, excluded_reason)`` for one ledger line."""
+    input_tokens, output_tokens = entry.get("owned_input_tokens"), entry.get("owned_output_tokens")
+    if not isinstance(input_tokens, int) or not isinstance(output_tokens, int):
+        return None, "", "owned model reported no token usage"
+    provider, model = str(entry.get("incumbent_provider") or ""), str(entry.get("incumbent_model") or "")
+    price = prices.lookup(provider, model)
+    if price is None:
+        return None, "", f"no list price for {provider} {model or '(unknown model)'}"
+    history = shares.get((str(entry.get("type")), provider, model))
+    if history is None or history.share is None:
+        cached, basis = input_tokens, CACHE_NONE
+    else:
+        cached, basis = round(input_tokens * history.share), CACHE_MEASURED
+    if price.cached_input_per_m is None:
+        basis = CACHE_NO_RATE
+    usd = pricing_mod.cost_usd(price, records.Usage(input_tokens, output_tokens, cached))
+    if usd is None:
+        return None, basis, "list price does not cover this request size"
+    return usd, basis, None
+
+
 def savings_statement(
     root: Path,
     month: str,
@@ -627,36 +706,49 @@ def savings_statement(
     gpu_hourly_rate: float | None = None,
     gpus: int | None = None,
     owned_cost_usd: float | None = None,
+    prices: pricing_mod.PriceTable | None = None,
 ) -> dict[str, Any]:
+    """The realized-savings statement for one month. Only routes approved on a
+    passing eval count toward the billable net; forced routes are reported
+    beside it and never billed."""
+    prices = prices or pricing_mod.load_prices()
     entries = list(records.read_jsonl(ledger_path(root, month)))
-    avoided = 0.0
-    priced = 0
+    shares = cache_shares(root, month)
+    avoided = forced_avoided = 0.0
+    priced = forced_requests = 0
     excluded: Counter[str] = Counter()
+    bases: Counter[str] = Counter()
     by_type: dict[str, dict[str, Any]] = {}
     labels: set[str] = set()
-    forced_requests, forced_avoided = 0, 0.0
     tokens = {"input": 0, "output": 0}
     for entry in entries:
         kind = str(entry.get("type"))
-        row = by_type.setdefault(kind, {"requests": 0, "api_cost_avoided_usd": 0.0, "excluded": 0, "forced": False})
+        forced = bool(entry.get("forced"))
+        row = by_type.setdefault(kind, {"requests": 0, "billable_avoided_usd": 0.0, "forced_requests": 0,
+                                        "forced_avoided_usd": 0.0, "excluded": 0, "cache_basis": set()})
         row["requests"] += 1
         tokens["input"] += entry.get("owned_input_tokens") or 0
         tokens["output"] += entry.get("owned_output_tokens") or 0
-        value = entry.get("api_cost_avoided_usd")
-        if entry.get("forced"):
+        if forced:
             forced_requests += 1
-            row["forced"] = True
-        if value is None:
-            excluded[str(entry.get("excluded") or "not priced")] += 1
+            row["forced_requests"] += 1
+        usd, basis, reason = avoided_cost(entry, prices, shares)
+        if usd is None:
+            excluded[reason or "not priced"] += 1
             row["excluded"] += 1
             continue
         priced += 1
-        avoided += float(value)
-        row["api_cost_avoided_usd"] += float(value)
-        if entry.get("forced"):
-            forced_avoided += float(value)
-        if entry.get("price_label"):
-            labels.add(str(entry["price_label"]))
+        bases[basis] += 1
+        row["cache_basis"].add(basis)
+        price = prices.lookup(str(entry.get("incumbent_provider")), str(entry.get("incumbent_model")))
+        if price is not None:
+            labels.add(price.label)
+        if forced:
+            forced_avoided += usd
+            row["forced_avoided_usd"] += usd
+        else:
+            avoided += usd
+            row["billable_avoided_usd"] += usd
 
     fallbacks: Counter[str] = Counter()
     for exchange in records.iter_exchanges(root):
@@ -688,16 +780,28 @@ def savings_statement(
         "fallback_rate": (sum(fallbacks.values()) / attempted) if attempted else None,
         "fallbacks_by_reason": {k: {"count": n, "rate": n / attempted} for k, n in fallbacks.most_common()},
         "api_cost_avoided_usd": round(avoided, 6),
-        "api_cost_avoided_label": "MEASURED owned tokens x " + (", ".join(sorted(labels)) if labels else "list price"),
+        "api_cost_avoided_label": "MEASURED owned tokens x " + (", ".join(sorted(labels)) if labels else "list price")
+        + ", cache-adjusted, approved routes only",
+        "cache_basis_counts": dict(bases),
+        "cache_history": [
+            {"type": k[0], "provider": k[1], "model": k[2], "cached_share": v.share, "exchanges": v.exchanges}
+            for k, v in sorted(shares.items())
+        ],
         "owned_cost_usd": round(owned, 6),
         "owned_cost_label": owned_label,
         "owned_cost_basis": owned_basis,
         "net_realized_savings_usd": round(net, 6),
         "billable": net > 0,
-        "forced": {"requests": forced_requests, "api_cost_avoided_usd": round(forced_avoided, 6)},
-        "by_type": {k: {**v, "api_cost_avoided_usd": round(v["api_cost_avoided_usd"], 6)} for k, v in sorted(by_type.items())},
+        "forced": {"requests": forced_requests, "api_cost_avoided_usd": round(forced_avoided, 6), "billable": False},
+        "by_type": {
+            k: {**v, "billable_avoided_usd": round(v["billable_avoided_usd"], 6),
+                "forced_avoided_usd": round(v["forced_avoided_usd"], 6), "cache_basis": sorted(v["cache_basis"])}
+            for k, v in sorted(by_type.items())
+        },
         "assumptions": [
             ASSUMPTION_TOKENS,
+            ASSUMPTION_CACHE,
+            ASSUMPTION_FORCED,
             ASSUMPTION_OWNED if owned_basis else "Owned cost is the amount the operator reported as invoiced.",
             "Fallbacks were answered by the API and are already in the API bill; they are not counted as savings.",
             "Requests with no owned token usage or no list price are excluded and counted, never estimated.",
@@ -726,21 +830,29 @@ def render_statement(doc: Mapping[str, Any]) -> str:
         total = sum(doc["excluded"].values())
         rows.append((f"Excluded from avoided cost (never estimated): {total} - "
                      + "; ".join(f"{k}: {n}" for k, n in doc["excluded"].items()), ()))
+    if doc["cache_basis_counts"]:
+        rows.append((f"Prompt-cache pricing (requests): "
+                     + "; ".join(f"{k}: {n}" for k, n in sorted(doc["cache_basis_counts"].items())), ()))
     rows += [
         "",
         (f"API cost avoided:      {_usd(doc['api_cost_avoided_usd'])}   {doc['api_cost_avoided_label']}", ()),
         (f"Owned cost:            {_usd(doc['owned_cost_usd'])}   {doc['owned_cost_label']}", ()),
-        st.bold(f"Net realized savings:  {_usd(doc['net_realized_savings_usd'])}"),
+        st.bold(f"Net realized savings:  {_usd(doc['net_realized_savings_usd'])}   (billable)"),
     ]
     if not doc["billable"]:
         rows.append(st.warn("No savings this period, no bill."))
     if doc["forced"]["requests"]:
-        rows += ["", (f"FORCED: {doc['forced']['requests']} requests ({_usd(doc['forced']['api_cost_avoided_usd'])} "
-                      "avoided) went through routes approved with --force, without a passing eval.", (BOLD_RED,))]
+        rows += ["", (f"FORCED (not billable; quality not proven): {doc['forced']['requests']} requests, "
+                      f"{_usd(doc['forced']['api_cost_avoided_usd'])} avoided through routes approved with --force.",
+                      (BOLD_RED,))]
     rows += ["", st.bold("By type")]
     for kind, row in doc["by_type"].items():
-        flag = "  FORCED" if row["forced"] else ""
-        rows.append(f"  {kind:<15} {row['requests']:>7} requests  {_usd(row['api_cost_avoided_usd']):>12} avoided{flag}")
+        line = f"  {kind:<15} {row['requests']:>7} requests  {_usd(row['billable_avoided_usd']):>12} billable"
+        if row["forced_requests"]:
+            line += f"  FORCED {row['forced_requests']} ({_usd(row['forced_avoided_usd'])}, not billable)"
+        rows.append(line)
+        if row["cache_basis"]:
+            rows.append(st.dim(f"    cache: {', '.join(row['cache_basis'])}"))
     rows += [""] + [(f"- {a}", (), "  ") for a in doc["assumptions"]]
     rows.append(st.dim(f"Ledger: {doc['ledger']}"))
     return st.panel(rows, title=f"Realized savings {doc['month']}")
@@ -798,6 +910,8 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
     s.add_argument("--gpus", type=int, default=None, help="GPUs serving the owned model")
     s.add_argument("--owned-cost-usd", type=float, default=None,
                    help="invoiced owned cost for the month (labelled OPERATOR-REPORTED)")
+    s.add_argument("--prices", type=Path, default=None, metavar="FILE",
+                   help="JSON price file that replaces or adds entries (labelled ASSUMED)")
     s.add_argument("--json", action="store_true")
     for sub in (a, s):
         sub.add_argument("--dir", type=Path, default=argparse.SUPPRESS, help=dir_help)
@@ -861,7 +975,7 @@ def _savings(args: argparse.Namespace, root: Path) -> int:
     if args.owned_cost_usd is None and (args.gpu_hourly_rate is None or args.gpus is None):
         raise ValueError("give --gpu-hourly-rate and --gpus (always-on owned cost), or --owned-cost-usd")
     doc = savings_statement(root, month, gpu_hourly_rate=args.gpu_hourly_rate, gpus=args.gpus,
-                            owned_cost_usd=args.owned_cost_usd)
+                            owned_cost_usd=args.owned_cost_usd, prices=pricing_mod.load_prices(args.prices))
     if args.json:
         print(json.dumps(doc, indent=2, sort_keys=True))
     else:

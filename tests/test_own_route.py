@@ -431,8 +431,8 @@ async def test_ledger_written_per_owned_request(tmp_path):
     openai_line, anthropic_line = lines
     assert openai_line["type"] == "chat" and openai_line["incumbent_model"] == INCUMBENT_OPENAI
     assert (openai_line["owned_input_tokens"], openai_line["owned_output_tokens"]) == (1000, 200)
-    assert openai_line["api_cost_avoided_usd"] == pytest.approx(1000 * 1e-6 + 200 * 5e-6)
-    assert anthropic_line["api_cost_avoided_usd"] == pytest.approx(1000 * 10e-6 + 200 * 50e-6)
+    assert openai_line["api_cost_no_cache_usd"] == pytest.approx(1000 * 1e-6 + 200 * 5e-6)
+    assert anthropic_line["api_cost_no_cache_usd"] == pytest.approx(1000 * 10e-6 + 200 * 50e-6)
     assert openai_line["price_label"].startswith("LIST PRICE")
     assert openai_line["forced"] is False and openai_line["excluded"] is None
     path = rt.ledger_path(tmp_path, exchanges[0].ts[:7])
@@ -446,8 +446,8 @@ async def test_ledger_excludes_missing_usage_and_unknown_price(tmp_path):
     app, _, _ = make_app(tmp_path, lambda req: httpx.Response(200, json=owned_answer()))
     await post(app, "/v1/chat/completions", {**chat_request(), "model": "some-unpriced-model"})
     no_usage, no_price = ledger(tmp_path)
-    assert no_usage["api_cost_avoided_usd"] is None and "usage" in no_usage["excluded"]
-    assert no_price["api_cost_avoided_usd"] is None and "no list price" in no_price["excluded"]
+    assert no_usage["api_cost_no_cache_usd"] is None and "usage" in no_usage["excluded"]
+    assert no_price["api_cost_no_cache_usd"] is None and "no list price" in no_price["excluded"]
 
 
 # ---------------------------------------------------------------------------
@@ -455,49 +455,125 @@ async def test_ledger_excludes_missing_usage_and_unknown_price(tmp_path):
 # ---------------------------------------------------------------------------
 
 
-def seed_month(root, *, owned_lines, avoided_each, fallbacks, forced=0):
+# gpt-6.1-terra: $1 input, $0.05 cached input, $5 output per 1M tokens.
+# One ledger line = 1M owned input + 100k owned output tokens.
+UNCACHED = 1.0 + 0.5
+ALL_CACHED = 0.05 + 0.5
+SHARE_40 = 0.6 * 1.0 + 0.4 * 0.05 + 0.5
+
+
+def ledger_line(i, *, forced=False, kind="chat", model=INCUMBENT_OPENAI, usage=(1_000_000, 100_000)):
+    return {"schema": rt.LEDGER_SCHEMA, "ts": "2026-10-05T00:00:00.000Z", "exchange_id": f"e{i}", "type": kind,
+            "incumbent_provider": "openai", "incumbent_model": model, "forced": forced,
+            "owned_input_tokens": usage[0] if usage else None, "owned_output_tokens": usage[1] if usage else None}
+
+
+def api_exchange(root, *, kind="chat", model=INCUMBENT_OPENAI, input_tokens=1000, cached=400, ts="2026-10-04T00:00:00.000Z",
+                 served_by=r.SERVED_API, request=None, fallback=False, reason=None):
+    r.append_exchange(r.Exchange(provider="openai", endpoint="/v1/chat/completions", model=model, request=request,
+                                 response=None, status=200, latency_ms=1, served_by=served_by, fallback=fallback,
+                                 route_reason=reason, workload_type=kind, ts=ts, redaction=r.REDACTION_OFF,
+                                 usage=r.Usage(input_tokens, 10, cached)), root)
+
+
+def seed_month(root, *, owned_lines, forced=0, fallbacks=(), history=True, no_usage=True):
     path = rt.ledger_path(root, "2026-10")
     for i in range(owned_lines):
-        r.append_jsonl(path, {"schema": rt.LEDGER_SCHEMA, "ts": "2026-10-05T00:00:00.000Z", "exchange_id": f"e{i}",
-                              "type": "chat", "owned_input_tokens": 1000, "owned_output_tokens": 100,
-                              "api_cost_avoided_usd": avoided_each, "price_label": "LIST PRICE (2026-10-27)",
-                              "forced": i < forced, "excluded": None})
-    r.append_jsonl(path, {"ts": "2026-10-05T00:00:00.000Z", "exchange_id": "nousage", "type": "chat",
-                          "owned_input_tokens": None, "owned_output_tokens": None, "api_cost_avoided_usd": None,
-                          "excluded": "owned model reported no token usage", "forced": False})
+        r.append_jsonl(path, ledger_line(i, forced=i < forced))
+    if no_usage:
+        r.append_jsonl(path, ledger_line("nousage", usage=None))
+    if history:
+        api_exchange(root, input_tokens=600, cached=200)
+        api_exchange(root, input_tokens=400, cached=200)       # pooled share: 400 / 1000
     for reason in fallbacks:
-        r.append_exchange(r.Exchange(provider="openai", endpoint="/v1/chat/completions", model=INCUMBENT_OPENAI,
-                                     request=None, response=None, status=200, latency_ms=1, fallback=True,
-                                     route_reason=reason, ts="2026-10-06T00:00:00.000Z"), root)
-    r.append_exchange(r.Exchange(provider="openai", endpoint="/v1/chat/completions", model=INCUMBENT_OPENAI,
-                                 request=None, response=None, status=200, latency_ms=1, fallback=True,
-                                 route_reason="timeout", ts="2026-09-06T00:00:00.000Z"), root)
+        api_exchange(root, fallback=True, reason=reason, cached=None)
+    api_exchange(root, fallback=True, reason="timeout", ts="2026-09-06T00:00:00.000Z", cached=None)
 
 
-def test_savings_math_positive(tmp_path):
-    seed_month(tmp_path, owned_lines=10, avoided_each=200.0, fallbacks=["timeout", "truncated", "http_error: 503"],
-               forced=2)
-    doc = rt.savings_statement(tmp_path, "2026-10", gpu_hourly_rate=2.0, gpus=1)
+def test_savings_math_positive_and_forced_not_billable(tmp_path):
+    seed_month(tmp_path, owned_lines=10, forced=2, fallbacks=["timeout", "truncated", "http_error: 503"])
+    doc = rt.savings_statement(tmp_path, "2026-10", gpu_hourly_rate=0.005, gpus=1)
     assert doc["period_hours"] == 31 * 24
-    assert doc["api_cost_avoided_usd"] == pytest.approx(2000.0)
-    assert doc["owned_cost_usd"] == pytest.approx(2.0 * 744)
-    assert doc["net_realized_savings_usd"] == pytest.approx(2000.0 - 1488.0)
+    assert doc["api_cost_avoided_usd"] == pytest.approx(8 * SHARE_40)
+    assert doc["forced"] == {"requests": 2, "api_cost_avoided_usd": pytest.approx(2 * SHARE_40), "billable": False}
+    assert doc["owned_cost_usd"] == pytest.approx(0.005 * 744)
+    assert doc["net_realized_savings_usd"] == pytest.approx(8 * SHARE_40 - 3.72)
     assert doc["billable"] is True
     assert doc["requests_served_owned"] == 11 and doc["requests_priced"] == 10
     assert doc["excluded"] == {"owned model reported no token usage": 1}
+    assert doc["cache_basis_counts"] == {rt.CACHE_MEASURED: 10}
     assert doc["fallbacks"] == 3
     assert doc["fallback_rate"] == pytest.approx(3 / 14)
     assert set(doc["fallbacks_by_reason"]) == {"timeout", "truncated", "http_error"}
-    assert doc["forced"] == {"requests": 2, "api_cost_avoided_usd": 400.0}
     assert "ASSUMED" in doc["owned_cost_label"] and "MEASURED" in doc["api_cost_avoided_label"]
+    row = doc["by_type"]["chat"]
+    assert row["forced_requests"] == 2 and row["billable_avoided_usd"] == pytest.approx(8 * SHARE_40)
     text = rt.render_statement(doc)
-    assert "FORCED" in text and "no bill" not in text
-    assert "input + output tokens" in text
+    assert "FORCED (not billable; quality not proven)" in text and "no bill" not in text
+    assumptions = " ".join(doc["assumptions"])
+    assert "input + output tokens" in assumptions and "cache-hit share is measured" in assumptions
+    assert "not billable" in assumptions
+
+
+def test_forced_only_savings_are_never_billed(tmp_path):
+    seed_month(tmp_path, owned_lines=5, forced=5, no_usage=False)
+    doc = rt.savings_statement(tmp_path, "2026-10", owned_cost_usd=0.01)
+    assert doc["forced"]["api_cost_avoided_usd"] == pytest.approx(5 * SHARE_40)
+    assert doc["api_cost_avoided_usd"] == 0
+    assert doc["net_realized_savings_usd"] == pytest.approx(-0.01)
+    assert doc["billable"] is False
+    text = rt.render_statement(doc)
+    assert "No savings this period, no bill." in text and "FORCED (not billable" in text
+
+
+def test_no_cache_history_prices_all_input_at_cached_rate(tmp_path):
+    seed_month(tmp_path, owned_lines=2, history=False, no_usage=False)
+    # Not history for chat/terra: another model, an owned-served call, unreported cache counts, another month.
+    api_exchange(tmp_path, model="gpt-6.1-sol", cached=0)
+    api_exchange(tmp_path, served_by=r.SERVED_OWNED, cached=0)
+    api_exchange(tmp_path, cached=None)
+    api_exchange(tmp_path, cached=0, ts="2026-09-01T00:00:00.000Z")
+    doc = rt.savings_statement(tmp_path, "2026-10", owned_cost_usd=0)
+    assert doc["api_cost_avoided_usd"] == pytest.approx(2 * ALL_CACHED)
+    assert doc["cache_basis_counts"] == {rt.CACHE_NONE: 2}
+    assert "no cache history, priced conservatively" in " ".join(rt.render_statement(doc).split())
+
+
+def test_cache_share_zero_prices_input_at_base_rate(tmp_path):
+    seed_month(tmp_path, owned_lines=1, history=False, no_usage=False)
+    api_exchange(tmp_path, cached=0)
+    doc = rt.savings_statement(tmp_path, "2026-10", owned_cost_usd=0)
+    assert doc["api_cost_avoided_usd"] == pytest.approx(UNCACHED)
+
+
+def test_cache_history_is_per_type_and_classifies_untyped_captures(tmp_path):
+    path = rt.ledger_path(tmp_path, "2026-10")
+    r.append_jsonl(path, ledger_line(1, kind="chat"))
+    r.append_jsonl(path, ledger_line(2, kind="extraction"))
+    untyped = {"model": INCUMBENT_OPENAI, "messages": [{"role": "user", "content": "hello there, how are you"}]}
+    api_exchange(tmp_path, kind=None, request=untyped, input_tokens=1000, cached=0)   # classified as chat
+    doc = rt.savings_statement(tmp_path, "2026-10", owned_cost_usd=0)
+    assert doc["by_type"]["chat"]["billable_avoided_usd"] == pytest.approx(UNCACHED)
+    assert doc["by_type"]["extraction"]["billable_avoided_usd"] == pytest.approx(ALL_CACHED)
+    assert doc["by_type"]["extraction"]["cache_basis"] == [rt.CACHE_NONE]
+
+
+def test_no_published_cached_rate_is_labelled(tmp_path):
+    prices_file = tmp_path / "prices.json"
+    prices_file.write_text(json.dumps([{"provider": "openai", "model": INCUMBENT_OPENAI,
+                                        "input_per_m": 1, "output_per_m": 5}]))
+    seed_month(tmp_path, owned_lines=1, history=False, no_usage=False)
+    from throttle.own import pricing
+
+    doc = rt.savings_statement(tmp_path, "2026-10", owned_cost_usd=0, prices=pricing.load_prices(prices_file))
+    assert doc["api_cost_avoided_usd"] == pytest.approx(UNCACHED)
+    assert doc["cache_basis_counts"] == {rt.CACHE_NO_RATE: 1}
+    assert "ASSUMED" in doc["api_cost_avoided_label"]
 
 
 def test_savings_zero_or_negative_says_no_bill(tmp_path, capsys):
-    seed_month(tmp_path, owned_lines=2, avoided_each=1.0, fallbacks=[])
-    doc = rt.savings_statement(tmp_path, "2026-10", owned_cost_usd=2.0)
+    seed_month(tmp_path, owned_lines=2, no_usage=False)
+    doc = rt.savings_statement(tmp_path, "2026-10", owned_cost_usd=2 * SHARE_40)
     assert doc["net_realized_savings_usd"] == pytest.approx(0.0)
     assert doc["billable"] is False
     assert doc["owned_cost_label"].startswith("OPERATOR-REPORTED")
@@ -508,7 +584,7 @@ def test_savings_zero_or_negative_says_no_bill(tmp_path, capsys):
                                       "--gpu-hourly-rate", "1", "--gpus", "2", "--json"])
     assert dispatch(args) == 0
     out = json.loads(capsys.readouterr().out)
-    assert out["net_realized_savings_usd"] == pytest.approx(2.0 - 1488.0)
+    assert out["net_realized_savings_usd"] == pytest.approx(2 * SHARE_40 - 1488.0)
     assert out["billable"] is False
 
 
