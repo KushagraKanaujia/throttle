@@ -236,3 +236,66 @@ def intervals_overlap(left: dict[str, object], right: dict[str, object]) -> bool
     return float(left["low"]) <= float(right["high"]) and float(right["low"]) <= float(
         left["high"]
     )
+
+
+_Z_975 = 1.959963984540054
+
+
+def wilson_interval_95(successes: int, n: int) -> dict[str, float | int | None]:
+    """Wilson score 95% interval for a proportion ``successes / n``.
+
+    Unlike the normal approximation it stays inside [0, 1] and behaves at
+    0/n and n/n, which is where small eval sets usually land.
+    """
+
+    if n <= 0:
+        return {"low": None, "high": None, "point": None, "n": 0}
+    if successes < 0 or successes > n:
+        raise ValueError("successes must be between 0 and n")
+    p = successes / n
+    z2 = _Z_975 * _Z_975
+    denom = 1.0 + z2 / n
+    centre = (p + z2 / (2.0 * n)) / denom
+    half = (_Z_975 / denom) * math.sqrt(p * (1.0 - p) / n + z2 / (4.0 * n * n))
+    return {
+        "low": max(0.0, centre - half),
+        "high": min(1.0, centre + half),
+        "point": p,
+        "n": n,
+    }
+
+
+def paired_bootstrap_interval_95(
+    diffs: Sequence[float],
+    *,
+    seed: int,
+    resamples: int = 2000,
+) -> dict[str, float | int | str | None]:
+    """Percentile bootstrap 95% CI for the mean of paired per-item scores.
+
+    Built for pairwise judging, where each item scores +1 (candidate won),
+    0 (tie) or -1 (candidate lost); the mean is win rate minus loss rate.
+    Deterministic for a given ``seed``.
+    """
+
+    clean = finite(diffs)
+    estimate = statistics.fmean(clean) if clean else None
+    result: dict[str, float | int | str | None] = {
+        "estimate": estimate,
+        "low": None,
+        "high": None,
+        "confidence": 0.95,
+        "method": "paired_percentile_bootstrap",
+        "n": len(clean),
+        "resamples": resamples,
+    }
+    if len(clean) < 2:
+        return result
+    rng = random.Random(seed)
+    size = len(clean)
+    means = sorted(
+        math.fsum(rng.choices(clean, k=size)) / size for _ in range(resamples)
+    )
+    result["low"] = percentile(means, 0.025)
+    result["high"] = percentile(means, 0.975)
+    return result
