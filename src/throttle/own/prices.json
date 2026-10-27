@@ -1,0 +1,480 @@
+{
+ "schema": 1,
+ "about": "Published standard-tier list prices in USD per 1M tokens. Batch, flex, fast/priority tiers and data-residency uplifts are not covered. Cache writes are not priced separately.",
+ "prices": [
+  {
+   "provider": "openai",
+   "model": "gpt-6-astra",
+   "input_per_m": 10,
+   "cached_input_per_m": 1,
+   "output_per_m": 50,
+   "as_of": "2026-10-27",
+   "source": "https://developers.openai.com/api/docs/pricing"
+  },
+  {
+   "provider": "openai",
+   "model": "gpt-6.1-sol",
+   "input_per_m": 2,
+   "cached_input_per_m": 0.1,
+   "output_per_m": 10,
+   "as_of": "2026-10-27",
+   "source": "https://developers.openai.com/api/docs/pricing"
+  },
+  {
+   "provider": "openai",
+   "model": "gpt-6.1-terra",
+   "input_per_m": 1,
+   "cached_input_per_m": 0.05,
+   "output_per_m": 5,
+   "as_of": "2026-10-27",
+   "source": "https://developers.openai.com/api/docs/pricing"
+  },
+  {
+   "provider": "openai",
+   "model": "gpt-6-sol",
+   "input_per_m": 2,
+   "cached_input_per_m": 0.2,
+   "output_per_m": 10,
+   "as_of": "2026-10-27",
+   "source": "https://developers.openai.com/api/docs/pricing"
+  },
+  {
+   "provider": "openai",
+   "model": "gpt-6-luna",
+   "input_per_m": 0.1,
+   "cached_input_per_m": 0.01,
+   "output_per_m": 0.5,
+   "as_of": "2026-10-27",
+   "source": "https://developers.openai.com/api/docs/pricing"
+  },
+  {
+   "provider": "openai",
+   "model": "gpt-5.6-sol",
+   "input_per_m": 4,
+   "cached_input_per_m": 0.4,
+   "output_per_m": 20,
+   "as_of": "2026-10-27",
+   "source": "https://developers.openai.com/api/docs/pricing",
+   "note": "promotional price, published as available at least through 2026-11-21"
+  },
+  {
+   "provider": "openai",
+   "model": "gpt-5.6-terra",
+   "input_per_m": 2,
+   "cached_input_per_m": 0.2,
+   "output_per_m": 12,
+   "as_of": "2026-10-27",
+   "source": "https://developers.openai.com/api/docs/pricing"
+  },
+  {
+   "provider": "openai",
+   "model": "gpt-5.6-luna",
+   "input_per_m": 0.2,
+   "cached_input_per_m": 0.02,
+   "output_per_m": 1.2,
+   "as_of": "2026-10-27",
+   "source": "https://developers.openai.com/api/docs/pricing"
+  },
+  {
+   "provider": "openai",
+   "model": "gpt-5.5",
+   "input_per_m": 5,
+   "cached_input_per_m": 0.5,
+   "output_per_m": 30,
+   "as_of": "2026-10-27",
+   "source": "https://developers.openai.com/api/docs/pricing",
+   "long_context": {
+    "above_input_tokens": 272000
+   },
+   "note": "published price is for prompts under 272K input tokens; longer prompts are left unpriced"
+  },
+  {
+   "provider": "openai",
+   "model": "gpt-5.5-pro",
+   "input_per_m": 30,
+   "cached_input_per_m": null,
+   "output_per_m": 180,
+   "as_of": "2026-10-27",
+   "source": "https://developers.openai.com/api/docs/pricing",
+   "long_context": {
+    "above_input_tokens": 272000
+   },
+   "note": "published price is for prompts under 272K input tokens; longer prompts are left unpriced"
+  },
+  {
+   "provider": "openai",
+   "model": "gpt-5.4",
+   "input_per_m": 2.5,
+   "cached_input_per_m": 0.25,
+   "output_per_m": 15,
+   "as_of": "2026-10-27",
+   "source": "https://developers.openai.com/api/docs/pricing",
+   "long_context": {
+    "above_input_tokens": 272000
+   },
+   "note": "published price is for prompts under 272K input tokens; longer prompts are left unpriced"
+  },
+  {
+   "provider": "openai",
+   "model": "gpt-5.4-pro",
+   "input_per_m": 30,
+   "cached_input_per_m": null,
+   "output_per_m": 180,
+   "as_of": "2026-10-27",
+   "source": "https://developers.openai.com/api/docs/pricing",
+   "long_context": {
+    "above_input_tokens": 272000
+   },
+   "note": "published price is for prompts under 272K input tokens; longer prompts are left unpriced"
+  },
+  {
+   "provider": "openai",
+   "model": "gpt-5.4-mini",
+   "input_per_m": 0.75,
+   "cached_input_per_m": 0.075,
+   "output_per_m": 4.5,
+   "as_of": "2026-10-27",
+   "source": "https://developers.openai.com/api/docs/pricing"
+  },
+  {
+   "provider": "openai",
+   "model": "gpt-5.4-nano",
+   "input_per_m": 0.2,
+   "cached_input_per_m": 0.02,
+   "output_per_m": 1.25,
+   "as_of": "2026-10-27",
+   "source": "https://developers.openai.com/api/docs/pricing"
+  },
+  {
+   "provider": "openai",
+   "model": "gpt-5.3-codex",
+   "input_per_m": 3.5,
+   "cached_input_per_m": 0.35,
+   "output_per_m": 28,
+   "as_of": "2026-10-27",
+   "source": "https://developers.openai.com/api/docs/pricing"
+  },
+  {
+   "provider": "openai",
+   "model": "gpt-5.2",
+   "input_per_m": 1.75,
+   "cached_input_per_m": 0.175,
+   "output_per_m": 14,
+   "as_of": "2026-10-27",
+   "source": "https://developers.openai.com/api/docs/pricing"
+  },
+  {
+   "provider": "openai",
+   "model": "gpt-5.2-pro",
+   "input_per_m": 21,
+   "cached_input_per_m": null,
+   "output_per_m": 168,
+   "as_of": "2026-10-27",
+   "source": "https://developers.openai.com/api/docs/pricing"
+  },
+  {
+   "provider": "openai",
+   "model": "gpt-5.1",
+   "input_per_m": 1.25,
+   "cached_input_per_m": 0.125,
+   "output_per_m": 10,
+   "as_of": "2026-10-27",
+   "source": "https://developers.openai.com/api/docs/pricing"
+  },
+  {
+   "provider": "openai",
+   "model": "gpt-5",
+   "input_per_m": 1.25,
+   "cached_input_per_m": 0.125,
+   "output_per_m": 10,
+   "as_of": "2026-10-27",
+   "source": "https://developers.openai.com/api/docs/pricing"
+  },
+  {
+   "provider": "openai",
+   "model": "gpt-5-mini",
+   "input_per_m": 0.25,
+   "cached_input_per_m": 0.025,
+   "output_per_m": 2,
+   "as_of": "2026-10-27",
+   "source": "https://developers.openai.com/api/docs/pricing"
+  },
+  {
+   "provider": "openai",
+   "model": "gpt-5-nano",
+   "input_per_m": 0.05,
+   "cached_input_per_m": 0.005,
+   "output_per_m": 0.4,
+   "as_of": "2026-10-27",
+   "source": "https://developers.openai.com/api/docs/pricing"
+  },
+  {
+   "provider": "openai",
+   "model": "gpt-5-pro",
+   "input_per_m": 15,
+   "cached_input_per_m": null,
+   "output_per_m": 120,
+   "as_of": "2026-10-27",
+   "source": "https://developers.openai.com/api/docs/pricing"
+  },
+  {
+   "provider": "openai",
+   "model": "gpt-4.1",
+   "input_per_m": 2,
+   "cached_input_per_m": 0.5,
+   "output_per_m": 8,
+   "as_of": "2026-10-27",
+   "source": "https://developers.openai.com/api/docs/pricing"
+  },
+  {
+   "provider": "openai",
+   "model": "gpt-4.1-mini",
+   "input_per_m": 0.4,
+   "cached_input_per_m": 0.1,
+   "output_per_m": 1.6,
+   "as_of": "2026-10-27",
+   "source": "https://developers.openai.com/api/docs/pricing"
+  },
+  {
+   "provider": "openai",
+   "model": "gpt-4.1-nano",
+   "input_per_m": 0.1,
+   "cached_input_per_m": 0.025,
+   "output_per_m": 0.4,
+   "as_of": "2026-10-27",
+   "source": "https://developers.openai.com/api/docs/pricing"
+  },
+  {
+   "provider": "openai",
+   "model": "gpt-4o",
+   "input_per_m": 2.5,
+   "cached_input_per_m": 1.25,
+   "output_per_m": 10,
+   "as_of": "2026-10-27",
+   "source": "https://developers.openai.com/api/docs/pricing"
+  },
+  {
+   "provider": "openai",
+   "model": "gpt-4o-2024-05-13",
+   "input_per_m": 5,
+   "cached_input_per_m": null,
+   "output_per_m": 15,
+   "as_of": "2026-10-27",
+   "source": "https://developers.openai.com/api/docs/pricing"
+  },
+  {
+   "provider": "openai",
+   "model": "gpt-4o-mini",
+   "input_per_m": 0.15,
+   "cached_input_per_m": 0.075,
+   "output_per_m": 0.6,
+   "as_of": "2026-10-27",
+   "source": "https://developers.openai.com/api/docs/pricing"
+  },
+  {
+   "provider": "openai",
+   "model": "o1",
+   "input_per_m": 15,
+   "cached_input_per_m": 7.5,
+   "output_per_m": 60,
+   "as_of": "2026-10-27",
+   "source": "https://developers.openai.com/api/docs/pricing"
+  },
+  {
+   "provider": "openai",
+   "model": "o1-pro",
+   "input_per_m": 150,
+   "cached_input_per_m": null,
+   "output_per_m": 600,
+   "as_of": "2026-10-27",
+   "source": "https://developers.openai.com/api/docs/pricing"
+  },
+  {
+   "provider": "openai",
+   "model": "o3",
+   "input_per_m": 2,
+   "cached_input_per_m": 0.5,
+   "output_per_m": 8,
+   "as_of": "2026-10-27",
+   "source": "https://developers.openai.com/api/docs/pricing"
+  },
+  {
+   "provider": "openai",
+   "model": "o3-pro",
+   "input_per_m": 20,
+   "cached_input_per_m": null,
+   "output_per_m": 80,
+   "as_of": "2026-10-27",
+   "source": "https://developers.openai.com/api/docs/pricing"
+  },
+  {
+   "provider": "openai",
+   "model": "o3-mini",
+   "input_per_m": 1.1,
+   "cached_input_per_m": 0.55,
+   "output_per_m": 4.4,
+   "as_of": "2026-10-27",
+   "source": "https://developers.openai.com/api/docs/pricing"
+  },
+  {
+   "provider": "openai",
+   "model": "o4-mini",
+   "input_per_m": 1.1,
+   "cached_input_per_m": 0.275,
+   "output_per_m": 4.4,
+   "as_of": "2026-10-27",
+   "source": "https://developers.openai.com/api/docs/pricing"
+  },
+  {
+   "provider": "anthropic",
+   "model": "claude-fable-5-1",
+   "input_per_m": 10,
+   "cached_input_per_m": 0.25,
+   "output_per_m": 50,
+   "as_of": "2026-10-27",
+   "source": "https://platform.claude.com/docs/en/about-claude/pricing"
+  },
+  {
+   "provider": "anthropic",
+   "model": "claude-fable-5",
+   "input_per_m": 10,
+   "cached_input_per_m": 1,
+   "output_per_m": 50,
+   "as_of": "2026-10-27",
+   "source": "https://platform.claude.com/docs/en/about-claude/pricing"
+  },
+  {
+   "provider": "anthropic",
+   "model": "claude-mythos-5-1",
+   "input_per_m": 10,
+   "cached_input_per_m": 0.25,
+   "output_per_m": 50,
+   "as_of": "2026-10-27",
+   "source": "https://platform.claude.com/docs/en/about-claude/pricing"
+  },
+  {
+   "provider": "anthropic",
+   "model": "claude-mythos-5",
+   "input_per_m": 10,
+   "cached_input_per_m": 1,
+   "output_per_m": 50,
+   "as_of": "2026-10-27",
+   "source": "https://platform.claude.com/docs/en/about-claude/pricing"
+  },
+  {
+   "provider": "anthropic",
+   "model": "claude-opus-5-5",
+   "input_per_m": 4,
+   "cached_input_per_m": 0.2,
+   "output_per_m": 20,
+   "as_of": "2026-10-27",
+   "source": "https://platform.claude.com/docs/en/about-claude/pricing"
+  },
+  {
+   "provider": "anthropic",
+   "model": "claude-opus-5",
+   "input_per_m": 5,
+   "cached_input_per_m": 0.5,
+   "output_per_m": 25,
+   "as_of": "2026-10-27",
+   "source": "https://platform.claude.com/docs/en/about-claude/pricing"
+  },
+  {
+   "provider": "anthropic",
+   "model": "claude-opus-4-8",
+   "input_per_m": 5,
+   "cached_input_per_m": 0.5,
+   "output_per_m": 25,
+   "as_of": "2026-10-27",
+   "source": "https://platform.claude.com/docs/en/about-claude/pricing"
+  },
+  {
+   "provider": "anthropic",
+   "model": "claude-opus-4-7",
+   "input_per_m": 5,
+   "cached_input_per_m": 0.5,
+   "output_per_m": 25,
+   "as_of": "2026-10-27",
+   "source": "https://platform.claude.com/docs/en/about-claude/pricing"
+  },
+  {
+   "provider": "anthropic",
+   "model": "claude-opus-4-6",
+   "input_per_m": 5,
+   "cached_input_per_m": 0.5,
+   "output_per_m": 25,
+   "as_of": "2026-10-27",
+   "source": "https://platform.claude.com/docs/en/about-claude/pricing"
+  },
+  {
+   "provider": "anthropic",
+   "model": "claude-opus-4-5",
+   "input_per_m": 5,
+   "cached_input_per_m": 0.5,
+   "output_per_m": 25,
+   "as_of": "2026-10-27",
+   "source": "https://platform.claude.com/docs/en/about-claude/pricing"
+  },
+  {
+   "provider": "anthropic",
+   "model": "claude-sonnet-5-5",
+   "input_per_m": 2,
+   "cached_input_per_m": 0.1,
+   "output_per_m": 10,
+   "as_of": "2026-10-27",
+   "source": "https://platform.claude.com/docs/en/about-claude/pricing"
+  },
+  {
+   "provider": "anthropic",
+   "model": "claude-sonnet-5",
+   "input_per_m": 2,
+   "cached_input_per_m": 0.2,
+   "output_per_m": 10,
+   "as_of": "2026-10-27",
+   "source": "https://platform.claude.com/docs/en/about-claude/pricing"
+  },
+  {
+   "provider": "anthropic",
+   "model": "claude-sonnet-4-6",
+   "input_per_m": 3,
+   "cached_input_per_m": 0.3,
+   "output_per_m": 15,
+   "as_of": "2026-10-27",
+   "source": "https://platform.claude.com/docs/en/about-claude/pricing"
+  },
+  {
+   "provider": "anthropic",
+   "model": "claude-sonnet-4-5",
+   "input_per_m": 3,
+   "cached_input_per_m": 0.3,
+   "output_per_m": 15,
+   "as_of": "2026-10-27",
+   "source": "https://platform.claude.com/docs/en/about-claude/pricing"
+  },
+  {
+   "provider": "anthropic",
+   "model": "claude-haiku-5-5",
+   "input_per_m": 0.1,
+   "cached_input_per_m": 0.01,
+   "output_per_m": 0.5,
+   "as_of": "2026-10-27",
+   "source": "https://platform.claude.com/docs/en/about-claude/pricing",
+   "long_context": {
+    "above_input_tokens": 100000,
+    "input_per_m": 0.5,
+    "cached_input_per_m": 0.05,
+    "output_per_m": 2.5
+   },
+   "note": "prompts over 100,000 input tokens (cache reads and writes included) pay the long-context price"
+  },
+  {
+   "provider": "anthropic",
+   "model": "claude-haiku-4-5",
+   "input_per_m": 1,
+   "cached_input_per_m": 0.1,
+   "output_per_m": 5,
+   "as_of": "2026-10-27",
+   "source": "https://platform.claude.com/docs/en/about-claude/pricing"
+  }
+ ]
+}

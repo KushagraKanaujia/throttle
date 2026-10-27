@@ -546,6 +546,7 @@ class ParserAndPlanTests(unittest.TestCase):
                 "capture",
                 "shadow",
                 "eval",
+                "workloads",
             },
         )
 

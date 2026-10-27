@@ -43,6 +43,7 @@ throttle = [
     "console/docs/*.md",
     "console/docs/*/*.md",
     "_vendor/*.txt",
+    "own/*.json",
 ]
 
 [project.optional-dependencies]
