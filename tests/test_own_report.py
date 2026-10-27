@@ -442,3 +442,10 @@ def test_real_cli_dispatches_report(tmp_path, monkeypatch, capsys):
     assert code == 0
     assert (out / "report.json").exists() and (out / "report.html").exists()
     assert "Report: cand vs API" in capsys.readouterr().out
+
+
+def test_panel_says_not_projected_when_the_window_is_too_short():
+    from throttle.own.report import _owned_gap
+    assert _owned_gap({"owned_note": "not projected: capture window under 1 day"}) == "not projected"
+    assert _owned_gap({"owned_note": "not measured: run throttle check"}) == "not measured"
+    assert _owned_gap({}) == "not measured"

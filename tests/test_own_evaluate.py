@@ -472,3 +472,12 @@ def test_tool_calls_valid_fails_when_a_call_was_expected(tool_choice, api_calls,
     norm = r.normalize_openai(req, {"choices": [{"message": message, "finish_reason": "stop"}]})
     got = ev.run_checks(norm, "extraction", ev.Side("sure, a=1", cand_calls, "stop"), norm.output_text)
     assert got["tool_calls_valid"] is expected
+
+
+def test_table_calls_out_judge_order_flips():
+    from throttle.own.evaluate import render_table
+    doc = {"candidate": "c", "judge": {"provider": "openai", "model": "j"}, "judge_calls": 16,
+           "types": {"extraction": {"judged": 8, "ties": 0, "order_disagree": 8, "wins": 0, "losses": 0, "n": 8,
+                                    "net_ci": {"low": 0.0, "high": 0.0}, "verdict": "INSUFFICIENT DATA",
+                                    "reasons": ["only 8 judged items; need at least 30"]}}}
+    assert "flipped its answer on 8 of 8" in render_table(doc)
