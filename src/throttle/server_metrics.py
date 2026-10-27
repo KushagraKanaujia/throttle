@@ -1,8 +1,8 @@
 """Bounded, supplementary vLLM Prometheus metric collection.
 
-This read-only collector is reachable only through the explicitly selected
-``experimental-tuning`` coordinator.  Default smoke, benchmark, comparison,
-and Golden paths do not invoke it.  Server metrics are process-wide
+This read-only collector is not wired into any command today (its caller,
+``experimental-tuning``, was removed); it is kept as the strict parser for
+reading production utilization from vLLM ``/metrics``.  Server metrics are process-wide
 observations and never replace Throttle's request-scoped measurements or
 decision gates.
 

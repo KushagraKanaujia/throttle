@@ -13,7 +13,6 @@ import hashlib
 import ipaddress
 import json
 import math
-import os
 import random
 import re
 import time
@@ -51,7 +50,6 @@ from .cache import SimilarityCache
 
 SCHEMA_VERSION = "2.0"
 ARTIFACT_TYPE = "throttle_run"
-DIAGNOSE_ARTIFACT_TYPE = "throttle_diagnose"
 MIN_DECISION_BLOCKS = 3
 MIN_DECISION_REQUESTS = 200
 MIN_DECISION_SECONDS = 60.0
@@ -312,8 +310,8 @@ def _validate_public_metadata(name: str, value: str, *, max_length: int = 256) -
 def validate_config(config: RunConfig, *, for_traffic: bool = True) -> None:
     if config.mode not in {"smoke", "benchmark"}:
         raise ValueError("mode must be smoke or benchmark")
-    if config.backend not in {"native", "guidellm"}:
-        raise ValueError("backend must be native or guidellm")
+    if config.backend != "native":
+        raise ValueError("backend must be native")
     for name, value in (
         ("stream", config.stream),
         ("allow_unknown_cost", config.allow_unknown_cost),
@@ -322,15 +320,6 @@ def validate_config(config: RunConfig, *, for_traffic: bool = True) -> None:
     ):
         if not isinstance(value, bool):
             raise ValueError(f"{name} must be a boolean")
-    if (
-        for_traffic
-        and config.backend == "guidellm"
-        and not config.guidellm_gaps_acknowledged
-    ):
-        raise ValueError(
-            "GuideLLM cannot enforce strict completion shape or max response bytes; "
-            "pass --allow-guidellm-validation-gaps for cross-check-only traffic"
-        )
     if not isinstance(config.model, str) or not config.model.strip():
         raise ValueError("model must not be empty")
     normalize_chat_completions_url(
@@ -341,7 +330,7 @@ def validate_config(config: RunConfig, *, for_traffic: bool = True) -> None:
     if for_traffic and not config.endpoint.api_key:
         # A keyless run is allowed only against a loopback endpoint with the
         # native runner (local Ollama / vLLM usually have no auth). Remote
-        # endpoints and the GuideLLM subprocess still require a key.
+        # endpoints still require a key.
         host = urlsplit(config.endpoint.url.strip()).hostname
         if not (
             config.backend == "native"
@@ -558,14 +547,8 @@ def build_plan(
         },
         "limits": config.limits.public_dict(),
         "traffic_preflight": {
-            "backend_supported_on_this_platform": (
-                config.backend != "guidellm" or os.name == "posix"
-            ),
-            "backend_block_reason": (
-                "guidellm_requires_posix_process_groups"
-                if config.backend == "guidellm" and os.name != "posix"
-                else None
-            ),
+            "backend_supported_on_this_platform": True,
+            "backend_block_reason": None,
             "spend_limit_enforceable": config.cost.estimated_upper_bound(
                 config.limits.max_elapsed_seconds
             )

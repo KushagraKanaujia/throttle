@@ -24,13 +24,9 @@ multiplied by the GPU count of each trial (the ``tp`` / ``tensor_parallel_size``
 setting, or ``--gpus-param``): 2 GPUs that are 1.56x faster are still 28%
 more per token.
 
-During early access, without ``throttle login`` Autotune runs fully locally and
-free (no cloud metering). Logged in, every trial is metered ($1.00 of credits,
-POST /autotune/trials before it runs; 402 stops the run cleanly) and the
-result is saved to your Throttle Cloud account; if the cloud cannot be
-reached, Autotune warns and carries on locally. ``--dry-run`` simulates the
-server, needs no GPU and no login, charges nothing, and labels every number
-SIMULATED.
+Autotune runs fully locally and free: no login, no metering, nothing sent
+anywhere except to the server you point it at. ``--dry-run`` simulates the
+server, needs no GPU, and labels every number SIMULATED.
 """
 
 from __future__ import annotations
@@ -58,7 +54,6 @@ import httpx
 
 from . import __version__
 from . import check as check_module
-from . import cloud
 from . import style as style_module
 
 RECORD_TYPE = "throttle_autotune"
@@ -73,10 +68,6 @@ GPU_PARAM_NAMES = ("tp", "tensor_parallel_size", "tensor-parallel-size", "gpus",
 EXIT_OK = 0
 EXIT_FAILED = 1
 EXIT_USAGE = 2
-
-EARLY_ACCESS_LINE = (
-    "Autotune is free during early access. `throttle login` saves runs to Throttle Cloud."
-)
 
 DEMO_MODEL = "demo-model"
 DEMO_URL = "http://127.0.0.1:8000"
@@ -95,11 +86,10 @@ DEMO_SPACE: dict[str, list[str]] = {
 AUTOTUNE_DESCRIPTION = __doc__.split("\n\n", 1)[1] if __doc__ else ""
 AUTOTUNE_EPILOG = """\
 examples:
-  # simulated, no GPU, no login, nothing charged:
+  # simulated, no GPU needed:
   throttle autotune --dry-run --monthly-tokens 2B
 
-  # real: Throttle starts and stops the server for every trial; free
-  # during early access (after `throttle login` runs are saved to Throttle Cloud)
+  # real: Throttle starts and stops the server for every trial (free, local)
   throttle autotune --url http://localhost:8000 --model Qwen/Qwen2.5-7B-Instruct \\
       --gpu-hourly-rate 2.49 --concurrency 16 --monthly-tokens 2B \\
       --launch "vllm serve {model} --tensor-parallel-size {tp} --max-num-seqs {seqs} --gpu-memory-utilization {mem}" \\
@@ -191,8 +181,7 @@ def add_autotune_arguments(parser: argparse.ArgumentParser) -> None:
         "--max-trials", type=check_module._positive_int, default=DEFAULT_MAX_TRIALS,
         metavar="N",
         help=f"candidate configs to measure at most, after the baseline (default: "
-        f"{DEFAULT_MAX_TRIALS}). Free during early access; logged in, each trial, the "
-        "baseline included, uses $1.00 of Throttle Cloud credits",
+        f"{DEFAULT_MAX_TRIALS})",
     )
     group.add_argument(
         "--baseline-runs", type=check_module._positive_int, default=DEFAULT_BASELINE_RUNS,
@@ -223,8 +212,8 @@ def add_autotune_arguments(parser: argparse.ArgumentParser) -> None:
     )
     group.add_argument(
         "--dry-run", action="store_true",
-        help="simulate the server and every trial: no GPU, no launch, no login, "
-        "nothing charged; every number is SIMULATED. Without --launch/--space it "
+        help="simulate the server and every trial: no GPU, no launch; "
+        "every number is SIMULATED. Without --launch/--space it "
         "runs a built-in demo space",
     )
 
@@ -625,10 +614,6 @@ class Trial:
         }
 
 
-class StopSearch(Exception):
-    """Cloud metering refused a trial (402/403/401/offline): stop cleanly."""
-
-
 class Runner:
     def __init__(
         self,
@@ -638,7 +623,6 @@ class Runner:
         baseline: dict[str, str],
         gpus_param: str | None,
         backend: Any,
-        client: cloud.CloudClient | None,
         run_dir: Path,
         run_id: str,
         out: Callable[[str], None],
@@ -648,7 +632,6 @@ class Runner:
         self.baseline_config = baseline
         self.gpus_param = gpus_param
         self.backend = backend
-        self.client = client
         self.run_dir = run_dir
         self.run_id = run_id
         self.out = out
@@ -685,31 +668,7 @@ class Runner:
         ns.share = False
         ns.share_id = None
         ns.fail_if_costlier = None
-        ns.push = False  # trials are metered as trials, never as $0.25 checks
         return ns
-
-    def _meter(self, trial: Trial) -> None:
-        if self.client is None:
-            return
-        try:
-            body = self.client.autotune_trial(
-                self.run_id, trial.index,
-                {k: check_module.share_value(k, v) for k, v in trial.config.items()},
-            )
-        except cloud.CloudError as exc:
-            if exc.kind in ("offline", "server"):
-                # An unreachable cloud never blocks a run.
-                self.out(self.st.warn("      warning: ") + f"{exc} Continuing locally, not metered.")
-                self.client = None
-                return
-            raise StopSearch(str(exc)) from None
-        if body.get("allowed") is False:
-            raise StopSearch(
-                f"Throttle Cloud did not allow trial {trial.index}. See {cloud.PRICING_URL}"
-            )
-        extra = cloud.credits_text(body)
-        if extra:
-            self.out(self.st.dim(f"      metered: {extra}"))
 
     def _run_check(self, ns: argparse.Namespace, log_path: Path) -> dict[str, Any]:
         with open(log_path, "a") as log, contextlib.redirect_stdout(log), \
@@ -734,11 +693,6 @@ class Runner:
         self.out(f"  trial {index}  {config_text(config)}"
                  + self.st.dim(f"  ({'baseline' if role == 'baseline' else 'candidate'}, "
                                f"{trial.gpus} GPU{'s' if trial.gpus != 1 else ''})"))
-        try:
-            self._meter(trial)
-        except StopSearch:
-            trial.status = "not run"
-            raise
         runs = self.args.baseline_runs if role == "baseline" else 1
         try:
             self.backend.start(config, name)
@@ -908,11 +862,9 @@ def handle_autotune(
     args: argparse.Namespace,
     *,
     backend: Any = None,
-    client: cloud.CloudClient | None = None,
 ) -> int:
-    """``backend`` and ``client`` are injectable for tests; by default they
-    come from the arguments (a real launcher, or the simulator with
-    --dry-run) and the saved login."""
+    """``backend`` is injectable for tests; by default it comes from the
+    arguments (a real launcher, or the simulator with --dry-run)."""
 
     st = style_module.Style()
     try:
@@ -982,14 +934,6 @@ def handle_autotune(
         print(f"Error: {exc}", file=sys.stderr)
         return EXIT_USAGE
 
-    if client is None and not args.dry_run:
-        try:
-            creds = cloud.load_credentials()
-            client = cloud.CloudClient(creds.key) if creds else None
-        except cloud.CloudError as exc:
-            print(f"warning: {exc} Running locally.", file=sys.stderr)
-            client = None
-
     run_id = _new_run_id()
     run_dir = (
         Path(args.history_dir).expanduser() if args.history_dir
@@ -1013,7 +957,7 @@ def handle_autotune(
     label = "SIMULATED" if simulated else "MEASURED"
     sep = st.dim(f" {st.dot} ")
     print(f"{st.brand()} {st.dim(__version__)}{sep}autotune{sep}{run_id}"
-          + (f"{sep}{st.warn('DRY RUN: simulated server, nothing charged')}" if simulated else ""))
+          + (f"{sep}{st.warn('DRY RUN: simulated server')}" if simulated else ""))
     print(f"  launch     {args.launch}")
     for key, values in space.items():
         print(f"  space      {key}: {', '.join(v if v else chr(39) * 2 for v in values)}")
@@ -1024,23 +968,12 @@ def handle_autotune(
     )
     print(f"  GPU rate   {check_module._money(args.gpu_hourly_rate)}/hr per GPU [ASSUMED] {gpu_text}")
     print(f"  budget     up to {args.max_trials} candidate trials after the baseline")
-    if client is not None:
-        try:
-            me = client.me()
-            print(f"  cloud      {cloud._account_line(me)}; each trial uses $1.00 of credits")
-        except cloud.CloudError as exc:
-            # Logged in but the cloud is unreachable (or rejects the key):
-            # warn and run locally, free, instead of blocking.
-            print(f"warning: {exc} Running locally, not metered.", file=sys.stderr)
-            client = None
-    elif not args.dry_run:
-        print(f"  {EARLY_ACCESS_LINE}")
     print(f"  trials     logs and checks in {run_dir}")
     print()
 
     runner = Runner(
         args, space=space, baseline=baseline, gpus_param=gpus_param, backend=backend,
-        client=client, run_dir=run_dir, run_id=run_id, out=print,
+        run_dir=run_dir, run_id=run_id, out=print,
     )
     try:
         backend.preflight()
@@ -1049,10 +982,6 @@ def handle_autotune(
         return EXIT_USAGE
     try:
         runner.search()
-    except StopSearch as exc:
-        runner.stopped = str(exc)
-        print()
-        print(f"Stopped: {exc}")
     except (TrialError, ServerStuck) as exc:
         print()
         print(f"Autotune stopped: {exc}", file=sys.stderr)
@@ -1070,15 +999,6 @@ def handle_autotune(
     result = _result(args, runner, space, baseline_trial, best, simulated, chat_url)
     _print_result(st, args, runner, result, label)
 
-    client = runner.client  # None if the cloud became unreachable mid-run
-    if client is not None:
-        try:
-            response = client.autotune_result(run_id, _cloud_body(result))
-            result["cloud_url"] = response.get("url")
-            if response.get("url"):
-                print(f"Saved to Throttle Cloud: {response['url']}")
-        except cloud.CloudError as exc:
-            print(f"warning: the result was not saved to Throttle Cloud: {exc}", file=sys.stderr)
     out_path = run_dir / "autotune.json"
     out_path.write_text(json.dumps(result, indent=2, sort_keys=True) + "\n")
     if args.json_output:
@@ -1092,7 +1012,7 @@ def handle_autotune(
 
 
 def _preflight_limits(args: argparse.Namespace, max_gpus: int) -> None:
-    """Refuse before any trial (or charge) when the priciest trial would
+    """Refuse before any trial when the priciest trial would
     break a check safety limit."""
 
     try:
@@ -1160,36 +1080,6 @@ def _result(
         "launch_command": render(args.launch, winner.config, args.model),
         "trials": [t.to_dict() for t in runner.trials],
         "stopped": runner.stopped,
-        "cloud_url": None,
-    }
-
-
-def _cloud_body(result: Mapping[str, Any]) -> dict[str, Any]:
-    """POST /autotune/runs/{id}/result: configs and numbers only (no URL,
-    no launch command, no paths)."""
-
-    def clean(config: Mapping[str, str]) -> dict[str, str]:
-        return {k: check_module.share_value(k, v) for k, v in config.items()}
-
-    return {
-        "best_config": clean(result["best_config"]),
-        "baseline_usd_per_m": result["baseline"]["usd_per_m"],
-        "best_usd_per_m": result["best"]["usd_per_m"],
-        "found_cheaper": result["found_cheaper"],
-        "metric": result["metric"],
-        "noise_bound_percent": result["noise_bound_percent"],
-        "monthly_tokens": result["monthly_tokens"],
-        "projected_monthly_savings_usd": result["projected_monthly_savings_usd"],
-        "conservative_monthly_savings_usd": result["conservative_monthly_savings_usd"],
-        "trials": [
-            {
-                "trial_index": t["trial_index"], "role": t["role"], "config": clean(t["config"]),
-                "status": t["status"], "gpus": t["gpus"], "usd_per_m": t["usd_per_m"],
-                "ci_low": t["ci_low"], "ci_high": t["ci_high"], "verdict": t["verdict"],
-                "eligible": t["eligible"],
-            }
-            for t in result["trials"]
-        ],
     }
 
 

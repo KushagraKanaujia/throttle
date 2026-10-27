@@ -52,6 +52,18 @@ DOCS_NAV: list[dict[str, Any]] = [
         ("getting-started/first-check", "Your first cost check"),
         ("getting-started/free-gpu", "Try on a free GPU"),
     ]},
+    {"tab": "docs", "group": "The loop", "pages": [
+        ("loop/overview", "Overview"),
+        ("loop/demo", "Demo"),
+        ("loop/capture", "1. Capture"),
+        ("loop/workloads", "2. Workloads"),
+        ("loop/shadow", "3. Shadow"),
+        ("loop/eval", "4. Eval"),
+        ("loop/report", "5. Report"),
+        ("loop/route", "6. Route"),
+        ("loop/refresh", "7. Refresh"),
+        ("loop/honest-numbers", "Honest numbers"),
+    ]},
     {"tab": "docs", "group": "Concepts", "pages": [
         ("concepts/cost-per-million-tokens", "Cost per million tokens"),
         ("concepts/noise-and-calibration", "Noise and calibration"),
@@ -70,18 +82,15 @@ DOCS_NAV: list[dict[str, Any]] = [
         ("guides/share-results", "Share your results"),
     ]},
     {"tab": "docs", "group": "More", "pages": [
-        ("more/pilot", "Throttle Cloud"),
         ("more/privacy", "Privacy"),
         ("more/faq", "FAQ"),
     ]},
     {"tab": "cli", "group": "CLI Reference", "pages": [
         ("cli/overview", "Overview"),
         ("cli/check", "throttle check"),
-        ("cli/cost", "throttle cost"),
         ("cli/watch", "throttle watch"),
-        ("cli/demo", "throttle demo"),
         ("cli/evidence-pipeline", "plan · smoke · benchmark · golden"),
-        ("cli/measure-compare", "measure · compare · report"),
+        ("cli/compare", "compare · golden-report"),
         ("cli/proxy-sessions", "proxy · sessions"),
     ]},
     {"tab": "docs", "group": "Results", "pages": [
@@ -320,18 +329,6 @@ def create_app(history_dir: Path, *, cwd: Path | None = None, allow_any_host: bo
                 "ci_high": card["summary"].get("ci_high"), "verdict": card["verdict"],
             })
         return list(groups.values())
-
-    @app.get("/api/upgrade")
-    def upgrade_plans() -> dict[str, Any]:
-        from ..upgrade import PLANS
-        return PLANS
-
-    @app.get("/api/qr.svg", include_in_schema=False)
-    def qr(target: str = Query(..., pattern="^(cloud|pilot|pro|audit)$")) -> Response:
-        # Only the fixed pricing URL can be encoded; nothing user-supplied.
-        # "pilot", "pro" and "audit" are old targets, kept so cached pages still load.
-        from ..upgrade import PRICING_URL, qr_svg
-        return Response(qr_svg(PRICING_URL), media_type="image/svg+xml")
 
     @app.get("/api/quickstart-status")
     def quickstart() -> list[dict[str, Any]]:

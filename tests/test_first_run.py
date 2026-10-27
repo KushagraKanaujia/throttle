@@ -103,39 +103,9 @@ def run(capsys, *argv: str) -> tuple[int, str]:
     return code, captured.out + captured.err
 
 
-COST = ("cost", "--gpu-hourly-rate", "1.50", "--num-requests", "2")
-
-
 # --------------------------------------------------------------------------
 # Rank 1: one URL form works everywhere
 # --------------------------------------------------------------------------
-
-
-@pytest.mark.parametrize(
-    "url", ["http://localhost:11434", "http://localhost:11434/v1", "http://localhost:11434/v1/"]
-)
-def test_cost_accepts_url_with_or_without_v1(monkeypatch, capsys, url):
-    server = FakeOpenAI()
-    install(monkeypatch, server)
-    code, out = run(capsys, *COST, "--endpoint-url", url, "--model", "llama3.2:3b")
-    assert code == 0, out
-    assert server.chat_paths == ["/v1/chat/completions"] * 2
-
-
-@pytest.mark.parametrize("url", ["http://localhost:11434", "http://localhost:11434/v1"])
-def test_measure_accepts_url_with_or_without_v1(monkeypatch, capsys, url):
-    server = FakeOpenAI()
-    install(monkeypatch, server)
-    code, out = run(
-        capsys, "measure", "--url", url, "--model", "llama3.2:3b",
-        "--gpu-hourly-rate", "1.50", "--label", "base", "--repeat", "2",
-        "--num-requests", "2", "--arrival-rate", "50",
-    )
-    assert code == 0, out
-    assert "Connection successful." in out
-    assert set(server.chat_paths) == {"/v1/chat/completions"}
-    assert "throttle compare base.json <other-label>.json" in out
-    assert Path("base.json").exists()
 
 
 def test_proxy_backend_url_with_v1_is_normalized(monkeypatch, capsys):
@@ -156,92 +126,14 @@ def test_proxy_backend_url_with_v1_is_normalized(monkeypatch, capsys):
     assert seen["backend_url"] == "http://localhost:11434"
 
 
-def test_wrong_url_404_names_the_url_and_both_forms(monkeypatch, capsys):
-    install(monkeypatch, FakeOpenAI())
-    code, out = run(capsys, *COST, "--url", "http://localhost:11434/wrong", "--model", "llama3.2:3b")
-    assert code == 1
-    assert "POST http://localhost:11434/wrong/chat/completions returned HTTP 404" in out
-    assert "both are accepted" in out
-
-
 # --------------------------------------------------------------------------
 # Rank 3: --model default
 # --------------------------------------------------------------------------
 
 
-def test_cost_without_model_uses_the_only_served_model(monkeypatch, capsys):
-    server = FakeOpenAI(["llama3.2:3b"])
-    install(monkeypatch, server)
-    code, out = run(capsys, *COST, "--url", "http://localhost:11434")
-    assert code == 0, out
-    assert "Model: llama3.2:3b (the only model this server lists" in out
-    assert server.chat_models == ["llama3.2:3b", "llama3.2:3b"]
-
-
-def test_cost_without_model_and_several_served_lists_them(monkeypatch, capsys):
-    server = FakeOpenAI(["a-model", "b-model"])
-    install(monkeypatch, server)
-    code, out = run(capsys, *COST, "--url", "http://localhost:11434")
-    assert code == 2
-    assert "--model is required; this server lists: a-model, b-model" in out
-    assert server.chat_paths == []
-
-
-def test_wrong_model_404_lists_available_models(monkeypatch, capsys):
-    install(monkeypatch, FakeOpenAI(["llama3.2:3b", "llama3.2:1b"]))
-    code, out = run(capsys, *COST, "--url", "http://localhost:11434", "--model", "nope")
-    assert code == 1
-    assert "Model 'nope' is not served here" in out
-    assert "llama3.2:3b, llama3.2:1b" in out
-    assert "Re-run with --model llama3.2:3b" in out
-
-
 # --------------------------------------------------------------------------
 # Rank 4/5: the first $/M number is one comparable figure, with its workload
 # --------------------------------------------------------------------------
-
-
-def test_cost_prints_blended_figure_caveat_workload_and_next_step(monkeypatch, capsys):
-    install(monkeypatch, FakeOpenAI(delay=0.05))
-    code, out = run(
-        capsys, "cost", "--gpu-hourly-rate", "3600", "--num-requests", "2",
-        "--url", "http://localhost:11434/v1", "--model", "llama3.2:3b",
-    )
-    assert code == 0, out
-
-    def dollars(label: str) -> float:
-        line = next(line for line in out.splitlines() if label in line)
-        return float(line.split("$")[1].split()[0])
-
-    blended_line = next(line for line in out.splitlines() if "Blended cost: $" in line)
-    # 2 requests x (100 + 50) tokens, taken from the endpoint's usage field.
-    assert "300 tokens" in blended_line
-    blended, per_in, per_out = dollars("Blended cost: $"), dollars("Input cost: $"), dollars("Output cost: $")
-    # Same measured spend C over I, O and I+O tokens: 1/blended = 1/in + 1/out.
-    assert blended > 0
-    assert abs(1 / blended - (1 / per_in + 1 / per_out)) * blended < 0.02
-    assert "not additive" in out
-    assert "ASSUMED $3600.00/hr" in out
-    assert "one at a time (concurrency 1)" in out
-    assert "throttle check --url http://localhost:11434/v1 --model llama3.2:3b" in out
-
-
-def test_cost_refuses_when_endpoint_reports_no_usage(monkeypatch, capsys):
-    server = FakeOpenAI()
-    original = server.handle
-
-    def no_usage(request: httpx.Request) -> httpx.Response:
-        response = original(request)
-        if request.url.path == "/v1/chat/completions" and response.status_code == 200:
-            return httpx.Response(200, json={"choices": [{"message": {"content": "ok"}}]})
-        return response
-
-    server.handle = no_usage  # type: ignore[method-assign]
-    install(monkeypatch, server)
-    code, out = run(capsys, *COST, "--url", "http://localhost:11434", "--model", "llama3.2:3b")
-    assert code == 1
-    assert "did not report token usage" in out
-    assert "Blended cost" not in out
 
 
 # --------------------------------------------------------------------------
@@ -371,8 +263,6 @@ def test_unpriced_smoke_is_still_refused_and_says_how_to_price(capsys):
         (["check", "--endpoint-url", "http://h:1", "--gpu-rate-per-hour", "2"], "url", "http://h:1"),
         (["check", "--url", "http://h:1", "--total-hourly-price", "2"], "gpu_hourly_rate", 2.0),
         (["watch", "--gpu-hourly-rate", "2"], "gpu_rate_per_hour", 2.0),
-        (["cost", "--url", "http://h:1", "--gpu-rate-per-hour", "2"], "endpoint_url", "http://h:1"),
-        (["measure", "--url", "http://h:1", "--gpu-hourly-rate", "2", "--label", "x"], "endpoint_url", "http://h:1"),
         (["proxy", "--endpoint-url", "http://h:1"], "backend_url", "http://h:1"),
     ],
 )
@@ -383,7 +273,6 @@ def test_flag_aliases_parse_to_the_same_destination(argv, dest, expected):
 
 def test_old_flag_names_still_work():
     parser = build_parser()
-    assert parser.parse_args(["cost", "--endpoint-url", "u", "--gpu-hourly-rate", "1"]).endpoint_url == "u"
     assert parser.parse_args(["watch", "--gpu-rate-per-hour", "1"]).gpu_rate_per_hour == 1.0
     assert parser.parse_args(["proxy", "--backend-url", "u"]).backend_url == "u"
     assert parser.parse_args(["check", "--url", "u"]).url == "u"
@@ -394,33 +283,34 @@ def test_old_flag_names_still_work():
 # --------------------------------------------------------------------------
 
 
-def test_no_args_prints_three_command_start_and_exits_zero(capsys, monkeypatch):
+def test_no_args_prints_the_loop_and_exits_zero(capsys, monkeypatch):
     monkeypatch.delenv("FORCE_COLOR", raising=False)
     code, out = run(capsys)
     assert code == 0
     lines = out.rstrip("\n").splitlines()
     assert len(lines) <= 20
     assert "Throttle " + __version__ in out
-    assert "Throttle cuts what your LLM inference costs on your own GPUs." in out
-    assert "1. Install Ollama" in out and "vLLM / SGLang" in out
-    # One path, no promise of a verdict from the first run: run once to
-    # calibrate, change one setting, run again.
-    assert "2. Run once to calibrate" in out and "throttle check --url http://localhost:11434" in out
-    assert "3. Change one setting, then run it again for a verdict." in out
-    assert "and a verdict:" not in out
-    assert "4. For agent traffic" in out and "throttle check --workload agent" in out
-    assert "Throttle Cloud" in out and "Start free with $10 of credits" in out
-    assert "3 months" not in out
-    assert "throttle upgrade" in out
-    for retired in ("2 weeks", "20%", "$500", "floor"):
+    assert "Throttle: own your intelligence. Keep the savings." in out
+    # The loop, in order: demo -> capture -> workloads -> shadow -> eval -> report.
+    order = ["1. See the whole loop", "throttle demo", "2. Capture", "throttle capture",
+             "throttle workloads", "throttle shadow", "throttle eval", "throttle report"]
+    positions = [out.index(text) for text in order]
+    assert positions == sorted(positions)
+    assert "DEMO" in out
+    assert "No server yet? throttle demo" in out
+    assert "check --help" not in out
+    for retired in ("Throttle Cloud", "credits", "throttle upgrade", "Install Ollama",
+                    "3 months", "2 weeks", "20%", "$500", "floor"):
         assert retired not in out, retired
     assert "\x1b[" not in out
     # Every command it tells the user to run must parse.
     parser = build_parser()
-    parser.parse_args(["check", "--url", "http://localhost:11434", "--model", "llama3.2:3b", "--gpu-hourly-rate", "1.50"])
-    parser.parse_args(["check", "--workload", "agent", "--url", "http://localhost:11434", "--model", "llama3.2:3b", "--gpu-hourly-rate", "1.50"])
-    parser.parse_args(["upgrade"])
     parser.parse_args(["demo"])
+    parser.parse_args(["capture"])
+    parser.parse_args(["workloads"])
+    parser.parse_args(["shadow", "--candidate-url", "URL", "--candidate-model", "M", "--label", "NAME"])
+    parser.parse_args(["eval", "--candidate", "NAME"])
+    parser.parse_args(["report", "--candidate", "NAME"] + ["--gpu-hourly-rate", "1", "--gpus", "1"])
 
 
 def test_no_args_screen_with_force_color_and_ascii(capsys, monkeypatch):
@@ -431,19 +321,46 @@ def test_no_args_screen_with_force_color_and_ascii(capsys, monkeypatch):
     assert "\x1b[" in out
     from throttle.style import strip_ansi
     plain = strip_ansi(out)
-    assert "Throttle cuts what your LLM inference costs on your own GPUs." in plain
-    assert "throttle check --workload agent" in plain
+    assert "Throttle: own your intelligence. Keep the savings." in plain
+    assert "throttle shadow --candidate-url URL" in plain
 
 
-def test_help_does_not_leak_suppressed_command_but_it_still_parses(capsys):
+def test_help_epilog_walks_the_loop_and_every_command_parses(capsys):
+    from throttle.cli import GETTING_STARTED
+
+    order = ["throttle demo", "throttle capture", "throttle workloads", "throttle shadow",
+             "throttle eval", "throttle check", "throttle report"]
+    positions = [GETTING_STARTED.index(text) for text in order]
+    assert positions == sorted(positions)
+    assert "No server yet? Run 'throttle demo'." in GETTING_STARTED
+    parser = build_parser()
+    parser.parse_args(["demo"])
+    parser.parse_args(["shadow", "--candidate-url", "http://gpu-box:8000/v1", "--candidate-model", "M",
+                       "--label", "NAME"])
+    parser.parse_args(["eval", "--candidate", "NAME", "--judge-model", "gpt-4.1",
+                       "--judge-key-env", "OPENAI_API_KEY"])
+    parser.parse_args(["check", "--url", "http://gpu-box:8000", "--model", "M", "--total-hourly-price", "4.98",
+                       "--gpus", "2", "--label", "NAME"])
+    parser.parse_args(["capture", "--route"])
+    parser.parse_args(["route", "savings"])
+    parser.parse_args(["refresh"])
+    parser.parse_args(["report", "--candidate", "NAME", "--gpu-hourly-rate", "2.49", "--gpus", "2"])
+
+
+def test_help_lists_no_removed_command(capsys):
     with pytest.raises(SystemExit):
         main(["--help"])
     out = capsys.readouterr().out
     assert "==SUPPRESS==" not in out
-    assert "validate-sim" not in out
-    assert "Get your first $/M-token number" in out
-    args = build_parser().parse_args(["validate-sim", "--endpoint-url", "u", "--gpu-hourly-rate", "1"])
-    assert args.command == "validate-sim"
+    assert "Own your intelligence" in out
+    for removed in ("validate-sim", "experimental-tuning", "diagnose", "upgrade", "login",
+                    "logout", "whoami", "throttle cost", "throttle measure", "Throttle Cloud",
+                    "credits", "guidellm"):
+        assert removed not in out, removed
+    choices = build_parser()._throttle_subparsers  # type: ignore[attr-defined]
+    for removed in ("validate-sim", "experimental-tuning", "diagnose", "upgrade", "login",
+                    "logout", "whoami", "cost", "measure"):
+        assert removed not in choices, removed
 
 
 def test_gpu_hourly_rate_with_several_gpus_is_refused_as_ambiguous(capsys):

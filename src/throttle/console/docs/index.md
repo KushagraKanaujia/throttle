@@ -1,33 +1,32 @@
 # Introduction
 
-*Know what your LLM inference costs per million tokens, and whether your last serving change made it cheaper.*
+*Own your intelligence. Keep the savings.*
 
 ![](../illustrations/quickstart.svg)
 
-Throttle is an open-source CLI (MIT) that measures what a self-hosted model costs you in **dollars per million tokens**, on any OpenAI-compatible endpoint: vLLM, SGLang, Ollama, LMDeploy and similar servers.
+Throttle is an open-source CLI (MIT) that sits in front of your OpenAI or Anthropic traffic. It proves which share of that traffic can move to an open-weight model you run yourself, without losing quality. It moves that share, with automatic fallback to the API. And it reruns your tests every time a new open model comes out.
 
-Run it after every serving change (an engine flag, a batch size, a quantization, a GPU, an engine version). It measures again, compares with the last check, and gives one of four verdicts. It will not call a winner that is inside your machine's own run-to-run noise.
+We charge a share of the savings we measure: no savings, no bill.
 
 ```text
-change a serving setting ──► throttle check ──► $/M tokens (95% CI) + what changed + verdict
-        ▲                                                                   │
-        └──────────── keep the change, or roll it back ◄────────────────────┘
+capture ──► workloads ──► shadow ──► eval ──► report ──► route ──► refresh
 ```
 
 ## Start here
 
-- **[Quickstart](getting-started/quickstart.md)**: A real cost-per-million-tokens number in about two minutes.
-- **[Installation](getting-started/installation.md)**: Install the CLI with pipx and check your setup.
-- **[Noise and calibration](concepts/noise-and-calibration.md)**: Why a single before/after run can lie, and how Throttle avoids it.
-- **[Gate costs in CI](guides/ci-github-action.md)**: Fail a deploy that makes every token more expensive.
-- **[Compare GPUs](guides/compare-gpus.md)**: Measure the same model on two machines with the same workload.
-- **[Results](results/overview.md)**: Real runs with the raw numbers, including an A100 counterbalanced test.
+- **[Quickstart](getting-started/quickstart.md)**: Run the whole loop on made-up data in a minute, then on your own traffic.
+- **[The loop](loop/overview.md)**: One page per stage, with every command and flag.
+- **[Honest numbers](loop/honest-numbers.md)**: The labels, and the rules that keep a savings number defensible.
+- **[Privacy](more/privacy.md)**: What is stored, what is redacted, and what leaves your machine.
+- **[Your first cost check](getting-started/first-check.md)**: Measure what your own model costs per million tokens on your server.
+- **[Results](results/overview.md)**: Real runs with the raw numbers.
 
 ## What you get
 
-- **Price it.** Dollars per million tokens from a live endpoint. The GPU hourly rate is yours and always labelled ASSUMED; tokens and time are MEASURED.
-- **Re-check after every change.** A 95% confidence interval, a fingerprint of what changed in the config, and a verdict against the last check.
-- **Refuse to lie.** CHEAPER or MORE EXPENSIVE only when the change is larger than a run-to-run noise bound measured from repeat checks and the confidence intervals don't overlap. Otherwise NO WINNER, or NOT CALIBRATED until the noise has been measured.
-- **Gate it in CI.** `--fail-if-costlier` turns a costlier deploy into a failed job.
+- **See it.** Capture your API traffic locally and see what kinds of work it is and what each kind costs at list price.
+- **Prove it.** Your own model answers the same requests in the shadow. A judge, run both ways round, plus automatic checks, gives a verdict per kind of work with 95% confidence intervals.
+- **Price it.** `throttle check` measures what your model costs per million tokens on your GPUs. The report says MOVE, KEEP ON API, NEEDS FINETUNE or NEEDS MORE DATA per kind of work.
+- **Move it.** Approved kinds of work are served from your model. Anything doubtful falls back to the API.
+- **Keep it current.** Rerun the same eval sets on every new open model.
 
-> **Note:** Throttle provisions nothing and never changes your server. It sends a small, capped workload to the endpoint you point it at, measures, and reports.
+> **Note:** Everything runs on your machine. Nothing is sent anywhere except the API call your app already makes and the endpoints you configure (your model and your judge). No telemetry.

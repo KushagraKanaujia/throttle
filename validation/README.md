@@ -12,7 +12,6 @@ This directory contains controlled validation artifacts for Throttle, organized 
 
 ## Experimental/supplementary evidence
 
-- **`experimental-tuning-vllm-docs/`**: Pinned offline test proving experimental-tuning workflow compatibility with vLLM 0.27.1 metrics. Does not represent a live GPU deployment or cost savings claim.
 
 ## Historical schema-1 artifacts (0.1.x)
 

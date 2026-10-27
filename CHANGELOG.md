@@ -4,6 +4,73 @@ All notable changes to Throttle will be documented in this file.
 
 ## [Unreleased]
 
+Throttle is repositioning to "own your intelligence". This release removes
+what the new product does not need. Pricing moves to a share of measured
+savings, so the credit plans and every login/metering path are gone.
+
+### Added
+The own-your-intelligence loop. Each stage is its own command, and all data
+stays local under `~/.throttle/own` (or `$THROTTLE_OWN_DIR`, or `--dir`).
+- `throttle capture`: a local pass-through proxy for the OpenAI and Anthropic
+  APIs (`/v1/chat/completions`, `/v1/messages`) with true streaming
+  pass-through and pattern redaction (`--redact off|mask|hash|metadata`).
+  Nothing is cached. `throttle capture stats` summarizes what was captured.
+- `throttle workloads`: types each captured call as classification,
+  extraction, summarization, agent, code or chat, and shows requests, tokens
+  and list-price spend per type from a dated, sourced price table. Calls
+  without usage are excluded and counted, never estimated. `--embed` adds
+  similarity clusters.
+- `throttle shadow`: replays a per-type sample of captured requests on your own
+  OpenAI-compatible model. Answers are stored for eval and never served.
+- `throttle eval`: automatic checks plus a pairwise LLM judge run in both
+  orders, with Wilson and paired-bootstrap 95% CIs, and a verdict per type:
+  BETTER, NO MATERIAL DIFFERENCE, WORSE, INCONCLUSIVE or INSUFFICIENT DATA.
+- `throttle report`: MOVE, KEEP ON API, NEEDS FINETUNE or NEEDS MORE DATA per
+  type, as report.json and a self-contained report.html. Owned cost and
+  savings appear only with a measured `throttle check` of the candidate.
+- `throttle route approve|list|revoke|savings` and `throttle capture --route`:
+  serve approved types from your own model, with fallback to the API on any
+  doubtful answer, and a realized-savings statement from an append-only
+  ledger. Forced routes are never billable.
+- `throttle refresh`: reruns the saved eval sets on a new open model and says
+  UPGRADE, STAY or NEEDS MORE DATA per type. `--watch-hf` checks Hugging Face
+  for newer models.
+- `throttle demo`: the whole loop offline on synthetic traffic, writing a
+  report.html where every number is labelled DEMO.
+
+### Changed
+- README, `throttle --help`, the no-argument welcome screen and the console
+  docs are rewritten around the loop. The console has a new "The loop"
+  section with one page per stage.
+
+### Removed
+- Throttle Cloud and the credit plans: `throttle login`, `logout`, `whoami`
+  and `upgrade`, the `cloud` and `upgrade` modules, the vendored QR-code
+  generator, `throttle check --push/--project`, the post-verdict upgrade
+  nudge, and the console's Cloud page (`/api/upgrade`, `/api/qr.svg`).
+- Cloud metering in `throttle autotune` and the Cloud call in `throttle gate`.
+  Both now run fully locally and free, with no login. `gate --no-cloud` is
+  still accepted (and ignored) so existing CI workflows keep working;
+  `autotune.json` no longer has a `cloud_url` field.
+- The GuideLLM backend: `--backend guidellm` and its flags on
+  `plan`/`smoke`/`benchmark`/`golden`, and the `guidellm` extra. Reports keep
+  the `guidellm_validation_gaps_acknowledged` field (always false) so the
+  schema is unchanged.
+- The `max_num_seqs` research tools: `throttle diagnose` and
+  `throttle experimental-tuning`, with their bottleneck analyzer and safety
+  validator, and `validation/experimental-tuning-vllm-docs/`.
+- The simulator commands: the old `throttle demo`, the hidden
+  `throttle validate-sim`, and the `simulator` and `workload` modules.
+- The old `throttle report` (a Chart.js HTML page comparing two `measure`
+  files).
+- `throttle cost` and `throttle measure`: `throttle check` measures \$/M tokens
+  against a live endpoint with 95% CIs, calibration and verdicts, which covers
+  both. `throttle compare` no longer reads `measure` JSON files.
+- Stale docs: `docs/internal/`, `docs/cloud.md`, `docs/V1_SPEC.md`,
+  `docs/USER_TESTING.md`, `QUICKSTART.md`, and the console docs pages for the
+  removed commands. The README "70% cheaper" sample output (from mock
+  endpoints) is gone.
+
 ## [0.7.0] - 2026-10-26
 
 Throttle cuts what your LLM inference costs on your own GPUs: whether a

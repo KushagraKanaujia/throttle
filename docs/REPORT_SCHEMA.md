@@ -24,45 +24,6 @@ ineligible or inconclusive result. A stopped orchestration writes
 `artifact_type: throttle_golden_session` with completed-position names and a
 fixed sanitized stop reason, never a recommendation.
 
-The opt-in `experimental-tuning` command does not extend any of those artifact
-types. It writes two separate mode-0600 files:
-
-```text
-ordinary measurement     artifact_type "throttle_run", mode "smoke"
-supplementary output      artifact_type "throttle_experimental_tuning_envelope"
-```
-
-The ordinary report remains schema 2.0, contains no tuning fields, and is
-non-decision-grade at both the run and condition levels. The experimental
-envelope contains exactly its schema/artifact tags, an
-`ordinary_report_sha256` binding, and the nested `safety_projection`. The
-digest is SHA-256 of the sanitized report encoded as sorted, compact,
-ASCII-escaped JSON with non-finite values forbidden. It is an equality and
-linkability check, not a signature.
-
-The nested safety projection is detached and allowlisted. Its `decision_eligible`,
-`auto_apply`, `guaranteed_outcome`, `golden_validation_performed`,
-`golden_protocol_eligible`, `changes_applied`,
-`configuration_change_authorized`, `can_bypass_decision_gates`,
-`cli_integration_authorized`, and `report_integration_authorized` fields are
-all false. The two authorization fields mean the artifact cannot route itself
-into another CLI or standard report path; the explicitly selected experimental
-subcommand may only present the already-audited projection.
-The retained `isolated_preintegration_validation` scope describes validation
-before any standard report or decision integration; it does not mean the
-detached projection lacks this one reviewed experimental presenter.
-Any suggestion additionally depends on an operator attestation that the
-exporter belongs to the inference deployment under test and saw no unrelated
-traffic during the sampled window. Neither fact is independently proven or
-encoded as raw exporter data; labels and snapshots are deliberately discarded.
-
-Comparison and Golden validators do not consume the supplementary artifact.
-Its optional Golden handoff records only a positive, distinct
-`max_num_seqs` pair and offered concurrency for a future test. It always says
-that Golden has not been performed and is not yet eligible. The existing
-six-position command must independently revalidate the pair, offered load,
-runtime provenance, ordering, evidence, SLOs, and statistical gates.
-
 Golden comparison and session artifacts include a sanitized treatment block:
 
 ```json

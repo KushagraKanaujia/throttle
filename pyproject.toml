@@ -5,7 +5,8 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "throttle-pro"
 version = "0.7.0"
-description = "Cut what LLM inference costs on your own GPUs: $/M tokens with 95% CIs, calibrated verdicts, and Autotune for the cheapest config whose output did not change shape"
+description = "Own your intelligence: prove which share of your OpenAI/Anthropic traffic an open-weight model you run can handle without losing quality, move it with fallback, and measure the savings"
+keywords = ["llm", "openai", "anthropic", "open-weight", "self-hosted", "inference-cost", "llm-evaluation", "llm-judge", "vllm", "sglang", "ollama", "model-routing"]
 readme = "README.md"
 license = "MIT"
 license-files = ["LICENSE"]
@@ -22,7 +23,6 @@ Source = "https://github.com/KushagraKanaujia/throttle"
 Documentation = "https://github.com/KushagraKanaujia/throttle/blob/main/docs/METHODOLOGY.md"
 Changelog = "https://github.com/KushagraKanaujia/throttle/blob/main/CHANGELOG.md"
 Issues = "https://github.com/KushagraKanaujia/throttle/issues"
-Pilot = "https://www.throttle-pro.com/pilot"
 
 [project.scripts]
 throttle = "throttle.cli:main"
@@ -42,14 +42,10 @@ throttle = [
     "console/static/illustrations/*",
     "console/docs/*.md",
     "console/docs/*/*.md",
-    "_vendor/*.txt",
+    "own/*.json",
 ]
 
 [project.optional-dependencies]
-# GuideLLM stays out of process. Its current supported Python range ends at
-# 3.13, so the base Throttle install remains usable on newer interpreters.
-guidellm = ["guidellm[recommended]==0.7.3; python_version < '3.14'"]
-
 # Embeddings for semantic cache tier (optional)
 embeddings = [
     "onnxruntime>=1.16.0,<2",

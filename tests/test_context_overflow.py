@@ -1,4 +1,7 @@
-"""Regression tests for the two bugs waqasm86 hit running validate-sim on vLLM (#22).
+"""Regression tests for the two bugs waqasm86 hit on vLLM (#22).
+
+The original reports came from the removed ``validate-sim`` command; the same
+behaviour is now pinned through ``throttle check``.
 
 1. The Heavy workload stopped at request 86 with a bare "failed with status
    400". vLLM had rejected it because prompt + max_tokens exceeded
@@ -32,10 +35,8 @@ import throttle.config as config_module
 import throttle.check as check_module
 from throttle.cli import main
 from throttle.request_errors import context_overflow_limit, describe_http_failure
-from throttle.workload import WorkloadGenerator
 
-# Qwen2.5 tokenizes "Test Test ..." at about 0.855 tokens per word: validate-sim's
-# Heavy request 86 (2281 words) came to 1951 prompt tokens in waqasm86's log.
+# Qwen2.5 tokenizes "Test Test ..." at about 0.855 tokens per word.
 TOKENS_PER_WORD = 0.855
 # What anyio's connect_tcp raised when cancelled mid-connect at shutdown (#22).
 ANYIO_SHUTDOWN_ERROR = "second argument (exceptions) must be a non-empty sequence"
@@ -139,23 +140,10 @@ class FakeVLLM:
 
 @pytest.fixture(autouse=True)
 def isolated(tmp_path, monkeypatch) -> None:
-    monkeypatch.chdir(tmp_path)  # validate-sim / measure write result files here
-    monkeypatch.setenv("THROTTLE_ENABLE_EXPERIMENTAL", "1")
+    monkeypatch.chdir(tmp_path)
     monkeypatch.setenv(check_module.HISTORY_ENV, str(tmp_path / "history"))
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     monkeypatch.setattr(config_module, "DEFAULT_CONFIG_PATH", tmp_path / "no-config.yaml")
-
-
-@pytest.fixture
-def fast_arrivals(monkeypatch) -> None:
-    """Same seeded requests (sizes, order), arrival times compressed 50x."""
-
-    original = WorkloadGenerator.generate_chat_workload
-
-    def compressed(self, *args, **kwargs):
-        return [(t / 50, p, m) for t, p, m in original(self, *args, **kwargs)]
-
-    monkeypatch.setattr(WorkloadGenerator, "generate_chat_workload", compressed)
 
 
 @pytest.fixture
@@ -195,74 +183,6 @@ def assert_no_shutdown_noise(output: str, caplog) -> None:
 
 
 # --- Bug 1: HTTP 400 from context overflow -------------------------------------
-
-
-def test_validate_sim_heavy_request_86_names_the_context_limit(capsys, fast_arrivals):
-    """waqasm86's run: --max-model-len 2048, Heavy load stops at request 86."""
-
-    with FakeVLLM(max_model_len=2048, latency=0.05) as server:
-        code = main([
-            "validate-sim", "--endpoint-url", server.url, "--model", "m",
-            "--gpu-hourly-rate", "1.00",
-        ])
-    out = capsys.readouterr().out
-
-    assert code == 1
-    assert server.rejected == [2281]  # the same single request vLLM rejected
-    assert "Running Light load" in out and "Running Medium load" in out
-    assert "failed with status 400" not in out
-    assert (
-        "Error: Heavy load request 86 was rejected with HTTP 400: its prompt plus "
-        "max_tokens does not fit the model's 2048-token context window (max_model_len). "
-        "It sent a 2281-word prompt and max_tokens 98."
-    ) in out
-    assert "Server said: This model's maximum context length is 2048 tokens." in out
-    assert "Start the server with a larger --max-model-len (4096 should fit it)" in out
-    assert "throttle check --prompts FILE --max-tokens N" in out
-
-
-def test_validate_sim_completes_when_the_workload_fits(capsys, fast_arrivals):
-    with FakeVLLM(max_model_len=4096, latency=0.05) as server:
-        code = main([
-            "validate-sim", "--endpoint-url", server.url, "--model", "m",
-            "--gpu-hourly-rate", "1.00",
-        ])
-    out = capsys.readouterr().out
-
-    assert code == 0, out
-    assert server.rejected == []
-    assert "Running Heavy load" in out and "Full results written to" in out
-
-
-def test_measure_names_the_context_limit(capsys):
-    with FakeVLLM(max_model_len=800, latency=0.05) as server:
-        code = main([
-            "measure", "--endpoint-url", server.url, "--model", "m",
-            "--gpu-hourly-rate", "1.00", "--label", "t4", "--repeat", "1",
-            "--num-requests", "20", "--arrival-rate", "200",
-        ])
-    out = capsys.readouterr().out
-
-    assert code == 1
-    assert "Trial 1 request 6 was rejected with HTTP 400" in out
-    assert "800-token context window (max_model_len)" in out
-    assert "measure sends a fixed synthetic workload" in out
-    assert "--max-model-len" in out
-    assert not list(Path.cwd().glob("*.json"))  # nothing recorded
-
-
-def test_cost_names_the_context_limit(capsys):
-    with FakeVLLM(max_model_len=256, latency=0.0) as server:
-        code = main([
-            "cost", "--endpoint-url", server.url, "--model", "m",
-            "--gpu-hourly-rate", "1.00", "--num-requests", "5",
-        ])
-    out = capsys.readouterr().out
-
-    assert code == 1
-    assert "Error: Request 4 was rejected with HTTP 400" in out
-    assert "256-token context window (max_model_len)" in out
-    assert "cost sends a fixed synthetic workload" in out
 
 
 def test_check_suggests_lowering_max_tokens(capsys):
@@ -317,43 +237,6 @@ def test_other_http_errors_keep_the_server_message():
 # --- Bug 2: traceback at shutdown ----------------------------------------------
 
 
-def test_validate_sim_failure_cancels_in_flight_requests_cleanly(
-    capsys, caplog, fast_arrivals, anyio_cancel_race
-):
-    """Requests still in flight when #86 fails must not surface at shutdown."""
-
-    caplog.set_level(logging.ERROR, logger="asyncio")
-    with FakeVLLM(max_model_len=2048, latency=1.0) as server:
-        code = main([
-            "validate-sim", "--endpoint-url", server.url, "--model", "m",
-            "--gpu-hourly-rate", "1.00",
-        ])
-    captured = capsys.readouterr()
-
-    assert code == 1
-    assert anyio_cancel_race == [], "a request was cancelled mid-flight"
-    assert "Heavy load request 86 was rejected with HTTP 400" in captured.out
-    assert_no_shutdown_noise(captured.out + captured.err, caplog)
-
-
-def test_measure_failure_cancels_in_flight_requests_cleanly(
-    capsys, caplog, anyio_cancel_race
-):
-    caplog.set_level(logging.ERROR, logger="asyncio")
-    with FakeVLLM(max_model_len=800, latency=1.0) as server:
-        code = main([
-            "measure", "--endpoint-url", server.url, "--model", "m",
-            "--gpu-hourly-rate", "1.00", "--label", "t4", "--repeat", "1",
-            "--num-requests", "20", "--arrival-rate", "200",
-        ])
-    captured = capsys.readouterr()
-
-    assert code == 1
-    assert anyio_cancel_race == [], "a request was cancelled mid-flight"
-    assert "request 6 was rejected with HTTP 400" in captured.out
-    assert_no_shutdown_noise(captured.out + captured.err, caplog)
-
-
 def test_check_failure_cancels_in_flight_requests_cleanly(
     capsys, caplog, tmp_path, anyio_cancel_race
 ):
@@ -378,21 +261,6 @@ def test_check_failure_cancels_in_flight_requests_cleanly(
     assert anyio_cancel_race == [], "the short request was cancelled mid-flight"
     assert "context window" in captured.err
     assert_no_shutdown_noise(captured.out + captured.err, caplog)
-
-
-def test_measure_sends_nothing_after_a_request_fails(capsys):
-    """Requests 7-20 are due after request 6 fails, so none of them is sent."""
-
-    with FakeVLLM(max_model_len=800, latency=0.05) as server:
-        code = main([
-            "measure", "--endpoint-url", server.url, "--model", "m",
-            "--gpu-hourly-rate", "1.00", "--label", "t4", "--repeat", "1",
-            "--num-requests", "20", "--arrival-rate", "20",
-        ])
-
-    assert code == 1
-    assert "request 6 was rejected" in capsys.readouterr().out
-    assert server.chat_posts == 6
 
 
 def test_check_sends_nothing_after_a_request_fails(capsys, tmp_path):

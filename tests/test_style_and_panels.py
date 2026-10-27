@@ -174,7 +174,7 @@ def test_narrow_terminal_gets_panels_without_a_frame(monkeypatch) -> None:
     assert box.splitlines()[0] == "Verdict"
     screen = welcome_screen()
     assert not any(ch in screen for ch in "┌┐└┘")
-    assert "1. Install Ollama" in screen
+    assert "1. See the whole loop" in screen
     # 60 columns and up keep the frame.
     monkeypatch.setenv("COLUMNS", "60")
     assert Style(colour=False, unicode=True).panel(["x"]).startswith("┌")
@@ -331,15 +331,23 @@ def test_savings_panel_headlines_the_conservative_figure(tmp_path, capsys, monke
 RETIRED_PATTERNS = {
     "$19": re.compile(r"\$19(?![.,]\d)"),  # the $19/month Pro price; $19.72 in a sample output is a number, not an offer
     "Cost Audit": re.compile(r"Cost Audit", re.IGNORECASE),
-    # The retired Throttle Pro "(early access)" features. Autotune's own
-    # "free during early access" (0.7.0) is the current offer, not a retired one.
-    "early access": re.compile(r"(?<!during )early access", re.IGNORECASE),
+    # The retired Throttle Pro "(early access)" features, and Autotune's
+    # "free during early access" Cloud framing (0.7.0).
+    "early access": re.compile(r"early access", re.IGNORECASE),
     "no savings guarantee": re.compile(r"no savings guarantee", re.IGNORECASE),
     "formspree": re.compile(r"formspree", re.IGNORECASE),
     # The 2-week pilot at 20% with a $500 floor (retired 2026-10-06).
     "20% of verified": re.compile(r"20% of verified", re.IGNORECASE),
     "$500/month": re.compile(r"\$500\s*/\s*month", re.IGNORECASE),
     "2 weeks": re.compile(r"\b2 weeks\b", re.IGNORECASE),
+    # Throttle Cloud credit plans (retired 2026-10-27): pricing is now a share
+    # of measured savings, and the CLI never logs in or meters anything.
+    "Throttle Cloud": re.compile(r"Throttle Cloud", re.IGNORECASE),
+    "$10 of credits": re.compile(r"\$10 (?:of )?(?:free )?credits?", re.IGNORECASE),
+    "credits left": re.compile(r"credits left", re.IGNORECASE),
+    "$30/$50/$100 plans": re.compile(r"\$(?:30|50|100)\s*/\s*mo(?:nth)?\b", re.IGNORECASE),
+    "throttle upgrade": re.compile(r"throttle upgrade\b", re.IGNORECASE),
+    "throttle login": re.compile(r"throttle (?:login|logout|whoami)\b", re.IGNORECASE),
 }
 
 
