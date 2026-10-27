@@ -1268,6 +1268,9 @@ def build_parser() -> argparse.ArgumentParser:
     from .sessions_cli import add_sessions_subcommand
     add_sessions_subcommand(subparsers)
 
+    from .own.cli import register as register_own_commands
+    register_own_commands(subparsers)
+
     # argparse's help=SUPPRESS does not hide a subparser: it leaks as
     # "==SUPPRESS==" in --help. Drop the hidden command from the listing only;
     # it stays runnable.
@@ -4913,6 +4916,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     if args.command == "sessions":
         from .sessions_cli import handle_sessions_command
         return handle_sessions_command(args)
+    from .own.cli import commands as own_commands, dispatch as own_dispatch
+    if args.command in own_commands():
+        return own_dispatch(args)
     parser.error("a subcommand is required")
     return EXIT_USAGE
 
