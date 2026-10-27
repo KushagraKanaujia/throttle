@@ -31,7 +31,7 @@ import time
 from collections import Counter, defaultdict
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Callable, Iterable, Mapping, Sequence
+from typing import Any, Callable, Collection, Iterable, Mapping, Sequence
 
 import httpx
 
@@ -222,14 +222,17 @@ def select_backfill(
     max_requests: int = 500,
     seed: int = DEFAULT_SEED,
     classify: Classifier | None = None,
+    only_ids: Collection[str] | None = None,
 ) -> list[tuple[records.Exchange, records.Normalized, str]]:
     """Stratified, seeded sample: up to ``per_type`` per workload type, then
-    round-robin across types until ``max_requests``."""
+    round-robin across types until ``max_requests``. ``only_ids`` restricts
+    the pool to those exchange ids (refresh reruns a saved eval set)."""
 
     classifier = resolve_classifier(classify)
+    wanted = set(only_ids) if only_ids is not None else None
     groups: dict[str, list[tuple[records.Exchange, records.Normalized, str]]] = defaultdict(list)
     for exchange in sorted(exchanges, key=lambda e: (e.ts, e.id)):
-        if exchange.id in skip:
+        if exchange.id in skip or (wanted is not None and exchange.id not in wanted):
             continue
         norm = eligible(exchange)
         if norm is None:

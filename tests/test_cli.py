@@ -413,6 +413,7 @@ class ParserAndPlanTests(unittest.TestCase):
                 "shadow",
                 "eval",
                 "workloads",
+                "refresh",
             },
         )
 
