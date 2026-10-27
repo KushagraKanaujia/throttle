@@ -543,6 +543,7 @@ class ParserAndPlanTests(unittest.TestCase):
                 "autotune",
                 "gate",
                 "coldstart",
+                "capture",
                 "shadow",
                 "eval",
             },
