@@ -42,6 +42,10 @@ REDACTION_HASH = "hash"          # PII replaced with a salted hash, stable withi
 REDACTION_METADATA = "metadata"  # no bodies at all, only sizes, usage, timing
 REDACTION_MODES = (REDACTION_OFF, REDACTION_MASK, REDACTION_HASH, REDACTION_METADATA)
 
+# Workload types. ``throttle.own.workloads.classify(exchange, normalized)``
+# returns one of these.
+WORKLOAD_TYPES = ("classification", "extraction", "summarization", "agent", "code", "chat")
+
 SERVED_API = "api"
 SERVED_OWNED = "owned"
 
