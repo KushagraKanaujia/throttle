@@ -592,11 +592,11 @@ RULES_TEXT = (
 
 
 def render_html(report: Mapping[str, Any]) -> str:
-    """The Meter page (see :mod:`throttle.own.meter`): self-contained, no scripts."""
+    """The report page (see :mod:`throttle.own.report_page`): self-contained, no scripts."""
 
-    from . import meter
+    from . import report_page
 
-    return meter.render(report, demo_banner=DEMO_BANNER, rules=RULES_TEXT)
+    return report_page.render(report, demo_banner=DEMO_BANNER, rules=RULES_TEXT)
 
 
 def _owned_gap(workload: Mapping[str, Any]) -> str:

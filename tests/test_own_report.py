@@ -452,7 +452,7 @@ def test_panel_says_not_projected_when_the_window_is_too_short():
     assert _owned_gap({}) == "not measured"
 
 
-def test_meter_page_shows_replay_source_and_caveats():
+def test_report_page_shows_replay_source_and_caveats():
     source = {"kind": "public_replay", "headline_label": "public dataset replay, local models, GPU price assumed",
               "dataset": "allenai/WildChat-1M", "license": "ODC-BY 1.0", "requests": 500,
               "api_stand_in": "llama3.2:3b", "priced_as": "gpt-4.1-mini",
@@ -473,11 +473,11 @@ def test_meter_page_shows_replay_source_and_caveats():
     assert "<script" not in page.lower() and "prefers-reduced-motion" in page
 
 
-def test_meter_odometer_and_receipt(tmp_path):
+def test_report_page_figure_and_job_table(tmp_path):
     report = _full_report()
     page = rep.render_html(report)
-    assert 'class="odometer"' in page and 'class="receipt"' in page and "<details" in page
-    assert page.count('<li class="line ') == len(report["workloads"])
+    assert 'class="figure' in page and 'class="jobtable"' in page and "<details" in page
+    assert page.count('<tr class="job ') == len(report["workloads"])
     for w in report["workloads"]:
         q = w["quality"]
         assert f"As good or better in {q['wins'] + q['ties']} of {q['judged']} tests" in page
