@@ -26,6 +26,9 @@ STAGES: dict[str, str] = {
     "route": "throttle.own.route",
     "refresh": "throttle.own.refresh",
     "demo": "throttle.own.demo",
+    "jobs": "throttle.own.jobs",
+    "pr-check": "throttle.own.prcheck",
+    "pr-comment": "throttle.own.github",
 }
 
 

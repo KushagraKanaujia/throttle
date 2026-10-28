@@ -99,6 +99,9 @@ class Exchange:
     route_reason: str | None = None
     workload_type: str | None = None
     error: str | None = None
+    # The AI job (call site) this request came from: the X-Throttle-Job
+    # header when the app sent one, else matched from the prompt at capture.
+    job: str | None = None
     id: str = field(default_factory=lambda: uuid.uuid4().hex)
     ts: str = field(default_factory=utc_now_iso)
     v: int = SCHEMA_VERSION

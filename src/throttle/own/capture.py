@@ -49,7 +49,10 @@ HOP_BY_HOP = frozenset({
     "connection", "keep-alive", "proxy-authenticate", "proxy-authorization",
     "proxy-connection", "te", "trailer", "trailers", "transfer-encoding", "upgrade",
 })
-_DROP_REQUEST = HOP_BY_HOP | {"host", "content-length"}
+# x-throttle-job names the AI job a call came from (throttle.own.tag); it is
+# read here and never forwarded.
+JOB_HEADER = "x-throttle-job"
+_DROP_REQUEST = HOP_BY_HOP | {"host", "content-length", JOB_HEADER}
 _DROP_RESPONSE = HOP_BY_HOP | {"content-length"}
 _PASSTHROUGH_METHODS = ["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"]
 
@@ -417,6 +420,7 @@ class _Pending:
     finished: float | None = None
     recorded: bool = False
     route: Any = None  # route.RouteDecision when a router saw this request
+    job: str | None = None  # from the X-Throttle-Job header
 
 
 def create_capture_app(
@@ -436,6 +440,9 @@ def create_capture_app(
         raise ValueError(f"unknown redaction mode {redaction!r}")
     salt_bytes = salt.encode("utf-8") if isinstance(salt, str) else (salt or secrets.token_bytes(32))
     state = CaptureState(redaction=redaction, root=Path(root), salt=salt_bytes, callbacks=tuple(on_exchange))
+    from .jobs import RegistryCache, lesson_from_fallback
+
+    job_index = router.jobs if router is not None and hasattr(router, "jobs") else RegistryCache(Path(root))
     upstreams = {
         records.PROVIDER_OPENAI: _strip_base(openai_upstream),
         records.PROVIDER_ANTHROPIC: _strip_base(anthropic_upstream),
@@ -496,6 +503,15 @@ def create_capture_app(
             exchange.fallback = p.route.fallback
             exchange.route_reason = p.route.route_reason
             exchange.workload_type = p.route.workload_type
+        routed_job = getattr(p.route, "job", None) if p.route is not None else None
+        exchange.job = routed_job or p.job
+        if exchange.job is None and request is not None:
+            try:
+                view = records.Exchange(provider=p.provider, endpoint=p.endpoint, model=model, request=request,
+                                        response=None, status=200, latency_ms=0.0, redaction=records.REDACTION_OFF)
+                exchange.job = job_index.match(view, records.normalize(view))
+            except Exception:  # noqa: BLE001 - job matching never breaks capture
+                log.exception("job matching failed")
         return exchange
 
     async def finalize(p: _Pending) -> None:
@@ -509,6 +525,11 @@ def create_capture_app(
             log.exception("could not build captured exchange")
             return
         await state.record(exchange)
+        if exchange.fallback and exchange.job:
+            try:
+                await asyncio.to_thread(lesson_from_fallback, state.root, exchange)
+            except Exception:  # noqa: BLE001
+                log.exception("could not write the lesson for %s", exchange.id)
         if router is not None and p.route is not None and p.route.served:
             try:
                 await asyncio.to_thread(router.record, exchange, p.route)
@@ -521,7 +542,10 @@ def create_capture_app(
         from .route import router_failure
 
         try:
-            decision = await router.route(p.provider, p.endpoint, p.request_json, p.stream)
+            if p.job is not None:
+                decision = await router.route(p.provider, p.endpoint, p.request_json, p.stream, job=p.job)
+            else:
+                decision = await router.route(p.provider, p.endpoint, p.request_json, p.stream)
             p.route = decision
             if not decision.served:
                 return None
@@ -576,7 +600,8 @@ def create_capture_app(
             parsed = None
         request_json = parsed if isinstance(parsed, dict) else None
         wants_stream = bool(request_json and request_json.get("stream") is True)
-        pending = _Pending(provider=provider, endpoint=request.url.path, request_json=request_json, started=started, stream=wants_stream)
+        pending = _Pending(provider=provider, endpoint=request.url.path, request_json=request_json, started=started,
+                           stream=wants_stream, job=(request.headers.get(JOB_HEADER) or "").strip()[:120] or None)
         if router is not None and request_json is not None:
             owned = await decide(pending)
             if owned is not None:

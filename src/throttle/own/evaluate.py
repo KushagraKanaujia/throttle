@@ -317,11 +317,14 @@ def build_eval_sets(
     classify: Classifier | None = None,
     only_ids: Mapping[str, Sequence[str]] | None = None,
     excluded: dict[str, int] | None = None,
+    group: Callable[[records.Exchange, records.Normalized], str | None] | None = None,
 ) -> dict[str, list[Pair]]:
     """Per-type eval pairs. ``only_ids`` ({type: ids}) restricts to a saved set.
     ``excluded``, when given, is filled with {type: count} of eligible
     exchanges left out because every shadow result was a status-0 transport
-    failure."""
+    failure. ``group``, when given, keys the sets by its result instead of the
+    workload type (exchanges it returns None for are left out); each pair
+    still carries its workload type for the rubric and the checks."""
 
     by_exchange: dict[str, list[records.ShadowResult]] = defaultdict(list)
     for result in records.iter_shadow(candidate, root):
@@ -343,7 +346,13 @@ def build_eval_sets(
         if norm is None:
             continue
         shadow = pick_shadow(by_exchange[exchange.id])
-        kind = wanted[exchange.id] if wanted is not None else workload_type(exchange, norm, classifier)
+        workload = wanted[exchange.id] if wanted is not None else workload_type(exchange, norm, classifier)
+        kind = workload
+        if group is not None:
+            key = group(exchange, norm)
+            if key is None:
+                continue
+            kind = key
         if shadow is None:
             if excluded is not None:
                 excluded[kind] = excluded.get(kind, 0) + 1
@@ -352,14 +361,15 @@ def build_eval_sets(
         if key in seen[kind]:
             continue
         seen[kind].add(key)
-        groups[kind].append(Pair(exchange, norm, shadow, kind))
+        groups[kind].append(Pair(exchange, norm, shadow, workload))
     return {k: sorted(v, key=lambda p: p.exchange.id) for k, v in sorted(groups.items())}
 
 
-def save_evalset(root: Path, workload: str, candidate: str, pairs: Sequence[Pair]) -> tuple[str, Path]:
+def save_evalset(root: Path, workload: str, candidate: str, pairs: Sequence[Pair], *,
+                 directory: Path | None = None) -> tuple[str, Path]:
     ids = [p.exchange.id for p in pairs]
     digest = evalset_sha256(candidate, ids)
-    path = root / "evals" / f"evalset-{records.slug(workload)}-{digest[:12]}.json"
+    path = (directory or root / "evals") / f"evalset-{records.slug(workload)}-{digest[:12]}.json"
     if not path.exists():
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(json.dumps({
@@ -491,6 +501,7 @@ def decide(
 @dataclass
 class TypeOutcome:
     outcomes: list[str] = field(default_factory=list)   # WIN/TIE/LOSS/ORDER_DISAGREE/ERROR, one per item
+    by_exchange: dict[str, str] = field(default_factory=dict)   # exchange id -> outcome
     skipped: int = 0
     not_sent: int = 0      # outcomes decided without a judge call (a failed answer)
 
@@ -511,6 +522,7 @@ async def _judge_all(
         async def one(kind: str, pair: Pair) -> None:
             if pair.shadow.ok is False:
                 results[kind].outcomes.append(judge_mod.LOSS)
+                results[kind].by_exchange[pair.exchange.id] = judge_mod.LOSS
                 results[kind].not_sent += 1
                 return
             async with gate:
@@ -522,7 +534,7 @@ async def _judge_all(
                 try:
                     outcome = await judge_mod.judge_both_orders(
                         pair.norm.messages, incumbent, candidate, client=client, config=config,
-                        rubric=judge_mod.rubric_for(kind), budget=budget,
+                        rubric=judge_mod.rubric_for(pair.workload), budget=budget,
                     )
                 except judge_mod.BudgetExhausted as exc:
                     if not stopped:
@@ -530,6 +542,7 @@ async def _judge_all(
                     results[kind].skipped += 1
                     return
             results[kind].outcomes.append(outcome)
+            results[kind].by_exchange[pair.exchange.id] = outcome
 
         # Items run in eval-set order so a budget cutoff is reproducible
         # at concurrency 1 and close to it otherwise.
@@ -552,17 +565,18 @@ def summarize_type(
     margin: float,
     min_n: int,
     transport_excluded: int = 0,
+    evalset_dir: Path | None = None,
 ) -> dict[str, Any]:
-    digest, path = save_evalset(root, kind, candidate, pairs)
+    digest, path = save_evalset(root, kind, candidate, pairs, directory=evalset_dir)
     inc_checks: dict[str, list[bool | None]] = defaultdict(list)
     cand_checks: dict[str, list[bool | None]] = defaultdict(list)
     for pair in pairs:
         norm, shadow = pair.norm, pair.shadow
         inc_side = Side(norm.output_text, norm.output_tool_calls, norm.finish_reason)
         cand_side = Side(shadow.output_text, shadow.tool_calls, shadow.finish_reason, failed=not shadow.ok)
-        for name, value in run_checks(norm, kind, inc_side, norm.output_text).items():
+        for name, value in run_checks(norm, pair.workload, inc_side, norm.output_text).items():
             inc_checks[name].append(value)
-        for name, value in run_checks(norm, kind, cand_side, norm.output_text).items():
+        for name, value in run_checks(norm, pair.workload, cand_side, norm.output_text).items():
             cand_checks[name].append(value)
     checks: dict[str, Any] = {}
     for name in CHECK_NAMES:
