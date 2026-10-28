@@ -233,6 +233,10 @@ def build(root: Path, out: Path, label: str, scale: int, gpu_hourly: float, sour
     record = report_mod.load_check(root / "checks", models)
     exchanges = list(records.iter_exchanges(root))
     source = {**source, "requests": len(exchanges)}
+    if record is None:
+        source["caveats"] = [c if not c.startswith("Throughput was measured") else
+                             "Throughput was not measured: `throttle check` did not run, so there is no owned "
+                             "cost and no savings claim." for c in source["caveats"]]
     report = report_mod.build_report(
         exchanges, pricing_mod.load_prices(prices_path), candidate=label,
         eval_doc=eval_doc, check_record=record, gpu_hourly_rate=gpu_hourly, gpus=1,

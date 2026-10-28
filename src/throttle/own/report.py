@@ -507,7 +507,7 @@ def _labels(prices: pricing_mod.PriceTable, owned: Mapping[str, Any] | None, win
                                  f"({source.get('license')}), PII masked; answered by {source.get('api_stand_in')} "
                                  f"standing in for the API model"})
     judge = (eval_doc or {}).get("judge") or {}
-    out.append({"what": "Quality (win/tie/loss, net CI)", "label": lab("MEASURED"),
+    out.append({"what": "Quality (win/tie/loss, net CI)", "label": lab("MEASURED") if judge else "NOT MEASURED",
                 "detail": (f"pairwise judge {judge.get('provider', '')} {judge.get('model', '')}, both answer orders; "
                            "Wilson 95% CIs per rate, paired bootstrap 95% CI on win minus loss")
                 if judge else "no judge run"})
