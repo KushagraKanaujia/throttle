@@ -185,9 +185,10 @@ def test_no_owned_or_savings_number_without_check(tmp_path):
     assert "not measured: run `throttle check --url ... --model open-70b`" in page
     assert "Conservative monthly savings" in page
     # The only $ figures are API spend: none of the owned/savings cells carry one.
-    cells = re.findall(r'<td class="n">(.*?)</td>', page)
-    owned_cells = cells[2::3]
-    assert owned_cells and all("$" not in c for c in owned_cells)
+    owned_cells = re.findall(r'<b class="cost-own">(.*?)</b>', page)
+    assert owned_cells and all(c == "not measured" for c in owned_cells)
+    assert re.findall(r'<b class="cost-api">\$', page)
+    assert "NOT MEASURED" in page and 'aria-label="no savings claim"' in page
 
 
 def test_check_without_ci_is_not_measured():
@@ -361,7 +362,7 @@ def test_json_schema(tmp_path):
         assert w["recommendation"] in rep.RECOMMENDATIONS
         assert set(w["quality"]) == {"verdict", "n", "judged", "wins", "ties", "losses", "order_disagree",
                                      "win_rate", "tie_rate", "loss_rate", "order_disagree_rate", "net_ci",
-                                     "format_checks", "reasons"}
+                                     "win_rate_ci", "tie_rate_ci", "loss_rate_ci", "format_checks", "reasons"}
     assert set(data["totals"]) == {"monthly_api_usd", "movable_api_usd", "movable_share", "owned_usd_per_month",
                                    "floor_applied", "conservative_savings_usd", "point_savings_usd", "savings_note"}
     for item in data["labels"]:
@@ -449,3 +450,34 @@ def test_panel_says_not_projected_when_the_window_is_too_short():
     assert _owned_gap({"owned_note": "not projected: capture window under 1 day"}) == "not projected"
     assert _owned_gap({"owned_note": "not measured: run throttle check"}) == "not measured"
     assert _owned_gap({}) == "not measured"
+
+
+def test_meter_page_shows_replay_source_and_caveats():
+    source = {"kind": "public_replay", "headline_label": "public dataset replay, local models, GPU price assumed",
+              "dataset": "allenai/WildChat-1M", "license": "ODC-BY 1.0", "requests": 500,
+              "api_stand_in": "llama3.2:3b", "priced_as": "gpt-4.1-mini",
+              "caveats": ["Small local models stand in for frontier API models."]}
+    types = {"classification": _type_eval(ev.NO_DIFF)}
+    report = rep.build_report(_traffic({"classification": 60}), PRICES, candidate="cand", eval_doc=_eval_doc(types),
+                              check_record=_check(rate=0.02, gpus=1), gpu_hourly_rate=0.02, gpus=1,
+                              traffic_scale=10, source=source)
+    assert report["source"]["dataset"] == "allenai/WildChat-1M"
+    assert report["does_not_prove"][0] == "Small local models stand in for frontier API models."
+    assert any(i["what"] == "Traffic volume" and i["label"] == "ASSUMED" for i in report["labels"])
+    assert any(i["label"] == "PUBLIC DATASET" for i in report["labels"])
+    page = rep.render_html(report)
+    assert "public dataset replay, local models, GPU price assumed" in page
+    assert "allenai/WildChat-1M" in page and "Small local models stand in" in page
+    assert '<span class="tag t-replay">PUBLIC DATASET REPLAY</span>' in page
+    assert "<title>Replay Throttle report" in page
+    assert "<script" not in page.lower() and "prefers-reduced-motion" in page
+
+
+def test_meter_odometer_and_receipt(tmp_path):
+    report = _full_report()
+    page = rep.render_html(report)
+    assert 'class="odometer"' in page and 'class="receipt"' in page and "<details" in page
+    assert page.count('<li class="line ') == len(report["workloads"])
+    for w in report["workloads"]:
+        q = w["quality"]
+        assert f"As good or better in {q['wins'] + q['ties']} of {q['judged']} tests" in page

@@ -88,10 +88,11 @@ def test_every_number_is_labelled_demo(run):
     page = result.html_path.read_text()
     assert rep.DEMO_BANNER in page
     assert "<title>DEMO " in page
-    # Each summary card and the per-type table carry the DEMO tag.
-    cards = re.findall(r'<div class="card[^"]*">(.*?)</div>', page)
-    assert len(cards) == 3 and all("DEMO" in c for c in cards)
-    assert re.search(r"<h2>Per workload type <span class=\"tag\">DEMO</span></h2>", page)
+    # The savings meter and every section heading carry the DEMO tag.
+    assert re.search(r'Saved per month <span class="tag t-demo">DEMO</span>', page)
+    for heading in ("The receipt", "The proof, one click deeper", "How we got these numbers"):
+        assert re.search(rf'<h2>{heading} <span class="tag t-demo">DEMO</span></h2>', page)
+    assert '<span class="stamp st-demo">DEMO</span>' in page
     assert not re.search(r"""(src|href)\s*=\s*["']?\s*(https?:)?//""", page, re.I)
 
 

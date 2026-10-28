@@ -75,6 +75,7 @@ Output: ``<out>/report.json`` and ``<out>/report.html``
         "quality": {"verdict", "n", "judged", "wins", "ties", "losses", "order_disagree",
                     "win_rate", "tie_rate", "loss_rate", "order_disagree_rate",
                     "net_ci": [low, high] | null,
+                    "win_rate_ci", "tie_rate_ci", "loss_rate_ci": [low, high] | null,   # Wilson 95%
                     "format_checks": {name: {"incumbent", "candidate", "overlap"}},
                     "reasons": [str]} | null,
         "recommendation": "MOVE" | "NEEDS FINETUNE" | "KEEP ON API" | "NEEDS MORE DATA",
@@ -90,14 +91,15 @@ Output: ``<out>/report.json`` and ``<out>/report.html``
         "savings_note": str
       },
       "labels": [{"what", "label", "detail"}],
-      "does_not_prove": [str]
+      "does_not_prove": [str],
+      "source": {...}                    # only for a public-dataset replay: dataset,
+                                         # license, stand-in models, caveats
     }
 """
 
 from __future__ import annotations
 
 import argparse
-import html
 import json
 import sys
 from pathlib import Path
@@ -261,9 +263,18 @@ def _quality(type_eval: Mapping[str, Any] | None) -> dict[str, Any] | None:
         "win_rate": rate("wins"), "tie_rate": rate("ties"), "loss_rate": rate("losses"),
         "order_disagree_rate": rate("order_disagree"),
         "net_ci": [net["low"], net["high"]] if net.get("low") is not None and net.get("high") is not None else None,
+        "win_rate_ci": _ci(type_eval.get("win_rate_ci")),
+        "tie_rate_ci": _ci(type_eval.get("tie_rate_ci")),
+        "loss_rate_ci": _ci(type_eval.get("loss_rate_ci")),
         "format_checks": format_checks(type_eval),
         "reasons": list(type_eval.get("reasons") or []),
     }
+
+
+def _ci(value: Any) -> list[float] | None:
+    if isinstance(value, Mapping) and value.get("low") is not None and value.get("high") is not None:
+        return [float(value["low"]), float(value["high"])]
+    return None
 
 
 def recommend(
@@ -342,6 +353,7 @@ def build_report(
     traffic_scale: int = 1,
     demo: bool = False,
     generated_at: str | None = None,
+    source: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """The report document (see the module docstring). ``traffic_scale`` is
     only for the demo: each synthetic request stands for that many."""
@@ -398,8 +410,8 @@ def build_report(
 
     totals = _portfolio(workloads, floor=floor, measured=owned is not None, not_measured=not_measured)
     labels = _labels(prices, owned, window, demo=demo, traffic_scale=traffic_scale, eval_doc=eval_doc,
-                     gpu_hourly_rate=gpu_hourly_rate, gpus=gpus)
-    return {
+                     gpu_hourly_rate=gpu_hourly_rate, gpus=gpus, source=source)
+    document: dict[str, Any] = {
         "schema": SCHEMA_ID,
         "generated_at": generated_at or records.utc_now_iso(),
         "demo": demo,
@@ -417,8 +429,11 @@ def build_report(
         "workloads": workloads,
         "totals": totals,
         "labels": labels,
-        "does_not_prove": _limits(owned, eval_doc, demo=demo),
+        "does_not_prove": _limits(owned, eval_doc, demo=demo, source=source),
     }
+    if source is not None:
+        document["source"] = dict(source)
+    return document
 
 
 def _portfolio(workloads: list[dict[str, Any]], *, floor: float, measured: bool, not_measured: str) -> dict[str, Any]:
@@ -465,7 +480,7 @@ def _portfolio(workloads: list[dict[str, Any]], *, floor: float, measured: bool,
 
 def _labels(prices: pricing_mod.PriceTable, owned: Mapping[str, Any] | None, window: wl.CaptureWindow, *,
             demo: bool, traffic_scale: int, eval_doc: Mapping[str, Any] | None,
-            gpu_hourly_rate: float, gpus: int) -> list[dict[str, str]]:
+            gpu_hourly_rate: float, gpus: int, source: Mapping[str, Any] | None = None) -> list[dict[str, str]]:
     def lab(word: str) -> str:
         return f"{DEMO_LABEL} / {word}" if demo else word
 
@@ -480,9 +495,17 @@ def _labels(prices: pricing_mod.PriceTable, owned: Mapping[str, Any] | None, win
         {"what": "Requests and API $ per month", "label": lab("MEASURED, projected"),
          "detail": f"captured over {window.days * 24:.1f} hours, scaled to 30 days at the captured rate"},
     ]
-    if traffic_scale != 1:
+    if traffic_scale != 1 and demo:
         out.append({"what": "Traffic volume", "label": DEMO_LABEL,
                     "detail": f"each synthetic request stands for {traffic_scale:,} requests of a made-up company"})
+    elif traffic_scale != 1:
+        out.append({"what": "Traffic volume", "label": "ASSUMED",
+                    "detail": f"each replayed request stands for {traffic_scale:,} requests a month"})
+    if source:
+        out.insert(0, {"what": "Requests", "label": "PUBLIC DATASET",
+                       "detail": f"{source.get('requests')} real first messages from {source.get('dataset')} "
+                                 f"({source.get('license')}), PII masked; answered by {source.get('api_stand_in')} "
+                                 f"standing in for the API model"})
     judge = (eval_doc or {}).get("judge") or {}
     out.append({"what": "Quality (win/tie/loss, net CI)", "label": lab("MEASURED"),
                 "detail": (f"pairwise judge {judge.get('provider', '')} {judge.get('model', '')}, both answer orders; "
@@ -511,8 +534,9 @@ def _labels(prices: pricing_mod.PriceTable, owned: Mapping[str, Any] | None, win
     return out
 
 
-def _limits(owned: Mapping[str, Any] | None, eval_doc: Mapping[str, Any] | None, *, demo: bool) -> list[str]:
-    out = []
+def _limits(owned: Mapping[str, Any] | None, eval_doc: Mapping[str, Any] | None, *, demo: bool,
+            source: Mapping[str, Any] | None = None) -> list[str]:
+    out = [str(c) for c in (source or {}).get("caveats") or []]
     if demo:
         out.append("Everything here comes from synthetic traffic, a fake API and a fake open model. It shows how the "
                    "report works; it says nothing about any real company or model.")
@@ -546,16 +570,6 @@ def _pct(value: float | None) -> str:
     return "-" if value is None else f"{value:.0%}"
 
 
-def _quality_text(q: Mapping[str, Any] | None) -> str:
-    if not q:
-        return "no shadow results"
-    if not q.get("judged"):
-        return f"{q.get('verdict')}"
-    net = q.get("net_ci")
-    ci = f" net [{net[0]:+.2f}, {net[1]:+.2f}]" if net else ""
-    return f"{_pct(q['win_rate'])}/{_pct(q['tie_rate'])}/{_pct(q['loss_rate'])}{ci}"
-
-
 def summary_lines(report: Mapping[str, Any]) -> list[tuple[str, str]]:
     totals = report["totals"]
     savings = totals["conservative_savings_usd"]
@@ -569,111 +583,20 @@ def summary_lines(report: Mapping[str, Any]) -> list[tuple[str, str]]:
     ]
 
 
-_CSS = """
-:root{--ink:#1d2330;--muted:#5d6676;--line:#dfe3ea;--bg:#fff;--soft:#f6f7f9;--accent:#0e7490;
---move:#166534;--move-bg:#dcfce7;--ft:#92400e;--ft-bg:#fef3c7;--keep:#991b1b;--keep-bg:#fee2e2;--more:#374151;--more-bg:#e5e7eb}
-*{box-sizing:border-box}
-body{margin:0 auto;max-width:1040px;padding:32px 24px 48px;background:var(--bg);color:var(--ink);
-font:15px/1.55 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"Helvetica Neue",Arial,sans-serif}
-h1{font-size:26px;margin:0 0 4px}h2{font-size:18px;margin:36px 0 10px;padding-bottom:6px;border-bottom:1px solid var(--line)}
-.sub{color:var(--muted);font-size:13px}
-.demo{background:#fff7ed;border:2px solid #f97316;color:#9a3412;font-weight:700;padding:10px 14px;border-radius:8px;margin:16px 0;letter-spacing:.02em}
-.cards{display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin:20px 0}
-.card{border:1px solid var(--line);border-radius:10px;padding:14px 16px;background:var(--soft)}
-.card span{display:block;color:var(--muted);font-size:13px}.card b{display:block;font-size:24px;margin-top:2px}
-.card.hi{border-color:var(--accent)}.card.hi b{color:var(--accent)}
-.tag{display:inline-block;font-size:11px;font-weight:700;letter-spacing:.04em;padding:1px 6px;border-radius:4px;background:#ffedd5;color:#9a3412;vertical-align:middle}
-table{width:100%;border-collapse:collapse;font-size:13.5px}
-th,td{text-align:left;padding:8px 8px;border-bottom:1px solid var(--line);vertical-align:top}
-th{font-size:12px;color:var(--muted);font-weight:600;text-transform:uppercase;letter-spacing:.03em}
-td.n,th.n{text-align:right;white-space:nowrap;font-variant-numeric:tabular-nums}
-.nm{color:var(--muted);font-style:italic;font-size:12.5px}
-.rec{display:inline-block;font-weight:700;font-size:12px;padding:2px 8px;border-radius:999px;white-space:nowrap}
-.r-move{background:var(--move-bg);color:var(--move)}.r-ft{background:var(--ft-bg);color:var(--ft)}
-.r-keep{background:var(--keep-bg);color:var(--keep)}.r-more{background:var(--more-bg);color:var(--more)}
-ul.why{margin:0;padding-left:16px}ul.why li{margin:0 0 2px}
-.note{color:var(--muted);font-size:13px}
-ul.limits li{margin-bottom:6px}
-footer{margin-top:40px;color:var(--muted);font-size:12px;border-top:1px solid var(--line);padding-top:10px}
-@media (max-width:720px){.cards{grid-template-columns:1fr}table{font-size:12.5px}}
-@media print{body{padding:0;max-width:none}.card{break-inside:avoid}tr{break-inside:avoid}}
-"""
-
-_REC_CLASS = {MOVE: "r-move", NEEDS_FINETUNE: "r-ft", KEEP: "r-keep", MORE_DATA: "r-more"}
+RULES_TEXT = (
+    "Recommendation rules: MOVE needs quality BETTER or NO MATERIAL DIFFERENCE, a measured owned cost, and a "
+    "positive saving at the high end of the cost CI. NEEDS FINETUNE: quality WORSE but format checks pass about as "
+    "often as the API model. KEEP ON API: quality WORSE with broken format, or no saving. NEEDS MORE DATA: too few "
+    "judged requests, an undecided CI, or no owned-cost measurement."
+)
 
 
 def render_html(report: Mapping[str, Any]) -> str:
-    e = lambda v: html.escape(str(v), quote=True)  # noqa: E731
-    demo = bool(report.get("demo"))
-    tag = ' <span class="tag">DEMO</span>' if demo else ""
-    totals = report["totals"]
-    parts: list[str] = [
-        "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\">",
-        "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">",
-        f"<title>{'DEMO ' if demo else ''}Throttle report: {e(report['candidate'])}</title>",
-        f"<style>{_CSS}</style></head><body>",
-        f"<h1>Own your intelligence: {e(report['candidate'])}{tag}</h1>",
-        f"<div class=\"sub\">Throttle report {e(report['generated_at'])} &middot; candidate model "
-        f"{e(report.get('candidate_model') or '-')} &middot; eval {e(report.get('eval_run_id') or 'none')} &middot; "
-        f"check {e(report.get('check_id') or 'none')}</div>",
-    ]
-    if demo:
-        parts.append(f"<div class=\"demo\" role=\"note\">{e(DEMO_BANNER)}. Every number on this page is DEMO.</div>")
-    parts.append("<div class=\"cards\">")
-    for i, (name, value) in enumerate(summary_lines(report)):
-        parts.append(f"<div class=\"card{' hi' if i == 2 else ''}\"><span>{e(name)}{tag}</span><b>{e(value)}</b></div>")
-    parts.append("</div>")
-    parts.append(f"<p class=\"note\">{e(totals['savings_note'])}.</p>")
-    if totals.get("owned_usd_per_month"):
-        owned = totals["owned_usd_per_month"]
-        floor = report["deployment"]["floor_usd_per_month"]
-        if totals.get("floor_applied"):
-            text = (f"Owned total for the MOVE types: {usd(owned['high'])}/mo, the always-on deployment floor. "
-                    "Their token cost at measured $/M is below it, and the floor applies once across all MOVE types.")
-        else:
-            text = (f"Owned total for the MOVE types: {usd(owned['point'])}/mo (95% CI {usd(owned['low'])} to "
-                    f"{usd(owned['high'])}), above the always-on deployment floor of {usd(floor)}/mo, "
-                    "which applies once across all MOVE types.")
-        parts.append(f"<p class=\"note\">{e(text)}</p>")
+    """The Meter page (see :mod:`throttle.own.meter`): self-contained, no scripts."""
 
-    parts.append(f"<h2>Per workload type{tag}</h2><table><thead><tr>"
-                 "<th>Type</th><th class=\"n\">Requests/mo</th><th class=\"n\">API $/mo</th>"
-                 "<th class=\"n\">Owned $/mo</th><th>Quality (win/tie/loss, net CI)</th>"
-                 "<th>Recommendation</th><th>Why</th></tr></thead><tbody>")
-    for w in report["workloads"]:
-        owned = w["owned_usd_per_month"]
-        owned_cell = (f"{e(usd(owned['point']))}<div class=\"nm\">{e(usd(owned['low']))}&ndash;{e(usd(owned['high']))}</div>"
-                      if owned else f"<span class=\"nm\">{e(w['owned_note'])}</span>")
-        api_cell = e(usd(w["api_usd_per_month"])) if w["api_usd_per_month"] is not None else f"<span class=\"nm\">{e(w['api_note'])}</span>"
-        req = f"{w['requests_per_month']:,.0f}" if w["requests_per_month"] is not None else "-"
-        q = w["quality"]
-        quality = e(_quality_text(q)) + (f"<div class=\"nm\">{e(q['verdict'])}</div>" if q else "")
-        why = "".join(f"<li>{e(r)}</li>" for r in w["reasons"])
-        parts.append(
-            f"<tr><td><b>{e(w['type'])}</b></td><td class=\"n\">{e(req)}</td><td class=\"n\">{api_cell}</td>"
-            f"<td class=\"n\">{owned_cell}</td><td>{quality}</td>"
-            f"<td><span class=\"rec {_REC_CLASS[w['recommendation']]}\">{e(w['recommendation'])}</span></td>"
-            f"<td><ul class=\"why\">{why}</ul></td></tr>"
-        )
-    parts.append("</tbody></table>")
-    parts.append("<p class=\"note\">Owned $/mo shows the point estimate and the 95% CI from the measured $/M; "
-                 "a type's owned cost here is its token cost only, before the deployment floor.</p>")
+    from . import meter
 
-    parts.append("<h2>How we got these numbers</h2><table><thead><tr><th>Number</th><th>Label</th><th>Source</th></tr></thead><tbody>")
-    for item in report["labels"]:
-        parts.append(f"<tr><td>{e(item['what'])}</td><td><b>{e(item['label'])}</b></td><td>{e(item['detail'])}</td></tr>")
-    parts.append("</tbody></table>")
-    parts.append("<p class=\"note\">Recommendation rules: MOVE needs quality BETTER or NO MATERIAL DIFFERENCE, a measured "
-                 "owned cost, and a positive saving at the high end of the cost CI. NEEDS FINETUNE: quality WORSE but "
-                 "format checks pass about as often as the API model. KEEP ON API: quality WORSE with broken format, "
-                 "or no saving. NEEDS MORE DATA: too few judged requests, an undecided CI, or no owned-cost measurement.</p>")
-    parts.append("<h2>What this does not prove</h2><ul class=\"limits\">")
-    parts += [f"<li>{e(item)}</li>" for item in report["does_not_prove"]]
-    parts.append("</ul>")
-    parts.append(f"<footer>Generated by <code>throttle {'demo' if demo else 'report'}</code>. "
-                 "Throttle helps companies own their intelligence. Works offline; no external assets.</footer>")
-    parts.append("</body></html>")
-    return "\n".join(parts) + "\n"
+    return meter.render(report, demo_banner=DEMO_BANNER, rules=RULES_TEXT)
 
 
 def _owned_gap(workload: Mapping[str, Any]) -> str:
