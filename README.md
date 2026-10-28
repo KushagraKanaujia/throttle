@@ -210,6 +210,136 @@ does not measure cost, so run `throttle check` on the new model before you
 switch. `throttle refresh --watch-hf ORG/MODEL` only checks Hugging Face for a
 newer revision or a sibling model.
 
+## Throttle for GitHub
+
+Throttle also watches your code. Each place in your code that calls OpenAI or
+Anthropic is a **job**. On every pull request that adds, edits or removes a
+job, Throttle leaves one comment: what that job costs on the API, whether your
+own model passed the tests for it, and what happens next.
+
+### Set up
+
+Add `.github/workflows/throttle.yml`:
+
+```yaml
+on: pull_request
+permissions: { contents: read, pull-requests: write }
+jobs:
+  throttle:
+    runs-on: ubuntu-latest   # or a runner in your cloud that can read ~/.throttle/own
+    steps:
+      - uses: actions/checkout@v4
+      - uses: KushagraKanaujia/throttle/.github/actions/throttle-pr@main
+```
+
+That is all. It runs in your CI with your workflow token, and there is no
+Throttle server. On a GitHub-hosted runner it sees only the code, so the
+comment lists the AI changes but no traffic costs. Run it on a runner that can
+read your Throttle data folder (input `data-dir`) to get costs and proof. Add
+`candidate-url`, `candidate-model` and `judge-model` to get a first look at
+new jobs. Keys go in as the *names* of env vars (`api-key-env`,
+`judge-key-env`), set from your secrets.
+
+Keep it on `pull_request`, never `pull_request_target`. On a public
+repository the comment and the job summary are public: anything in your data
+folder that the comment shows (costs, call counts) is visible to everyone, and
+a self-hosted runner that can read your data folder should not run workflows
+from forks. A pull request from a fork gets a read-only token, so the check
+goes to the job summary instead of a comment. Throttle only ever edits its own
+bot comment, never a comment someone else wrote. At most 5 new jobs per pull
+request get a first look (`max-first-looks`), and model answers in the comment
+are shown as plain code, so links and @mentions in them do nothing.
+
+Without GitHub, the same check runs anywhere:
+
+```sh
+throttle pr-check --base origin/main --head HEAD --markdown comment.md --json check.json
+```
+
+### What the comment says
+
+Money first, then proof, then the action. For each job:
+
+| What happens | When |
+| --- | --- |
+| **Ready to move** | Its own job eval passed, and your model costs less per call. Approve it with `throttle jobs approve`. |
+| **Passed, measure cost** | Its job eval passed, but there is no `throttle check` of your model yet. |
+| **Keep on the API** | Your model breaks the output format, or costs more per call. |
+| **Keep on the API for now** | Your model loses on quality but keeps the format. Its misses are saved as lessons for a later fine-tune. |
+| **Test it more** | New, or not enough judged calls yet. Stays on the API. |
+| **Back to testing** | It runs on your model today and this pull request changes its prompt, model, tools or JSON mode. When it merges, it goes back to the API until the new version passes. |
+| **Route retired** | The call is gone. When this merges, its route is removed. |
+
+The cost comes from captured calls that match the job, priced at list
+price. A monthly figure needs at least a day of captured traffic; before
+that it is per 1,000 calls. When the prompt changed, traffic from the old
+version is labelled "old version" and is not added to the monthly total.
+
+**First look.** A brand-new job has no traffic. If you set a candidate and a
+judge, Throttle has the judge write a few made-up inputs from the prompt
+(default 8), sends each to the API model and to your model, and has the judge
+compare the answers in both orders. It is labelled "first look, not enough
+data yet". It is not a verdict and it never moves anything. It costs one API
+call, one call to your model and two judge calls per input, on your keys.
+
+### Jobs follow the code
+
+```sh
+throttle jobs scan                       # list the AI calls in the code
+throttle jobs sync --repo .              # apply the code to the job list (run on merge to main)
+throttle jobs eval --repo . --candidate qwen72b@vllm --judge-model gpt-4.1 --judge-key-env OPENAI_API_KEY
+throttle jobs approve JOB --candidate qwen72b@vllm --url http://gpu-box:8000/v1 --model Qwen/Qwen2.5-72B-Instruct
+throttle jobs list | log JOB | undo JOB | pin JOB | unpin JOB | lessons
+```
+
+- A job's id is `path::function` (plus `#2` for a second call in one
+  function), or the name you tag it with. Its prompt is tracked separately,
+  so an edited prompt is the same job, changed.
+- `sync` retires removed jobs and their routes. When a moved job's prompt,
+  model, tools or JSON mode changes, its move is suspended and it goes back
+  to testing. A job that moved to another file with the same prompt keeps
+  its state.
+- `approve` needs a passing job eval of exactly the current version of the
+  call: same prompt, model, tools, JSON mode and call settings (few-shot
+  messages, tool schemas, temperature ...). The eval only counts captured
+  calls that match that version. A job whose prompt Throttle cannot read
+  (built at run time or imported from another module) is never moved, since
+  Throttle could not see it change.
+- Even before a sync, `throttle capture --route` serves a moved job from
+  your model only while the request still matches the version it was
+  approved on: every readable prompt template, the model, tools and JSON
+  mode. Anything else goes to the API. A changed call is never moved silently.
+- Once a job is tracked, only its own state decides where it runs. Workload
+  type routes apply to traffic that is not a tracked job.
+- Every fallback and every judged loss of a job is saved to
+  `~/.throttle/own/jobs/lessons/` with the API's answer and your model's
+  answer. Nothing trains on them yet; they are kept for the fine-tune loop.
+  First looks in pull requests never add lessons: made-up inputs from a pull
+  request that may never merge are not your traffic.
+
+**Tagging (optional).** Throttle matches traffic to jobs by prompt. To make
+it exact, and to keep a job's name when code moves, send a header:
+
+```python
+from throttle.own.tag import throttle_job
+client.chat.completions.create(model="gpt-4o-mini", messages=msgs, extra_headers=throttle_job("ticket-summary"))
+```
+
+In JavaScript, pass `{ headers: { "X-Throttle-Job": "ticket-summary" } }` as
+the request options. `throttle capture` reads the header and does not forward
+it. A `# throttle-job: ticket-summary` comment on the line above a call names
+it for pull request checks only.
+
+**What the scanner finds.** Python (parsed with the standard library):
+`chat.completions.create/parse/stream`, `responses.create`,
+`completions.create`, Anthropic `messages.create/stream`, `litellm`
+`completion`, and LangChain `ChatOpenAI`/`ChatAnthropic` (model only).
+JavaScript and TypeScript (a small tokenizer): the same SDK calls plus the
+Vercel AI SDK (`generateText`, `streamText`, `generateObject`,
+`streamObject`). It reads prompts that are literals, f-strings, template
+literals, `+` of strings, `.format()`, or a name set to one of those in the
+same function or file.
+
 ## How we keep numbers honest
 
 **Every number has a label.**
@@ -358,6 +488,15 @@ runs on real traffic, the results go here.
   that matters.
 - **The workload rules are simple.** They are a fixed list of patterns, not a
   model. `--embed` adds similarity clusters.
+- **The code scanner reads what it can see.** Prompts built at run time (from
+  a database, a template file, another module) cannot be read: the job is
+  still found and diffed by model, but there is no first look, and its
+  traffic is matched only by the `X-Throttle-Job` header. A JavaScript regular
+  expression that contains a quote or a bracket can confuse the tokenizer.
+  OpenAI Responses API traffic is found in code but not yet captured.
+- **Template matching needs fixed text.** A prompt needs at least 12 fixed
+  characters for Throttle to recognise its traffic. Two jobs with the same
+  prompt need a tag to tell them apart.
 
 ## Development
 

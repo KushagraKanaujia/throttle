@@ -1,0 +1,201 @@
+name: Throttle for GitHub
+description: >-
+  On every pull request that adds, edits or removes an OpenAI or Anthropic
+  call, leave one comment: what the AI job costs on the API, whether your own
+  model passed the tests for it, and what Throttle will do. Runs in your CI.
+author: Throttle
+branding:
+  icon: activity
+  color: green
+
+inputs:
+  data-dir:
+    description: >-
+      Throttle data folder on this runner (captured traffic, evals, the job
+      list). Empty means ~/.throttle/own. On a GitHub-hosted runner it is empty
+      unless an earlier step restores it, so the comment shows the code
+      changes and first looks, but no traffic costs.
+    required: false
+    default: ""
+  candidate:
+    description: Your model's label from `throttle shadow` (default, any).
+    required: false
+    default: ""
+  candidate-url:
+    description: Your model's OpenAI-compatible URL. With judge-model set, new jobs get a first look.
+    required: false
+    default: ""
+  candidate-model:
+    description: Your model's name on that server.
+    required: false
+    default: ""
+  judge-url:
+    description: Judge endpoint (default, the judge provider's public API).
+    required: false
+    default: ""
+  judge-model:
+    description: Judge model. Also writes the first-look test inputs.
+    required: false
+    default: ""
+  judge-provider:
+    description: openai or anthropic.
+    required: false
+    default: openai
+  api-url:
+    description: OpenAI-compatible API for first looks of OpenAI jobs (default, OpenAI).
+    required: false
+    default: ""
+  anthropic-url:
+    description: API for first looks of Anthropic jobs (default, Anthropic).
+    required: false
+    default: ""
+  api-key-env:
+    description: Name of the env var holding the OpenAI key (set it on this step from a secret). Never the key itself.
+    required: false
+    default: ""
+  anthropic-key-env:
+    description: Name of the env var holding the Anthropic key.
+    required: false
+    default: ""
+  judge-key-env:
+    description: Name of the env var holding the judge's key.
+    required: false
+    default: ""
+  candidate-key-env:
+    description: Name of the env var holding your model server's key, if it has one.
+    required: false
+    default: ""
+  first-look-inputs:
+    description: Made-up inputs per new job (each costs one API call, one call to your model and two judge calls).
+    required: false
+    default: "8"
+  max-first-looks:
+    description: At most this many new jobs per pull request get a first look (each one costs real API calls).
+    required: false
+    default: "5"
+  comment-author:
+    description: >-
+      Login that owns Throttle's comment when you post with your own app
+      token (e.g. my-app[bot]). Empty means any bot account; a person's
+      comment is never edited.
+    required: false
+    default: ""
+  prices:
+    description: Path to a JSON price file that adds or replaces API prices (labelled ASSUMED).
+    required: false
+    default: ""
+  comment:
+    description: Post or update the pull request comment (true or false).
+    required: false
+    default: "true"
+  throttle-version:
+    description: >-
+      pip spec for Throttle. Empty means this action's own ref of
+      github.com/KushagraKanaujia/throttle. A local path works too.
+    required: false
+    default: ""
+  github-token:
+    description: "Token for the comment. The workflow token works with `pull-requests: write`."
+    required: false
+    default: ${{ github.token }}
+
+outputs:
+  changed-jobs:
+    description: How many AI jobs this pull request adds, changes, moves or removes.
+    value: ${{ steps.check.outputs.changed-jobs }}
+  comment-file:
+    description: Path to the Markdown comment.
+    value: ${{ steps.check.outputs.comment-file }}
+
+runs:
+  using: composite
+  steps:
+    - name: Install Throttle
+      shell: bash
+      env:
+        SPEC: ${{ inputs.throttle-version }}
+        ACTION_REF: ${{ github.action_ref }}
+      run: |
+        py="$(command -v python3 || command -v python)"
+        venv="$RUNNER_TEMP/throttle-pr-venv"
+        if [ -z "$SPEC" ]; then
+          SPEC="git+https://github.com/KushagraKanaujia/throttle@${ACTION_REF:-main}"
+        fi
+        "$py" -m venv "$venv"
+        "$venv/bin/python" -m pip install --quiet --disable-pip-version-check "$SPEC"
+        echo "THROTTLE_PR_BIN=$venv/bin/throttle" >> "$GITHUB_ENV"
+
+    - name: Make sure both commits are here
+      shell: bash
+      env:
+        BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+      run: |
+        if [ -z "$BASE_SHA" ] || [ -z "$HEAD_SHA" ]; then
+          echo "::error::Throttle for GitHub runs on pull_request events."
+          exit 1
+        fi
+        for sha in "$BASE_SHA" "$HEAD_SHA"; do
+          git cat-file -e "$sha^{commit}" 2>/dev/null || git fetch --quiet --no-tags --depth=1 origin "$sha"
+        done
+
+    - name: Check the AI calls in this pull request
+      id: check
+      shell: bash
+      env:
+        BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        IN_DATA_DIR: ${{ inputs.data-dir }}
+        IN_CANDIDATE: ${{ inputs.candidate }}
+        IN_CANDIDATE_URL: ${{ inputs.candidate-url }}
+        IN_CANDIDATE_MODEL: ${{ inputs.candidate-model }}
+        IN_JUDGE_URL: ${{ inputs.judge-url }}
+        IN_JUDGE_MODEL: ${{ inputs.judge-model }}
+        IN_JUDGE_PROVIDER: ${{ inputs.judge-provider }}
+        IN_API_URL: ${{ inputs.api-url }}
+        IN_ANTHROPIC_URL: ${{ inputs.anthropic-url }}
+        IN_API_KEY_ENV: ${{ inputs.api-key-env }}
+        IN_ANTHROPIC_KEY_ENV: ${{ inputs.anthropic-key-env }}
+        IN_JUDGE_KEY_ENV: ${{ inputs.judge-key-env }}
+        IN_CANDIDATE_KEY_ENV: ${{ inputs.candidate-key-env }}
+        IN_INPUTS: ${{ inputs.first-look-inputs }}
+        IN_MAX_LOOKS: ${{ inputs.max-first-looks }}
+        IN_PRICES: ${{ inputs.prices }}
+      run: |
+        out="$RUNNER_TEMP/throttle-pr"
+        mkdir -p "$out"
+        args=(pr-check --repo "$GITHUB_WORKSPACE" --base "$BASE_SHA" --head "$HEAD_SHA"
+              --markdown "$out/comment.md" --json "$out/check.json"
+              --judge-provider "$IN_JUDGE_PROVIDER" --first-look-inputs "$IN_INPUTS"
+              --max-first-looks "$IN_MAX_LOOKS")
+        add() { if [ -n "$2" ]; then args+=("$1" "$2"); fi; }
+        add --dir "$IN_DATA_DIR"
+        add --candidate "$IN_CANDIDATE"
+        add --candidate-url "$IN_CANDIDATE_URL"
+        add --candidate-model "$IN_CANDIDATE_MODEL"
+        add --judge-url "$IN_JUDGE_URL"
+        add --judge-model "$IN_JUDGE_MODEL"
+        add --api-url "$IN_API_URL"
+        add --anthropic-url "$IN_ANTHROPIC_URL"
+        add --api-key-env "$IN_API_KEY_ENV"
+        add --anthropic-key-env "$IN_ANTHROPIC_KEY_ENV"
+        add --judge-key-env "$IN_JUDGE_KEY_ENV"
+        add --candidate-key-env "$IN_CANDIDATE_KEY_ENV"
+        add --prices "$IN_PRICES"
+        "$THROTTLE_PR_BIN" "${args[@]}"
+        changed="$(python3 -c 'import json,sys; print(len(json.load(open(sys.argv[1]))["jobs"]))' "$out/check.json")"
+        echo "changed-jobs=$changed" >> "$GITHUB_OUTPUT"
+        echo "comment-file=$out/comment.md" >> "$GITHUB_OUTPUT"
+        cat "$out/comment.md" >> "$GITHUB_STEP_SUMMARY"
+
+    - name: Post or update the comment
+      if: inputs.comment == 'true'
+      shell: bash
+      env:
+        GITHUB_TOKEN: ${{ inputs.github-token }}
+        COMMENT_FILE: ${{ steps.check.outputs.comment-file }}
+        COMMENT_AUTHOR: ${{ inputs.comment-author }}
+      run: |
+        args=(pr-comment --body-file "$COMMENT_FILE")
+        if [ -n "$COMMENT_AUTHOR" ]; then args+=(--author "$COMMENT_AUTHOR"); fi
+        "$THROTTLE_PR_BIN" "${args[@]}"

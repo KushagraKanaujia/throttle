@@ -102,6 +102,11 @@ open-weight model you run can take over without losing quality, then move it.
 Then: throttle route approve ... + throttle capture --route (serve it, with API
 fallback), throttle route savings, and throttle refresh when a new open model ships.
 
+In your code: throttle jobs scan finds every OpenAI/Anthropic call, and
+throttle pr-check (or the Throttle for GitHub action) comments on each pull
+request that adds, edits or removes one: its API cost, the proof, and what
+happens next.
+
 Serving your own model: check ($/M tokens with 95% CIs), autotune, coldstart,
 compare, gate, savings, watch, ui. Evidence runs: plan / smoke / benchmark / golden.
 No server yet? Run 'throttle demo'.
