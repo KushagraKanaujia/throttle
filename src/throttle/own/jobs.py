@@ -591,6 +591,7 @@ def run_job_eval(
     transport: httpx.AsyncBaseTransport | None = None,
     run_id: str | None = None,
     classify: Callable[[records.Exchange, records.Normalized], str] | None = None,
+    max_per_job: int | None = None,
 ) -> dict[str, Any]:
     """Evaluate the candidate per job, on traffic that fits each job's
     current prompt. Same rules as ``throttle eval``. Writes
@@ -606,6 +607,8 @@ def run_job_eval(
     for key in excluded:
         sets.setdefault(key, [])
     sets = dict(sorted(sets.items()))
+    if max_per_job is not None:
+        sets = {k: v[:max(0, max_per_job)] for k, v in sets.items()}
     outcomes: dict[str, ev.TypeOutcome] | None = None
     stopped = None
     if judge_config is not None and sets:
@@ -711,6 +714,9 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
     e.add_argument("--judge-key-env", default=None, metavar="VAR")
     e.add_argument("--no-judge", action="store_true")
     e.add_argument("--max-judge-calls", type=int, default=600)
+    e.add_argument("--judge-timeout", type=float, default=120.0, help="seconds per judge call (default 120)")
+    e.add_argument("--judge-concurrency", type=int, default=4, help="judge calls in flight (default 4)")
+    e.add_argument("--max-per-job", type=int, default=None, metavar="N", help="judge at most N calls per job")
     e.add_argument("--margin", type=float, default=0.05)
     e.add_argument("--min-n", type=int, default=30)
     e.add_argument("--json", action="store_true")
@@ -817,13 +823,15 @@ def _eval(args: argparse.Namespace, root: Path, transport: httpx.AsyncBaseTransp
         url = args.judge_url or judge_mod.DEFAULT_URLS[args.judge_provider]
         if args.judge_provider == records.PROVIDER_OPENAI and args.judge_url:
             url = chat_url(args.judge_url)
-        config = judge_mod.JudgeConfig(provider=args.judge_provider, model=args.judge_model, url=url, api_key=api_key)
+        config = judge_mod.JudgeConfig(provider=args.judge_provider, model=args.judge_model, url=url, api_key=api_key,
+                                       timeout=args.judge_timeout)
         budget = judge_mod.JudgeBudget(max_calls=max(0, args.max_judge_calls))
     sites, _ = _sites(args)
     print(f"Judging your model per job on captured calls that fit each job's current prompt "
           f"({len(sites)} jobs in the code{', judge asked twice per call' if config else ''})...", file=sys.stderr)
     doc = run_job_eval(root, args.candidate, sites, judge_config=config, budget=budget, margin=args.margin,
-                       min_n=args.min_n, transport=transport)
+                       min_n=args.min_n, transport=transport, judge_concurrency=args.judge_concurrency,
+                       max_per_job=args.max_per_job)
     if args.json:
         print(json.dumps(doc, indent=2, sort_keys=True))
         return EXIT_OK

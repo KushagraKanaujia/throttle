@@ -180,6 +180,25 @@ class Answer:
         return self.error is None and bool(self.text)
 
 
+RETRIES = 2            # transport failures and 429/5xx are retried with backoff
+BACKOFF_SECONDS = 2.0
+
+
+async def _post(client: httpx.AsyncClient, url: str, **kwargs: Any) -> httpx.Response:
+    """POST with retries on a transport error, 429 or 5xx (2 s, then 4 s)."""
+    for attempt in range(RETRIES + 1):
+        try:
+            response = await client.post(url, **kwargs)
+        except httpx.HTTPError:
+            if attempt == RETRIES:
+                raise
+        else:
+            if response.status_code != 429 and response.status_code < 500 or attempt == RETRIES:
+                return response
+        await asyncio.sleep(BACKOFF_SECONDS * (2 ** attempt))
+    raise AssertionError("unreachable")
+
+
 async def call_openai(client: httpx.AsyncClient, url: str, model: str, system: str | None, user: str, *,
                       api_key: str | None, max_tokens: int, wants_json: bool, timeout: float) -> Answer:
     messages = ([{"role": "system", "content": system}] if system is not None else []) + [{"role": "user", "content": user}]
@@ -190,7 +209,7 @@ async def call_openai(client: httpx.AsyncClient, url: str, model: str, system: s
     if api_key:
         headers["authorization"] = f"Bearer {api_key}"
     try:
-        response = await client.post(chat_url(url), json=body, headers=headers, timeout=timeout)
+        response = await _post(client, chat_url(url), json=body, headers=headers, timeout=timeout)
     except httpx.HTTPError as exc:
         return Answer(None, None, records.Usage(), f"could not reach {chat_url(url)}: {type(exc).__name__}")
     if response.status_code != 200:
@@ -215,7 +234,7 @@ async def call_anthropic(client: httpx.AsyncClient, url: str, model: str, system
     if api_key:
         headers["x-api-key"] = api_key
     try:
-        response = await client.post(target, json=body, headers=headers, timeout=timeout)
+        response = await _post(client, target, json=body, headers=headers, timeout=timeout)
     except httpx.HTTPError as exc:
         return Answer(None, None, records.Usage(), f"could not reach {target}: {type(exc).__name__}")
     if response.status_code != 200:

@@ -78,7 +78,8 @@ async def test_first_look_runs_and_is_labelled(tmp_path):
     assert jobs.lesson_counts(tmp_path)["app/reply.py::draft_reply"]["first_look_loss"] == 3
 
 
-async def test_api_failure_is_counted_not_judged(tmp_path):
+async def test_api_failure_is_counted_not_judged(tmp_path, monkeypatch):
+    monkeypatch.setattr(fl, "BACKOFF_SECONDS", 0.0)
     calls: list = []
     doc = await fl.run_first_look(site(), config(), transport=fake_world(calls, api_status=500), prices=pricing.load_prices())
     assert doc["api_errors"] == 3 and doc["judged"] == 0 and doc["api_cost_per_call_usd"] is None
@@ -110,3 +111,19 @@ def test_cached_first_look_is_reused(tmp_path):
     assert len(calls) == n and again["cached"] and again["losses"] == first["losses"]
     other = fl.cached_or_run(site(), config(inputs=2), root=tmp_path, transport=fake_world(calls), prices=pricing.load_prices())
     assert len(calls) > n and other["inputs"] == 2
+
+
+async def test_busy_server_is_retried_with_backoff(monkeypatch):
+    monkeypatch.setattr(fl, "BACKOFF_SECONDS", 0.0)
+    seen = []
+
+    def handler(request):
+        seen.append(1)
+        if len(seen) < 3:
+            return httpx.Response(503, json={})
+        return httpx.Response(200, json={"choices": [{"message": {"content": "ok"}, "finish_reason": "stop"}]})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        answer = await fl.call_openai(client, "http://x/v1", "m", None, "hi", api_key=None, max_tokens=5,
+                                      wants_json=False, timeout=5)
+    assert answer.ok and len(seen) == 3

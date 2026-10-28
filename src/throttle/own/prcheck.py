@@ -603,6 +603,7 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
     parser.add_argument("--judge-model", default=None, help="judge for first looks; also writes their test inputs")
     parser.add_argument("--judge-provider", choices=judge_mod.PROVIDERS, default=records.PROVIDER_OPENAI)
     parser.add_argument("--judge-key-env", default=None, metavar="VAR")
+    parser.add_argument("--timeout", type=float, default=180.0, help="seconds per model call in a first look (default 180)")
     parser.add_argument("--api-url", default=None,
                         help="OpenAI-compatible API for first looks of OpenAI jobs (default https://api.openai.com/v1)")
     parser.add_argument("--api-key-env", default=None, metavar="VAR", help="environment variable with that API's key")
@@ -627,14 +628,14 @@ def first_look_config(args: argparse.Namespace) -> fl.FirstLookConfig | None:
     if args.judge_provider == records.PROVIDER_OPENAI and args.judge_url:
         judge_url = chat_url(args.judge_url)
     judge = judge_mod.JudgeConfig(provider=args.judge_provider, model=args.judge_model, url=judge_url,
-                                  api_key=api_key_from_env(args.judge_key_env))
+                                  api_key=api_key_from_env(args.judge_key_env), timeout=args.timeout)
     return fl.FirstLookConfig(
         candidate_url=args.candidate_url, candidate_model=args.candidate_model,
         candidate_label=args.candidate or args.candidate_model, judge=judge,
         api_url=args.api_url, api_key=api_key_from_env(args.api_key_env),
         anthropic_url=args.anthropic_url, anthropic_key=api_key_from_env(args.anthropic_key_env),
         candidate_key=api_key_from_env(args.candidate_key_env),
-        api_model=args.api_model, inputs=args.first_look_inputs,
+        api_model=args.api_model, inputs=args.first_look_inputs, timeout=args.timeout,
     )
 
 
