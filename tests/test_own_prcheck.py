@@ -85,7 +85,8 @@ def test_run_check_actions_costs_and_markdown(tmp_path):
     assert "### Throttle: 3 AI calls changed in this pull request" in md
     assert "| `app/support.py::summarize` | prompt edited |" in md and "(old version)" in md
     assert "**Back to testing**" in md and "**Route retired**" in md and "**Test it more**" in md
-    assert "—" not in md and "–" not in md      # no dashes that read like AI copy
+    assert "\n\n1 other AI job in this code is unchanged." in md   # not glued to the table
+    assert "\u2014" not in md and "\u2013" not in md      # no dashes that read like AI copy
 
 
 def test_passing_job_eval_and_owned_cost_lead_to_move(tmp_path):

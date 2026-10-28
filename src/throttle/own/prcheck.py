@@ -459,6 +459,7 @@ def render_markdown(doc: Mapping[str, Any]) -> str:
         ]) + " |")
     if doc.get("unchanged_jobs"):
         n_same = doc["unchanged_jobs"]
+        out.append("")
         out.append(f"{n_same} other AI job{'s' if n_same != 1 else ''} in this code {'are' if n_same != 1 else 'is'} unchanged.")
     out.append("")
     for row in rows:
@@ -511,6 +512,10 @@ def _details(row: Mapping[str, Any]) -> list[str]:
     elif look and look.get("skipped"):
         lines.append(f"- **Proof:** none yet. No first look: {look['skipped']}.")
     elif look:
+        if row.get("old_quality"):
+            oq = row["old_quality"]
+            lines.append(f"- **The old prompt, on real calls:** better on {oq['wins']}, same on {oq['ties']}, worse on "
+                         f"{oq['losses']} of {oq['judged']} judged ({oq['verdict']}). The new prompt is tested again from scratch.")
         lines += _first_look_lines(look)
     elif row.get("old_quality"):
         oq = row["old_quality"]
