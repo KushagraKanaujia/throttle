@@ -359,6 +359,7 @@ def _receipt(report: Mapping[str, Any]) -> str:
     ]
     total_rows = "".join(f'<div class="tot"><span>{e(a)}</span><span class="leader"></span><b>{e(b)}</b></div>' for a, b in rows)
     saved = money(savings) if savings is not None else ("not measured" if report.get("owned_cost") is None else "no claim")
+    saved_cls = "" if savings is not None else ' class="nm"'
     when = str(report.get("generated_at") or "")[:16].replace("T", " ")
     return (
         f'<section class="receipt-wrap"><div class="sec-head"><h2>The receipt{t}</h2>'
@@ -368,7 +369,7 @@ def _receipt(report: Mapping[str, Any]) -> str:
         f'<div class="rc-meta"><span>{e(when)} UTC</span><span>model {e(report.get("candidate_model") or report.get("candidate"))}</span>'
         f'<span>eval {e(report.get("eval_run_id") or "none")}</span></div></div>'
         f'<ol class="lines">{"".join(lines)}</ol>'
-        f'<div class="totals">{total_rows}<div class="tot grand"><span>SAVED PER MONTH</span><span class="leader"></span><b{"" if savings is not None else ' class="nm"'}>{e(saved)}</b></div>'
+        f'<div class="totals">{total_rows}<div class="tot grand"><span>SAVED PER MONTH</span><span class="leader"></span><b{saved_cls}>{e(saved)}</b></div>'
         '<p class="fine">Saved = API bill of the jobs that move, minus your model at the high end of its 95% range. '
         'The always-on GPU is counted once. Per-job model cost above is token cost only; the GPU floor is in '
         '"Your model, all-in".</p></div>'
