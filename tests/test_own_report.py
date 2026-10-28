@@ -185,7 +185,7 @@ def test_no_owned_or_savings_number_without_check(tmp_path):
     assert "not measured: run `throttle check --url ... --model open-70b`" in page
     assert "Conservative monthly savings" in page
     # The only $ figures are API spend: none of the owned/savings cells carry one.
-    owned_cells = re.findall(r'<b class="cost-own">(.*?)</b>', page)
+    owned_cells = re.findall(r'<b class="cost-own[^"]*">(.*?)</b>', page)
     assert owned_cells and all(c == "not measured" for c in owned_cells)
     assert re.findall(r'<b class="cost-api">\$', page)
     assert "NOT MEASURED" in page and 'aria-label="no savings claim"' in page

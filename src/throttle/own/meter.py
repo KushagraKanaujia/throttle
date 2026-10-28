@@ -266,7 +266,9 @@ def _instrument(report: Mapping[str, Any]) -> str:
             note += " The always-on GPU sets your model's cost here, so the likely figure is the same."
     elif not measured:
         lamp, lamp_text = "api", "NOT MEASURED"
-        note = "No savings claim: your model's running cost was not measured yet. " + str(report.get("not_measured_hint") or "")
+        hint = str(report.get("not_measured_hint") or "")
+        hint = hint[len("not measured: "):] if hint.startswith("not measured: ") else hint
+        note = "No savings claim: your model's running cost was not measured yet." + (f" To measure it, {hint}." if hint else "")
     else:
         lamp, lamp_text = "api", "NO CLAIM"
         note = "No savings claim. " + str(totals.get("savings_note") or "").rstrip(".") + "."
@@ -340,7 +342,7 @@ def _receipt(report: Mapping[str, Any]) -> str:
             f'<span class="leader"></span><span class="ln-status st-{cls}">{e(status)}</span></div>'
             f'<div class="ln-money"><span class="m-api">API <b class="cost-api">{e(api_text)}</b>/mo</span>'
             f'<span class="m-arrow">&rarr;</span><span class="m-own">{"your model" if rec == MOVE else "on your model it would be"} '
-            f'<b class="cost-own">{e(own_text)}</b>/mo</span>'
+            f'<b class="cost-own{"" if owned else " nm"}">{e(own_text)}</b>{"/mo" if owned else ""}</span>'
             f'<span class="m-req">{e(f"{reqs:,.0f} requests/mo" if reqs is not None else "")}</span></div>'
             f'<div class="ln-bars"><span class="bar-api" style="width:{api_w:.1f}%"></span>'
             f'<span class="bar-own" style="width:{own_w:.1f}%"></span></div>'
@@ -366,7 +368,7 @@ def _receipt(report: Mapping[str, Any]) -> str:
         f'<div class="rc-meta"><span>{e(when)} UTC</span><span>model {e(report.get("candidate_model") or report.get("candidate"))}</span>'
         f'<span>eval {e(report.get("eval_run_id") or "none")}</span></div></div>'
         f'<ol class="lines">{"".join(lines)}</ol>'
-        f'<div class="totals">{total_rows}<div class="tot grand"><span>SAVED PER MONTH</span><span class="leader"></span><b>{e(saved)}</b></div>'
+        f'<div class="totals">{total_rows}<div class="tot grand"><span>SAVED PER MONTH</span><span class="leader"></span><b{"" if savings is not None else ' class="nm"'}>{e(saved)}</b></div>'
         '<p class="fine">Saved = API bill of the jobs that move, minus your model at the high end of its 95% range. '
         'The always-on GPU is counted once. Per-job model cost above is token cost only; the GPU floor is in '
         '"Your model, all-in".</p></div>'
@@ -607,7 +609,8 @@ background:radial-gradient(circle at 8px 0,var(--paper) 6px,transparent 6.5px) 0
 .st-own{color:var(--own-ink)}.st-api{color:var(--api-ink)}.st-test,.st-wait{color:var(--test-ink)}
 .ln-money{display:flex;flex-wrap:wrap;align-items:baseline;gap:6px 10px;margin:8px 0 0 64px;font-size:13px;color:var(--ink2)}
 .ln-money b{font-size:15px}.cost-api{color:var(--api-ink)}.cost-own{color:var(--own-ink)}
-.m-arrow{color:var(--muted)}.m-req{margin-left:auto;color:var(--muted);font-size:11.5px}
+.m-arrow{color:var(--muted)}.cost-own.nm{color:var(--muted);font-size:13px;font-weight:600}
+.tot.grand b.nm{color:#bdb6a8;font-size:15px}.m-req{margin-left:auto;color:var(--muted);font-size:11.5px}
 .ln-bars{position:relative;margin:7px 0 0 64px;height:6px;background:var(--paper2);border-radius:3px;overflow:hidden}
 .bar-api{position:absolute;left:0;top:0;bottom:0;background:var(--api);opacity:.85;border-radius:3px}
 .bar-own{position:absolute;left:0;top:0;bottom:0;background:var(--own);border-radius:3px}
