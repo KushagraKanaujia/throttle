@@ -231,8 +231,10 @@ def build(root: Path, out: Path, label: str, scale: int, gpu_hourly: float, sour
     eval_doc = report_mod.load_eval(root, label)
     models = [m for m in ((eval_doc or {}).get("candidate_model"), label) if m]
     record = report_mod.load_check(root / "checks", models)
+    exchanges = list(records.iter_exchanges(root))
+    source = {**source, "requests": len(exchanges)}
     report = report_mod.build_report(
-        list(records.iter_exchanges(root)), pricing_mod.load_prices(prices_path), candidate=label,
+        exchanges, pricing_mod.load_prices(prices_path), candidate=label,
         eval_doc=eval_doc, check_record=record, gpu_hourly_rate=gpu_hourly, gpus=1,
         traffic_scale=scale, source=source,
     )
