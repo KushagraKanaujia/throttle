@@ -48,8 +48,9 @@ def make_app(root, owned=lambda req: httpx.Response(200, json=owned_answer()), *
     return app, upstream, owned_rec
 
 
-async def post(app, system, user, headers=None):
+async def post(app, system, user, headers=None, **extra):
     body = {"model": "gpt-4o-mini", "messages": [{"role": "system", "content": system}, {"role": "user", "content": user}]}
+    body.update(extra)
     async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://capture") as client:
         resp = await client.post("/v1/chat/completions", content=json.dumps(body).encode(),
                                  headers={"content-type": "application/json", **(headers or {})})
@@ -64,7 +65,7 @@ def move(root, job=JOB):
     entry.status = jobs.MOVED
     entry.route = {"candidate_label": "qwen", "url": "http://gpu:8000/v1", "model": "qwen-7b", "mode": "live",
                    "approved_eval_run_id": "jobeval-1", "eval_verdict": "BETTER",
-                   "prompt_fingerprint": entry.call_site.prompt_fingerprint}
+                   "prompt_fingerprint": entry.call_site.prompt_fingerprint, "site_key": entry.call_site.approval_key}
     jobs.save_registry(root, registry)
 
 
@@ -129,3 +130,28 @@ async def test_capture_without_router_tags_jobs_from_header_and_registry(tmp_pat
     got = [e.job for e in r.iter_exchanges(tmp_path)]
     assert got == ["my-job", "app/triage.py::triage", None]
     assert all("x-throttle-job" not in {k.lower() for k in req.headers} for req in upstream.seen)
+
+
+async def test_moved_job_is_not_served_when_the_request_is_another_version_of_the_call(tmp_path):
+    # The code shipped a new model, tools, JSON mode or user prompt before
+    # anyone ran `jobs sync`. None of these was approved, so all go to the API.
+    move(tmp_path)
+    app, upstream, owned = make_app(tmp_path)
+    tool = [{"type": "function", "function": {"name": "refund", "parameters": {"type": "object"}}}]
+    await post(app, SUMMARY, "Ticket: a", model="gpt-4o")
+    await post(app, SUMMARY, "Ticket: a", tools=tool)
+    await post(app, SUMMARY, "Ticket: a", response_format={"type": "json_object"})
+    await post(app, SUMMARY, "Translate this ticket to French: a")      # user prompt edited, system kept
+    assert len(upstream.seen) == 4 and not owned.seen
+    resp = await post(app, SUMMARY, "Ticket: a")                        # the approved version still moves
+    assert resp.headers.get("x-throttle-served-by") == "owned"
+
+
+async def test_a_route_not_tied_to_this_version_of_the_call_never_serves(tmp_path):
+    move(tmp_path)
+    registry = jobs.load_registry(tmp_path)
+    registry[JOB].route.pop("site_key")             # approved before call settings were tracked
+    jobs.save_registry(tmp_path, registry)
+    app, upstream, owned = make_app(tmp_path)
+    await post(app, SUMMARY, "Ticket: a")
+    assert len(upstream.seen) == 1 and not owned.seen

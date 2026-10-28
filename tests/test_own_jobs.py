@@ -64,7 +64,8 @@ def _moved(root, job="app/support.py::summarize", fingerprint=None, run_id="jobe
     entry.status = jobs.MOVED
     entry.route = {"candidate_label": "qwen", "url": "http://gpu:8000/v1", "model": "qwen-7b",
                    "approved_eval_run_id": run_id, "eval_verdict": ev.NO_DIFF, "mode": "live",
-                   "prompt_fingerprint": fingerprint or entry.call_site.prompt_fingerprint}
+                   "prompt_fingerprint": fingerprint or entry.call_site.prompt_fingerprint,
+                   "site_key": entry.call_site.approval_key}
     jobs.save_registry(root, registry)
 
 
@@ -104,16 +105,17 @@ def test_sync_adds_suspends_retires_and_follows_moves(tmp_path):
 def test_approve_job_needs_a_passing_eval_of_the_current_prompt(tmp_path):
     jobs.sync(tmp_path, sites())
     job = "app/support.py::summarize"
-    fp = jobs.load_registry(tmp_path)[job].call_site.prompt_fingerprint
+    site = jobs.load_registry(tmp_path)[job].call_site
+    fp = site.prompt_fingerprint
     entry, reason = jobs.approve_job(tmp_path, job, "qwen", "http://gpu/v1", "qwen-7b")
     assert entry is None and "no job eval" in reason
     write_job_eval(tmp_path, job, ev.NO_DIFF, "an-older-prompt")
     entry, reason = jobs.approve_job(tmp_path, job, "qwen", "http://gpu/v1", "qwen-7b")
-    assert entry is None and "older prompt" in reason
-    write_job_eval(tmp_path, job, ev.WORSE, fp, ts="2026-10-27T11:00:00.000Z")
+    assert entry is None and "older version" in reason
+    write_job_eval(tmp_path, job, ev.WORSE, site, ts="2026-10-27T11:00:00.000Z")
     entry, reason = jobs.approve_job(tmp_path, job, "qwen", "http://gpu/v1", "qwen-7b")
     assert entry is None and "WORSE" in reason
-    run = write_job_eval(tmp_path, job, ev.BETTER, fp, ts="2026-10-27T12:00:00.000Z")
+    run = write_job_eval(tmp_path, job, ev.BETTER, site, ts="2026-10-27T12:00:00.000Z")
     entry, reason = jobs.approve_job(tmp_path, job, "qwen", "http://gpu/v1", "other-model")
     assert entry is None and "not other-model" in reason
     entry, reason = jobs.approve_job(tmp_path, job, "qwen", "http://gpu/v1", "qwen-7b")
@@ -190,5 +192,60 @@ def test_job_eval_groups_by_job_and_current_prompt(tmp_path):
     # every judged loss is saved as a lesson with both answers
     counts = jobs.lesson_counts(tmp_path)
     assert counts["app/support.py::summarize"]["judged_loss"] == 4
-    found = jobs.latest_job_result(tmp_path, "app/support.py::summarize", "qwen", summary["prompt_fingerprint"])
+    found = jobs.latest_job_result(tmp_path, "app/support.py::summarize", "qwen", summary["site_key"])
     assert found and found[1]["verdict"] == ev.WORSE
+
+
+def test_a_suspended_move_cannot_be_reapproved_on_the_old_versions_eval(tmp_path):
+    # Same prompt, new model: the old eval (gpt-4o-mini's answers) says
+    # nothing about the new version, so approve must refuse it.
+    jobs.sync(tmp_path, sites())
+    job = "app/support.py::summarize"
+    write_job_eval(tmp_path, job, ev.BETTER, jobs.load_registry(tmp_path)[job].call_site)
+    assert jobs.approve_job(tmp_path, job, "qwen", "http://gpu/v1", "qwen-7b")[0].status == jobs.MOVED
+    events = jobs.sync(tmp_path, sites({**BASE, "app/support.py": py_call("summarize", SUMMARY, model="gpt-4.1")}))
+    assert [e.event for e in events] == ["suspended"]
+    entry, reason = jobs.approve_job(tmp_path, job, "qwen", "http://gpu/v1", "qwen-7b")
+    assert entry is None and "older version" in reason
+    assert jobs.load_registry(tmp_path)[job].status == jobs.TESTING
+
+
+def test_tool_schema_or_few_shot_edits_suspend_a_move(tmp_path):
+    tools_a = ", tools=[{'type': 'function', 'function': {'name': 'lookup'}}]"
+    tools_b = ", tools=[{'type': 'function', 'function': {'name': 'delete_account'}}]"
+    before = sites({"a.py": py_call("f", SUMMARY, extra=tools_a)})[0]
+    after = sites({"a.py": py_call("f", SUMMARY, extra=tools_b)})[0]
+    assert before.prompt_fingerprint == after.prompt_fingerprint
+    assert jobs.changes(before, after) == ["call settings edited (messages, tools, schema or options)"]
+    hot = sites({"a.py": py_call("f", SUMMARY, extra=", temperature=1.5")})[0]
+    cold = sites({"a.py": py_call("f", SUMMARY, extra=", temperature=0")})[0]
+    assert jobs.changes(cold, hot) and cold.approval_key != hot.approval_key
+    # renaming a variable or reformatting is not a change
+    renamed = sites({"a.py": py_call("f", SUMMARY, "Ticket: {t}").replace("(ticket)", "(t)")})[0]
+    assert jobs.changes(sites({"a.py": py_call("f", SUMMARY)})[0], renamed) == []
+
+
+def test_a_job_whose_prompt_cannot_be_read_is_never_approved(tmp_path):
+    code = ("from prompts import SYSTEM\n"
+            "def f(q):\n"
+            "    return client.chat.completions.create(model='gpt-4o-mini', extra_headers=throttle_job('imported'),\n"
+            "        messages=[{'role': 'system', 'content': SYSTEM}, {'role': 'user', 'content': q}])\n")
+    site = sites({"a.py": code})[0]
+    assert site.job == "imported" and site.prompt_fingerprint is None
+    jobs.sync(tmp_path, [site])
+    write_job_eval(tmp_path, "imported", ev.BETTER, site)
+    entry, reason = jobs.approve_job(tmp_path, "imported", "qwen", "http://gpu/v1", "qwen-7b")
+    assert entry is None and "cannot read the prompt" in reason
+
+
+def test_job_eval_only_counts_calls_of_this_version(tmp_path):
+    # traffic from before a model change is not proof for the new model
+    for i in range(3):
+        ex = exchange(SUMMARY, f"Ticket: {i}", model="gpt-4o-mini")
+        r.append_exchange(ex, tmp_path)
+        r.append_shadow(shadow(ex.id), tmp_path)
+    new = sites({"app/support.py": py_call("summarize", SUMMARY, model="gpt-4.1")})
+    doc = jobs.run_job_eval(tmp_path, "qwen", new, judge_config=None, min_n=1)
+    assert "app/support.py::summarize" not in doc["jobs"]
+    doc = jobs.run_job_eval(tmp_path, "qwen", sites(), judge_config=None, min_n=1)
+    assert doc["jobs"]["app/support.py::summarize"]["n"] == 3

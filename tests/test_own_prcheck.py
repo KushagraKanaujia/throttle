@@ -46,7 +46,8 @@ def setup(tmp_path):
     registry = jobs.load_registry(data)
     entry = registry["app/support.py::summarize"]
     entry.status = jobs.MOVED
-    entry.route = {"candidate_label": "qwen", "model": "qwen-7b", "url": "u", "prompt_fingerprint": entry.call_site.prompt_fingerprint}
+    entry.route = {"candidate_label": "qwen", "model": "qwen-7b", "url": "u", "prompt_fingerprint": entry.call_site.prompt_fingerprint,
+                   "site_key": entry.call_site.approval_key}
     jobs.save_registry(data, registry)
     return repo, base, head, data
 
@@ -93,8 +94,8 @@ def test_passing_job_eval_and_owned_cost_lead_to_move(tmp_path):
     repo, base, _, data = setup(tmp_path)
     head = commit_files(repo, {"app/triage.py": py_call("triage", TRIAGE, "{ticket}", model="gpt-4.1-mini")}, "model")
     head_sites = scan.scan_ref(repo, head)
-    fp = [s for s in head_sites if s.job == "app/triage.py::triage"][0].prompt_fingerprint
-    write_job_eval(data, "app/triage.py::triage", ev.NO_DIFF, fp)
+    new_site = [s for s in head_sites if s.job == "app/triage.py::triage"][0]
+    write_job_eval(data, "app/triage.py::triage", ev.NO_DIFF, new_site)
     doc = pc.run_check(data, scan.scan_ref(repo, base), head_sites, base_ref=base, head_ref=head,
                        options=pc.Options(candidate="qwen"))
     row = [x for x in doc["jobs"] if x["job"] == "app/triage.py::triage"][0]
@@ -144,6 +145,58 @@ def test_first_look_for_new_job(tmp_path):
     md = pc.render_markdown(doc)
     assert "first look: as good on 2 of 2" in md
     assert "**Proof (first look, not enough data yet):**" in md and "This is not a verdict and moves nothing." in md
+
+
+def _look_world(answer="ok"):
+    judged = judge_prefers(None)
+
+    def handler(request):
+        body = json.loads(request.content)
+        if request.url.host == "judge.test":
+            if body["messages"][0]["content"] == fl.GEN_SYSTEM:
+                return httpx.Response(200, json={"choices": [{"message": {"content": '{"examples": [{"ticket": "a"}, {"ticket": "b"}]}'}}]})
+            return judged(request)
+        return httpx.Response(200, json={"choices": [{"message": {"content": answer}, "finish_reason": "stop"}],
+                                         "usage": {"prompt_tokens": 100, "completion_tokens": 10}})
+
+    return handler
+
+
+def _look_config(inputs=2):
+    judge = judge_mod.JudgeConfig(provider="openai", model="judge-m", url="http://judge.test/v1/chat/completions")
+    return fl.FirstLookConfig(candidate_url="http://cand.test/v1", candidate_model="qwen-7b", candidate_label="qwen",
+                              judge=judge, api_url="http://api.test/v1", inputs=inputs)
+
+
+def test_pr_check_first_looks_are_capped_write_no_lessons_and_render_answers_inert(tmp_path):
+    repo, base, head, data = setup(tmp_path)
+    many = {f"app/new{i}.py": py_call(f"job{i}", f"You are helper number {i}. Answer the ticket politely.") for i in range(4)}
+    head = commit_files(repo, many, "many new jobs")
+    answer = "Sure! @octocat see ![x](https://evil.test/p.png) <img src=x> [click](https://evil.test)"
+    doc = pc.run_check(data, scan.scan_ref(repo, base), scan.scan_ref(repo, head), base_ref=base, head_ref=head,
+                       options=pc.Options(first_look=_look_config(), transport=httpx.MockTransport(_look_world(answer)),
+                                          max_first_looks=2))
+    looks = [row["first_look"] for row in doc["jobs"] if row.get("first_look")]
+    ran = [x for x in looks if not x.get("skipped")]
+    assert len(ran) == 2
+    assert any("--max-first-looks" in (x.get("skipped") or "") for x in looks)
+    # a pull request (maybe never merged) never adds training lessons
+    assert not jobs.lesson_counts(data)
+    md = pc.render_markdown(doc)
+    for line in md.splitlines():
+        if line.startswith("**API:**") or line.startswith("**Your model:**"):
+            assert line.split(":**", 1)[1].strip().startswith("`"), line
+
+
+def test_model_change_is_not_priced_on_the_old_models_calls_as_current(tmp_path):
+    repo, base, _, data = setup(tmp_path)
+    head = commit_files(repo, {"app/triage.py": py_call("triage", TRIAGE, "{ticket}", model="gpt-4.1")}, "model")
+    doc = pc.run_check(data, scan.scan_ref(repo, base), scan.scan_ref(repo, head), base_ref=base, head_ref=head,
+                       options=pc.Options(candidate="qwen"))
+    row = [x for x in doc["jobs"] if x["job"] == "app/triage.py::triage"][0]
+    # the captured calls were all gpt-4o-mini: they are the OLD version's cost
+    assert row["traffic_basis"] == "old version"
+    assert "old version" in pc._api_cell(row)
 
 
 def test_cli_writes_markdown_and_json(tmp_path, capsys):

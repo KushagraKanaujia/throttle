@@ -116,8 +116,17 @@ def traffic_by_job(exchanges: Sequence[records.Exchange], sites: Sequence[scan_m
     for exchange in exchanges:
         norm = records.normalize(exchange) if exchange.has_bodies else None
         job = matcher.match(exchange, norm)
-        if job is not None:
-            out.setdefault(job, []).append(exchange)
+        if job is None:
+            continue
+        # A call is this version of the job only if it also has the job's
+        # model, tools and JSON mode: a pull request that changes the model
+        # must not be priced on the old model's calls as if they were current.
+        site = matcher.by_id[job]
+        if site.model and jobs_mod.bare_model(exchange.model) != jobs_mod.bare_model(site.model):
+            continue
+        if norm is not None and not jobs_mod.request_fits_site(site, exchange.model, norm):
+            continue
+        out.setdefault(job, []).append(exchange)
     return out
 
 
@@ -251,6 +260,10 @@ class Options:
     owned: Mapping[str, Any] | None = None       # report.owned_cost() block for the candidate
     prices: pricing_mod.PriceTable | None = None
     transport: httpx.AsyncBaseTransport | None = None
+    # First looks cost real API calls on the team's keys: at most this many
+    # jobs per pull request get one (a PR that adds 200 calls must not spend
+    # 200 x (1 + 4 x inputs) calls).
+    max_first_looks: int = 5
 
 
 def run_check(root: Path, base_sites: Sequence[scan_mod.CallSite], head_sites: Sequence[scan_mod.CallSite], *,
@@ -267,8 +280,9 @@ def run_check(root: Path, base_sites: Sequence[scan_mod.CallSite], head_sites: S
     except (OSError, ValueError):
         registry = {}
     rows = []
+    looks_left = [max(0, options.max_first_looks)]
     for change in changes_:
-        rows.append(_row(root, change, registry, head_traffic, base_traffic, window, prices, options))
+        rows.append(_row(root, change, registry, head_traffic, base_traffic, window, prices, options, looks_left))
     totals = _totals(rows)
     return {
         "schema": SCHEMA, "generated_at": records.utc_now_iso(), "base": base_ref, "head": head_ref,
@@ -283,7 +297,8 @@ def run_check(root: Path, base_sites: Sequence[scan_mod.CallSite], head_sites: S
 
 def _row(root: Path, change: JobChange, registry: Mapping[str, jobs_mod.JobEntry],
          head_traffic: Mapping[str, list[records.Exchange]], base_traffic: Mapping[str, list[records.Exchange]],
-         window: wl.CaptureWindow, prices: pricing_mod.PriceTable, options: Options) -> dict[str, Any]:
+         window: wl.CaptureWindow, prices: pricing_mod.PriceTable, options: Options,
+         looks_left: list[int] | None = None) -> dict[str, Any]:
     site = change.site
     entry = registry.get(change.job) or (registry.get(change.before.job) if change.before else None)
     now = head_traffic.get(change.job, []) if change.after else []
@@ -296,18 +311,24 @@ def _row(root: Path, change: JobChange, registry: Mapping[str, jobs_mod.JobEntry
     quality = None
     old_quality = None
     if change.after is not None:
-        found = jobs_mod.latest_job_result(root, change.job, options.candidate, change.after.prompt_fingerprint)
+        found = jobs_mod.latest_job_result(root, change.job, options.candidate, change.after.approval_key)
         if found:
             quality = quality_of(found[1], found[0])
     if change.before is not None and change.kind == CHANGED:
-        found = jobs_mod.latest_job_result(root, change.before.job, options.candidate, change.before.prompt_fingerprint)
+        found = jobs_mod.latest_job_result(root, change.before.job, options.candidate, change.before.approval_key)
         if found:
             old_quality = quality_of(found[1], found[0])
     first_look = None
     if (change.after is not None and quality is None and not now and options.first_look is not None
             and change.kind in (ADDED, CHANGED)):
-        first_look = fl.cached_or_run(change.after, options.first_look, root=root, prices=prices,
-                                      transport=options.transport)
+        if looks_left is not None and looks_left[0] <= 0:
+            first_look = {"skipped": f"only {options.max_first_looks} new jobs per pull request get a first look "
+                                     "(--max-first-looks)"}
+        else:
+            if looks_left is not None:
+                looks_left[0] -= 1
+            first_look = fl.cached_or_run(change.after, options.first_look, root=root, prices=prices,
+                                          transport=options.transport)
     api_call = cost["per_call_usd"] if cost and cost.get("per_call_usd") is not None else None
     if api_call is None and first_look and first_look.get("api_cost_per_call_usd") is not None:
         api_call = first_look["api_cost_per_call_usd"]
@@ -454,7 +475,7 @@ def render_markdown(doc: Mapping[str, Any]) -> str:
     out += ["", "| AI job | Change | On the API | Your model | What happens |", "|---|---|---|---|---|"]
     for row in rows:
         out.append("| " + " | ".join([
-            _code(row["job"]), _cell(_change_cell(row)), _cell(_api_cell(row)), _cell(_model_cell(row)),
+            _cell(_code(row["job"])), _cell(_change_cell(row)), _cell(_api_cell(row)), _cell(_model_cell(row)),
             f"**{row['action_title']}**",
         ]) + " |")
     if doc.get("unchanged_jobs"):
@@ -553,14 +574,22 @@ def _first_look_lines(look: Mapping[str, Any]) -> list[str]:
     if examples:
         body = ["<details><summary>Sample inputs and answers</summary>", ""]
         for ex in examples:
-            body.append(f"**Input:** {_cell(ex.get('input') or '')}<br>")
-            body.append(f"**API:** {_cell(ex.get('api_answer') or '(no answer)')}<br>")
-            body.append(f"**Your model:** {_cell(ex.get('candidate_answer') or '(no answer)')}<br>")
+            body.append(f"**Input:** {_quoted(ex.get('input'))}<br>")
+            body.append(f"**API:** {_quoted(ex.get('api_answer'))}<br>")
+            body.append(f"**Your model:** {_quoted(ex.get('candidate_answer'))}<br>")
             body.append(f"**Judge:** {_outcome_words(ex.get('outcome'))}")
             body.append("")
         body.append("</details>")
         lines += ["", *body]
     return lines
+
+
+def _quoted(text: str | None) -> str:
+    """Model-written text, shown inert: in a code span, so links, images,
+    @mentions and HTML in an answer do nothing in the comment."""
+    if not text:
+        return "(no answer)"
+    return _code(" ".join(text.split()))
 
 
 def _outcome_words(outcome: str | None) -> str:
@@ -618,6 +647,8 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
     parser.add_argument("--first-look-inputs", type=int, default=fl.DEFAULT_INPUTS, metavar="N",
                         help=f"made-up inputs per new job (default {fl.DEFAULT_INPUTS}, max {fl.MAX_INPUTS})")
     parser.add_argument("--no-first-look", action="store_true", help="never call any model")
+    parser.add_argument("--max-first-looks", type=int, default=5, metavar="N",
+                        help="first looks per pull request, at most (default 5); the rest say why they were skipped")
     parser.add_argument("--prices", type=Path, default=None, metavar="FILE",
                         help="JSON price file that adds or replaces API prices (labelled ASSUMED)")
     parser.add_argument("--markdown", type=Path, default=None, metavar="FILE", help="write the comment here (default: print it)")
@@ -660,7 +691,7 @@ def handle(args: argparse.Namespace, *, transport: httpx.AsyncBaseTransport | No
     owned = _owned(args, root)
     doc = run_check(root, base_sites, head_sites, base_ref=base_ref, head_ref=head_ref,
                     options=Options(candidate=args.candidate, first_look=look, owned=owned, prices=prices,
-                                    transport=transport))
+                                    transport=transport, max_first_looks=args.max_first_looks))
     markdown = render_markdown(doc)
     if args.markdown:
         args.markdown.parent.mkdir(parents=True, exist_ok=True)

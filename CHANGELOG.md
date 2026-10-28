@@ -26,6 +26,10 @@ Throttle for GitHub: a teammate that watches AI changes.
   it calls are matched to jobs by prompt template.
 - Lessons stub: fallbacks and judged losses per job are saved as JSONL for a
   later fine-tune loop.
+- Safety: a move is tied to the exact version of the call (prompt, model,
+  tools, JSON mode, call settings); a job whose prompt cannot be read is never
+  moved; pr-comment edits only its own bot comment; first looks are capped per
+  pull request and never write lessons.
 
 The own-your-intelligence loop. Each stage is its own command, and all data
 stays local under `~/.throttle/own` (or `$THROTTLE_OWN_DIR`, or `--dir`).

@@ -225,3 +225,29 @@ def test_template_matching_edge_cases_and_speed():
     started = time.perf_counter()
     assert not many.matches("word " * 5000 + "no ending here")
     assert time.perf_counter() - started < 0.5
+
+
+def test_deeply_nested_or_generated_python_does_not_break_the_scan():
+    deep = "x = " + "+".join(["a"] * 3000) + "\n"
+    ok = "def f():\n    return client.chat.completions.create(model='gpt-4o-mini', messages=[])\n"
+    sites = scan.scan_files({"gen.py": deep, "ok.py": ok})
+    assert [s.job for s in sites] == ["ok.py::f"]
+
+
+def test_scan_ref_reads_paths_with_non_ascii_letters(tmp_path):
+    repo = tmp_path / "r"
+    repo.mkdir()
+    subprocess.run(["git", "init", "-q", "-b", "main", str(repo)], check=True)
+    (repo / "résumé.py").write_text("def f():\n    return client.chat.completions.create(model='gpt-4o-mini', messages=[])\n")
+    subprocess.run(["git", "-C", str(repo), "add", "-A"], check=True)
+    subprocess.run(["git", "-C", str(repo), "-c", "user.name=t", "-c", "user.email=t@e", "commit", "-qm", "x"], check=True)
+    assert [s.path for s in scan.scan_ref(repo, "HEAD")] == [s.path for s in scan.scan_dir(repo)] == ["résumé.py"]
+
+
+def test_scan_dir_does_not_follow_a_symlink_out_of_the_repo(tmp_path):
+    outside = tmp_path / "outside.py"
+    outside.write_text("def f():\n    return client.chat.completions.create(model='gpt-4o-mini', messages=[])\n")
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / "link.py").symlink_to(outside)
+    assert scan.scan_dir(repo) == []

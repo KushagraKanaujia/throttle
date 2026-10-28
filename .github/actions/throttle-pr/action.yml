@@ -69,6 +69,17 @@ inputs:
     description: Made-up inputs per new job (each costs one API call, one call to your model and two judge calls).
     required: false
     default: "8"
+  max-first-looks:
+    description: At most this many new jobs per pull request get a first look (each one costs real API calls).
+    required: false
+    default: "5"
+  comment-author:
+    description: >-
+      Login that owns Throttle's comment when you post with your own app
+      token (e.g. my-app[bot]). Empty means any bot account; a person's
+      comment is never edited.
+    required: false
+    default: ""
   prices:
     description: Path to a JSON price file that adds or replaces API prices (labelled ASSUMED).
     required: false
@@ -148,13 +159,15 @@ runs:
         IN_JUDGE_KEY_ENV: ${{ inputs.judge-key-env }}
         IN_CANDIDATE_KEY_ENV: ${{ inputs.candidate-key-env }}
         IN_INPUTS: ${{ inputs.first-look-inputs }}
+        IN_MAX_LOOKS: ${{ inputs.max-first-looks }}
         IN_PRICES: ${{ inputs.prices }}
       run: |
         out="$RUNNER_TEMP/throttle-pr"
         mkdir -p "$out"
         args=(pr-check --repo "$GITHUB_WORKSPACE" --base "$BASE_SHA" --head "$HEAD_SHA"
               --markdown "$out/comment.md" --json "$out/check.json"
-              --judge-provider "$IN_JUDGE_PROVIDER" --first-look-inputs "$IN_INPUTS")
+              --judge-provider "$IN_JUDGE_PROVIDER" --first-look-inputs "$IN_INPUTS"
+              --max-first-looks "$IN_MAX_LOOKS")
         add() { if [ -n "$2" ]; then args+=("$1" "$2"); fi; }
         add --dir "$IN_DATA_DIR"
         add --candidate "$IN_CANDIDATE"
@@ -181,5 +194,8 @@ runs:
       env:
         GITHUB_TOKEN: ${{ inputs.github-token }}
         COMMENT_FILE: ${{ steps.check.outputs.comment-file }}
+        COMMENT_AUTHOR: ${{ inputs.comment-author }}
       run: |
-        "$THROTTLE_PR_BIN" pr-comment --body-file "$COMMENT_FILE"
+        args=(pr-comment --body-file "$COMMENT_FILE")
+        if [ -n "$COMMENT_AUTHOR" ]; then args+=(--author "$COMMENT_AUTHOR"); fi
+        "$THROTTLE_PR_BIN" "${args[@]}"

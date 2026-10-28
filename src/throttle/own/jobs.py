@@ -18,7 +18,9 @@ Statuses, in plain words:
 * ``testing``: calls go to the API while Throttle collects proof.
 * ``moved``: your own model answers it, with fallback to the API. Only
   ``throttle jobs approve`` sets this, and only on a passing job-level eval
-  of the job's current prompt.
+  of exactly the job's current version (:attr:`CallSite.approval_key`:
+  prompt, model, tools, JSON mode and call settings). A job whose prompt
+  cannot be read is never moved.
 * ``api``: the team pinned it to the API. Throttle never moves it.
 * ``retired``: the call is gone from the code; its route is removed.
 
@@ -35,7 +37,9 @@ applies the code to the registry:
   keeps its state under its new id.
 
 Even before a sync, :class:`Router` serves a moved job from your model only
-when the request still matches the prompt template that was approved.
+when the request still matches the version that was approved: every
+readable prompt template, the model, tools and JSON mode
+(:func:`request_fits_site`).
 
 Once a job is in the registry, only its own state decides where it runs;
 workload-type routes (``throttle route approve --type``) apply only to
@@ -48,7 +52,7 @@ the request's text, whitespace collapsed. At least 12 literal characters are
 needed; the most specific template wins.
 
 Lessons (stub for a later fine-tune loop): every fallback of a tracked job
-and every judged loss is appended to ``<root>/jobs/lessons/<job>.jsonl`` with
+and every judged loss in ``throttle jobs eval`` is appended to ``<root>/jobs/lessons/<job>.jsonl`` with
 the conversation (already redacted at capture), the API's answer and your
 model's answer. Nothing trains on them yet.
 """
@@ -145,6 +149,13 @@ class JobMatcher:
         role, template = found
         return template.matches(self._text(norm, role))
 
+    def fits_exactly(self, job: str, model: str | None, norm: records.Normalized | None) -> bool:
+        """Stricter than :meth:`fits`, for serving and judging a job: the
+        request must fit every prompt template the code has (system and first
+        user message), and use the same model, tools and JSON mode."""
+        site = self.by_id.get(job)
+        return site is not None and request_fits_site(site, model, norm)
+
     def match(self, exchange: records.Exchange | None, norm: records.Normalized | None, *,
               header: str | None = None) -> str | None:
         """The job id, or None. A header naming a known job wins (when the
@@ -168,6 +179,29 @@ class JobMatcher:
             if best is None or (template.literal_chars == best_chars and site.model and site.model == model):
                 best, best_chars = site, template.literal_chars
         return best.job if best is not None else None
+
+
+def bare_model(name: str | None) -> str:
+    return (name or "").strip().lower().rsplit("/", 1)[-1]
+
+
+def request_fits_site(site: scan_mod.CallSite, model: str | None, norm: records.Normalized | None) -> bool:
+    """Is this request what the code at ``site`` sends? Model (when the code
+    names it), tools, JSON mode and every readable prompt template must agree.
+    Anything Throttle cannot confirm counts as not fitting."""
+    if site.model and bare_model(model) != bare_model(site.model):
+        return False
+    if norm is None:
+        return False
+    if bool(norm.tools) != site.has_tools:
+        return False
+    if (norm.response_format in ("json", "json_schema")) != site.wants_json:
+        return False
+    if site.system is not None and not site.system.matches(norm.system_text, min_chars=0):
+        return False
+    if site.user is not None and not site.user.matches(first_user_text(norm), min_chars=0):
+        return False
+    return True
 
 
 # ---------------------------------------------------------------------------
@@ -195,6 +229,8 @@ def changes(before: scan_mod.CallSite, after: scan_mod.CallSite) -> list[str]:
         out.append("JSON output turned on" if after.wants_json else "JSON output turned off")
     if before.provider != after.provider and after.provider != scan_mod.PROVIDER_UNKNOWN:
         out.append(f"provider changed from {before.provider} to {after.provider}")
+    if not out and before.call_digest and after.call_digest and before.call_digest != after.call_digest:
+        out.append("call settings edited (messages, tools, schema or options)")
     return out
 
 
@@ -396,15 +432,20 @@ def iter_job_evals(root: Path, candidate: str | None = None) -> list[dict[str, A
     return sorted(out, key=lambda d: (str(d.get("ts", "")), str(d.get("run_id", ""))))
 
 
+_ANY = object()
+
+
 def latest_job_result(root: Path, job: str, candidate: str | None = None,
-                      fingerprint: str | None = None) -> tuple[dict[str, Any], dict[str, Any]] | None:
+                      site_key: Any = _ANY) -> tuple[dict[str, Any], dict[str, Any]] | None:
     """(eval doc, the job's result in it) from the newest job eval that has
-    this job (and, when given, was run on this prompt fingerprint)."""
+    this job. With ``site_key`` (a :attr:`CallSite.approval_key`), only an
+    eval of exactly that version of the call counts: same prompt, model,
+    tools, JSON mode and call settings. ``None`` matches nothing."""
     for doc in reversed(iter_job_evals(root, candidate)):
         result = (doc.get("jobs") or {}).get(job)
         if not isinstance(result, Mapping):
             continue
-        if fingerprint is not None and result.get("prompt_fingerprint") != fingerprint:
+        if site_key is not _ANY and (site_key is None or result.get("site_key") != site_key):
             continue
         return doc, dict(result)
     return None
@@ -422,12 +463,18 @@ def approve_job(root: Path, job: str, label: str, url: str, model: str, *, api_k
         return None, f"{job} is no longer in the code"
     if entry.status == PINNED:
         return None, f"{job} is pinned to the API. Unpin it first: throttle jobs unpin {job}"
-    fingerprint = entry.call_site.prompt_fingerprint
-    found = latest_job_result(root, job, label, fingerprint)
+    site = entry.call_site
+    fingerprint = site.prompt_fingerprint
+    if fingerprint is None:
+        return None, (f"Throttle cannot read the prompt of {job} in the code (it is built at run time or imported), "
+                      "so it could not tell when the prompt changes. Jobs move only when their prompt is readable")
+    site_key = site.approval_key
+    found = latest_job_result(root, job, label, site_key)
     if found is None:
         any_run = latest_job_result(root, job, label)
         if any_run is not None:
-            return None, (f"the newest eval of {job} for {label} tested an older prompt. Test the current one: "
+            return None, (f"the newest eval of {job} for {label} tested an older version of the call (prompt, model, "
+                          f"tools, JSON mode or settings). Test the current one: "
                           f"throttle jobs eval --repo . --candidate {label} ...")
         return None, f"no job eval of {job} for {label}. Run: throttle jobs eval --repo . --candidate {label} ..."
     doc, result = found
@@ -440,7 +487,7 @@ def approve_job(root: Path, job: str, label: str, url: str, model: str, *, api_k
         "candidate_label": label, "url": url, "model": model, "api_key_env": api_key_env,
         "approved_at": records.utc_now_iso(), "approved_eval_run_id": doc.get("run_id"), "eval_verdict": verdict,
         "mode": "canary" if canary is not None else "live", "canary_rate": canary, "forced": False,
-        "prompt_fingerprint": fingerprint,
+        "prompt_fingerprint": fingerprint, "site_key": site_key,
     }
     entry.status = MOVED
     entry.suspended = None
@@ -506,15 +553,18 @@ class RegistryCache:
         entry = self.entries().get(job)
         return entry if entry is not None and entry.status != RETIRED else None
 
-    def approved_route(self, entry: JobEntry, norm: records.Normalized) -> dict[str, Any] | None:
-        """The job's route, only while it is moved and the request still fits
-        the approved prompt."""
-        if entry.status != MOVED or not entry.route:
+    def approved_route(self, entry: JobEntry, norm: records.Normalized, model: str | None = None) -> dict[str, Any] | None:
+        """The job's route, only while it is moved, it was approved on this
+        exact version of the call, and the request still fits it: the prompt
+        templates, model, tools and JSON mode it was approved on."""
+        if entry.status != MOVED or not entry.route or entry.route.get("forced"):
             return None
         site = entry.call_site
-        if entry.route.get("prompt_fingerprint") != site.prompt_fingerprint:
+        if site.prompt_fingerprint is None or entry.route.get("prompt_fingerprint") != site.prompt_fingerprint:
             return None
-        if not self._matcher.fits(entry.job, norm):
+        if entry.route.get("site_key") != site.approval_key:
+            return None
+        if not request_fits_site(site, model, norm):
             return None
         return entry.route
 
@@ -600,7 +650,11 @@ def run_job_eval(
     by_id = {s.job: s for s in sites}
 
     def group(exchange: records.Exchange, norm: records.Normalized) -> str | None:
-        return matcher.match(exchange, norm)
+        # only calls that are exactly this version of the job count as proof
+        job = matcher.match(exchange, norm)
+        if job is None or not matcher.fits_exactly(job, exchange.model, norm):
+            return None
+        return job
 
     excluded: dict[str, int] = {}
     sets = ev.build_eval_sets(root, candidate, classify=classify, excluded=excluded, group=group)
@@ -627,6 +681,7 @@ def run_job_eval(
                                     min_n=min_n, transport_excluded=excluded.get(job, 0), evalset_dir=set_dir)
         site = by_id.get(job)
         summary["prompt_fingerprint"] = site.prompt_fingerprint if site else None
+        summary["site_key"] = site.approval_key if site else None
         kinds = Counter(p.workload for p in pairs)
         summary["workload_type"] = kinds.most_common(1)[0][0] if kinds else None
         results[job] = summary

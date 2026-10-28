@@ -489,10 +489,12 @@ class Router:
         rate = min(1.0, max(0.0, float(route.canary_rate or 0.0)))
         return self._rng.random() < rate
 
-    def job_route(self, entry: jobs_mod.JobEntry, norm: records.Normalized, kind: str) -> Route | None:
+    def job_route(self, entry: jobs_mod.JobEntry, norm: records.Normalized, kind: str,
+                  model: str | None = None) -> Route | None:
         """The route of a tracked job: only while it is moved and the request
-        still fits the prompt it was approved on."""
-        data = self.jobs.approved_route(entry, norm)
+        still fits the version of the call it was approved on (prompt, model,
+        tools, JSON mode)."""
+        data = self.jobs.approved_route(entry, norm, model)
         if data is None:
             return None
         return Route.from_json(kind, data)
@@ -510,7 +512,7 @@ class Router:
         entry = self.jobs.tracked(decision.job)
         # A tracked job runs where its own state says; type routes are only
         # for traffic that is not a tracked job.
-        route = self.job_route(entry, norm, kind) if entry is not None else self.routes().get(kind)
+        route = self.job_route(entry, norm, kind, exchange.model) if entry is not None else self.routes().get(kind)
         if route is None or not routable(request, norm) or not self.sampled(route):
             self.stats["api"] += 1
             return decision

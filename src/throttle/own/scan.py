@@ -134,12 +134,14 @@ class Template:
         pieces = [re.escape(lit) for lit in self.literals]
         return re.compile(r"\s*" + r".*?".join(pieces).strip() + r"\s*", re.DOTALL)
 
-    def matches(self, text: str) -> bool:
+    def matches(self, text: str, *, min_chars: int = MIN_MATCH_CHARS) -> bool:
         """Does ``text`` fit this template, with any text in the slots?
         Whitespace is ignored. Linear time: the first literal must start the
         text, the last must end it, and the ones between must appear in
-        order (leftmost first, which is exact for wildcard slots)."""
-        if self.literal_chars < MIN_MATCH_CHARS:
+        order (leftmost first, which is exact for wildcard slots).
+        ``min_chars=0`` checks a short template too (for confirming a job
+        that is already known, not for recognising one)."""
+        if self.literal_chars < min_chars:
             return False
         lits = [_squash(p) for p in self.parts[0::2]]
         hay = _squash(text)
@@ -199,6 +201,9 @@ class CallSite:
     wants_json: bool = False
     tag: str | None = None
     ordinal: int = 1
+    # sha256 (first 16 hex) of the call's arguments as written (tools, schemas,
+    # few-shot messages, temperature ...); None when not known.
+    call_digest: str | None = None
 
     @property
     def job(self) -> str:
@@ -216,6 +221,16 @@ class CallSite:
             return None
         payload = {"system": self.system.key() if self.system else None,
                    "user": self.user.key() if self.user else None}
+        return hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()[:16]
+
+    @property
+    def approval_key(self) -> str:
+        """What a job eval and an approval are tied to: the prompt fingerprint
+        plus the model, tools, JSON mode and provider. A change to any of them
+        needs a new eval before the job can move again."""
+        payload = {"prompt": self.prompt_fingerprint, "model": self.model or self.model_expr,
+                   "tools": self.has_tools, "json": self.wants_json, "provider": self.provider,
+                   "call": self.call_digest}
         return hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()[:16]
 
     @property
@@ -247,7 +262,7 @@ class CallSite:
             "user_text": self.user.text if self.user else None,
             "prompt_dynamic": self.prompt_dynamic, "has_tools": self.has_tools,
             "wants_json": self.wants_json, "tag": self.tag, "ordinal": self.ordinal,
-            "prompt_fingerprint": self.prompt_fingerprint,
+            "call_digest": self.call_digest, "prompt_fingerprint": self.prompt_fingerprint, "approval_key": self.approval_key,
         }
 
     @classmethod
@@ -259,6 +274,7 @@ class CallSite:
             system=Template.from_json(data.get("system")), user=Template.from_json(data.get("user")),
             prompt_dynamic=bool(data.get("prompt_dynamic")), has_tools=bool(data.get("has_tools")),
             wants_json=bool(data.get("wants_json")), tag=data.get("tag"), ordinal=int(data.get("ordinal") or 1),
+            call_digest=data.get("call_digest"),
         )
 
 
@@ -525,11 +541,59 @@ def _uses_json(kwargs: Mapping[str, ast.expr], api: str) -> bool:
     return False
 
 
+def _digest(text: str) -> str:
+    return hashlib.sha256(text.encode("utf-8", "replace")).hexdigest()[:16]
+
+
+# Arguments that do not change the answer (the tag, transport settings).
+_NOT_ANSWER_ARGS = frozenset({"extra_headers", "timeout", "headers", "max_retries", "user", "metadata", "store"})
+
+
+def _py_call_digest(call: ast.Call, names: Mapping[str, ast.expr]) -> str:
+    """The call's arguments as written; a name is replaced by what it is
+    assigned in the function or module (one level), so editing a ``TOOLS``
+    list defined elsewhere in the file is a change too."""
+    parts = [_py_shape(a) for a in call.args]
+    for kw in sorted(call.keywords, key=lambda k: k.arg or ""):
+        if kw.arg in _NOT_ANSWER_ARGS:
+            continue
+        value = kw.value
+        if isinstance(value, ast.Name) and value.id in names:
+            value = names[value.id]
+        parts.append(f"{kw.arg}={_py_shape(value)}")
+    return _digest("\n".join(parts))
+
+
+class _Anonymize(ast.NodeTransformer):
+    """Variable names and f-string holes become placeholders, so renaming a
+    variable is not a change (the same rule as the prompt fingerprint)."""
+
+    def visit_Name(self, node: ast.Name) -> ast.AST:
+        return ast.copy_location(ast.Name(id="_", ctx=node.ctx), node)
+
+    def visit_FormattedValue(self, node: ast.FormattedValue) -> ast.AST:
+        return ast.copy_location(ast.Constant(value="{}"), node)
+
+
+def _py_shape(node: ast.expr) -> str:
+    import copy
+
+    return ast.unparse(_Anonymize().visit(copy.deepcopy(node)))
+
+
 def scan_python(path: str, source: str) -> list[CallSite]:
     try:
         tree = ast.parse(source)
-    except (SyntaxError, ValueError):
+    except (SyntaxError, ValueError, RecursionError, MemoryError):
         return []
+    try:
+        return _scan_python_tree(path, source, tree)
+    except RecursionError:
+        # very deeply nested code (generated files): skip the file, never crash the scan
+        return []
+
+
+def _scan_python_tree(path: str, source: str, tree: ast.Module) -> list[CallSite]:
     env = _PyEnv(tree)
     lines = source.splitlines()
     litellm_names: set[str] = set()
@@ -598,6 +662,7 @@ def scan_python(path: str, source: str) -> list[CallSite]:
             provider=provider, api=api, model=model, model_expr=model_expr, system=system, user=user,
             prompt_dynamic=dynamic, has_tools="tools" in kwargs or "functions" in kwargs,
             wants_json=_uses_json(kwargs, api), tag=_py_tag(kwargs) or _comment_tag(lines, call.lineno),
+            call_digest=_py_call_digest(call, names),
         )
 
     visit(tree, [], None)
@@ -1127,6 +1192,7 @@ def scan_javascript(path: str, source: str) -> list[CallSite]:
             has_tools="tools" in fields or "functions" in fields,
             wants_json="response_format" in fields or (api == "ai-sdk" and chain[-1].endswith("Object")),
             tag=tag or _comment_tag(js.lines, line),
+            call_digest=_digest(" ".join(t.text for t in toks[i + 1:close])),
         ))
     return sites
 
@@ -1167,6 +1233,8 @@ def scan_dir(root: Path) -> list[CallSite]:
         rel = path.relative_to(root).as_posix()
         if not path.is_file() or not wanted(rel):
             continue
+        if path.is_symlink() and not path.resolve().is_relative_to(root.resolve()):
+            continue  # never read a file outside the repo
         try:
             if path.stat().st_size > MAX_FILE_BYTES:
                 continue
@@ -1187,7 +1255,7 @@ def _git(repo: Path, *args: str, input_bytes: bytes | None = None) -> bytes:
         raise GitError("git is not installed") from None
     if done.returncode not in (0, 1):
         raise GitError(done.stderr.decode("utf-8", "replace").strip() or f"git {' '.join(args)} failed")
-    if done.returncode == 1 and args[0] != "grep":
+    if done.returncode == 1 and "grep" not in args[:3]:
         raise GitError(done.stderr.decode("utf-8", "replace").strip() or f"git {' '.join(args)} failed")
     return done.stdout
 
@@ -1203,11 +1271,12 @@ def resolve_ref(repo: Path, ref: str) -> str:
 def read_ref(repo: Path, ref: str) -> dict[str, str]:
     """Sources at ``ref`` of the files that might call an AI API."""
     sha = resolve_ref(repo, ref)
-    listed = _git(repo, "grep", "-l", "-I", "-E", _GREP_PATTERN, sha, "--").decode("utf-8", "replace")
+    # -z and quotePath=false: paths with non-ASCII letters come back as they are
+    listed = _git(repo, "-c", "core.quotePath=false", "grep", "-z", "-l", "-I", "-E", _GREP_PATTERN, sha, "--")
     paths = []
-    for line in listed.splitlines():
-        path = line.split(":", 1)[1] if line.startswith(sha + ":") else line
-        if wanted(path):
+    for item in listed.decode("utf-8", "replace").split("\0"):
+        path = item[len(sha) + 1:] if item.startswith(sha + ":") else item
+        if path and "\n" not in path and wanted(path):
             paths.append(path)
     if not paths:
         return {}

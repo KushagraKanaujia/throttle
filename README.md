@@ -240,6 +240,16 @@ read your Throttle data folder (input `data-dir`) to get costs and proof. Add
 new jobs. Keys go in as the *names* of env vars (`api-key-env`,
 `judge-key-env`), set from your secrets.
 
+Keep it on `pull_request`, never `pull_request_target`. On a public
+repository the comment and the job summary are public: anything in your data
+folder that the comment shows (costs, call counts) is visible to everyone, and
+a self-hosted runner that can read your data folder should not run workflows
+from forks. A pull request from a fork gets a read-only token, so the check
+goes to the job summary instead of a comment. Throttle only ever edits its own
+bot comment, never a comment someone else wrote. At most 5 new jobs per pull
+request get a first look (`max-first-looks`), and model answers in the comment
+are shown as plain code, so links and @mentions in them do nothing.
+
 Without GitHub, the same check runs anywhere:
 
 ```sh
@@ -289,15 +299,23 @@ throttle jobs list | log JOB | undo JOB | pin JOB | unpin JOB | lessons
   model, tools or JSON mode changes, its move is suspended and it goes back
   to testing. A job that moved to another file with the same prompt keeps
   its state.
-- `approve` needs a passing job eval of the job's *current* prompt.
+- `approve` needs a passing job eval of exactly the current version of the
+  call: same prompt, model, tools, JSON mode and call settings (few-shot
+  messages, tool schemas, temperature ...). The eval only counts captured
+  calls that match that version. A job whose prompt Throttle cannot read
+  (built at run time or imported from another module) is never moved, since
+  Throttle could not see it change.
 - Even before a sync, `throttle capture --route` serves a moved job from
-  your model only while the request still matches the prompt it was approved
-  on. A changed prompt is never moved silently.
+  your model only while the request still matches the version it was
+  approved on: every readable prompt template, the model, tools and JSON
+  mode. Anything else goes to the API. A changed call is never moved silently.
 - Once a job is tracked, only its own state decides where it runs. Workload
   type routes apply to traffic that is not a tracked job.
 - Every fallback and every judged loss of a job is saved to
   `~/.throttle/own/jobs/lessons/` with the API's answer and your model's
   answer. Nothing trains on them yet; they are kept for the fine-tune loop.
+  First looks in pull requests never add lessons: made-up inputs from a pull
+  request that may never merge are not your traffic.
 
 **Tagging (optional).** Throttle matches traffic to jobs by prompt. To make
 it exact, and to keep a job's name when code moves, send a header:

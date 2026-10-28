@@ -92,10 +92,14 @@ def commit_files(repo: Path, files: dict[str, str | None], message: str) -> str:
     return git(repo, "rev-parse", "HEAD")
 
 
-def write_job_eval(root, job, verdict, fingerprint, *, label="qwen", model="qwen-7b", ts="2026-10-27T10:00:00.000Z", run_id=None):
+def write_job_eval(root, job, verdict, site, *, label="qwen", model="qwen-7b", ts="2026-10-27T10:00:00.000Z", run_id=None):
+    """A saved job eval of ``site`` (a CallSite, or a made-up key string for
+    "some other version of the call")."""
     run_id = run_id or f"jobeval-{ts[:13]}-{verdict[:4]}"
+    fingerprint = site.prompt_fingerprint if isinstance(site, scan.CallSite) else site
+    site_key = site.approval_key if isinstance(site, scan.CallSite) else site
     doc = {"schema": jobs.EVAL_SCHEMA, "run_id": run_id, "ts": ts, "candidate": label, "candidate_model": model,
-           "min_n": 30, "jobs": {job: {"verdict": verdict, "prompt_fingerprint": fingerprint, "judged": 40,
+           "min_n": 30, "jobs": {job: {"verdict": verdict, "prompt_fingerprint": fingerprint, "site_key": site_key, "judged": 40,
                                        "wins": 5, "ties": 33, "losses": 2, "n": 40, "reasons": ["r"]}}}
     path = jobs.job_eval_dir(root) / f"{run_id}.json"
     path.parent.mkdir(parents=True, exist_ok=True)

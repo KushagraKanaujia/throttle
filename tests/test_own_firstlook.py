@@ -60,7 +60,7 @@ def fake_world(calls, *, examples=None, candidate_text="CANDIDATE reply", api_st
 async def test_first_look_runs_and_is_labelled(tmp_path):
     calls: list = []
     doc = await fl.run_first_look(site(), config(), transport=fake_world(calls), root=tmp_path,
-                                  prices=pricing.load_prices())
+                                  prices=pricing.load_prices(), lessons=True)
     assert doc["label"] == fl.LABEL and "not enough data yet" in doc["note"]
     assert doc["inputs"] == 3 and doc["losses"] == 3 and doc["wins"] == 0
     assert doc["calls"] == {"generator": 1, "api": 3, "candidate": 3, "judge": 6}

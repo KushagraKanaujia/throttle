@@ -257,9 +257,11 @@ def _checks(site: scan_mod.CallSite, answer: Answer) -> dict[str, bool]:
 async def run_first_look(site: scan_mod.CallSite, config: FirstLookConfig, *,
                          prices: pricing_mod.PriceTable | None = None,
                          transport: httpx.AsyncBaseTransport | None = None,
-                         root: Path | None = None) -> dict[str, Any]:
+                         root: Path | None = None, lessons: bool = False) -> dict[str, Any]:
     """Run a first look on one call site. Never raises for HTTP failures;
-    they are counted and reported."""
+    they are counted and reported. ``lessons=True`` (with ``root``) saves
+    judged losses as lessons; ``throttle pr-check`` never does, because a
+    pull request may never merge and its made-up inputs are not real traffic."""
     prices = prices or pricing_mod.load_prices()
     model = config.model_for(site)
     base: dict[str, Any] = {
@@ -327,7 +329,7 @@ async def run_first_look(site: scan_mod.CallSite, config: FirstLookConfig, *,
                     "outcome": outcome, "workload_type": kind}
 
         items = await asyncio.gather(*(one(v) for v in examples))
-    return summarize(site, config, base, items, prices, generator_calls, root=root)
+    return summarize(site, config, base, items, prices, generator_calls, root=root if lessons else None)
 
 
 async def _generate(client: httpx.AsyncClient, config: judge_mod.JudgeConfig, prompt: str) -> str | None:

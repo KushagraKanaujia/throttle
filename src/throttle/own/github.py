@@ -34,7 +34,9 @@ Opener = Callable[[str, str, dict[str, str], bytes | None], tuple[int, Any]]
 
 
 class GitHubError(RuntimeError):
-    pass
+    def __init__(self, message: str, status: int | None = None) -> None:
+        super().__init__(message)
+        self.status = status
 
 
 def urllib_opener(method: str, url: str, headers: dict[str, str], body: bytes | None) -> tuple[int, Any]:
@@ -73,18 +75,31 @@ class Client:
         if not 200 <= status < 300:
             message = data.get("message") if isinstance(data, dict) else None
             hint = " (does the workflow have `permissions: pull-requests: write`?)" if status in (401, 403, 404) else ""
-            raise GitHubError(f"GitHub said {status} to {method} {path}: {message or 'no message'}{hint}")
+            raise GitHubError(f"GitHub said {status} to {method} {path}: {message or 'no message'}{hint}", status)
         return data
 
 
-def find_comment(client: Client, repo: str, pr: int) -> dict[str, Any] | None:
+def is_ours(comment: Any, author: str | None = None) -> bool:
+    """A Throttle comment: it has the marker AND a bot wrote it (by default
+    the workflow token's ``github-actions[bot]``, or any app bot). Anyone can
+    type the marker into a comment; Throttle must never take over, rewrite or
+    put its report under a person's comment."""
+    if not isinstance(comment, dict) or MARKER not in str(comment.get("body") or ""):
+        return False
+    user = comment.get("user") or {}
+    if author:
+        return user.get("login") == author
+    return user.get("type") == "Bot"
+
+
+def find_comment(client: Client, repo: str, pr: int, author: str | None = None) -> dict[str, Any] | None:
     page = 1
     while page <= 30:
         batch = client.call("GET", f"/repos/{repo}/issues/{pr}/comments?per_page=100&page={page}")
         if not isinstance(batch, list) or not batch:
             return None
         for comment in batch:
-            if isinstance(comment, dict) and MARKER in str(comment.get("body") or ""):
+            if is_ours(comment, author):
                 return comment
         if len(batch) < 100:
             return None
@@ -92,11 +107,11 @@ def find_comment(client: Client, repo: str, pr: int) -> dict[str, Any] | None:
     return None
 
 
-def post_sticky(client: Client, repo: str, pr: int, body: str) -> tuple[str, str | None]:
+def post_sticky(client: Client, repo: str, pr: int, body: str, *, author: str | None = None) -> tuple[str, str | None]:
     """("created" | "updated" | "skipped", comment URL)."""
     if MARKER not in body:
         body = MARKER + "\n" + body
-    existing = find_comment(client, repo, pr)
+    existing = find_comment(client, repo, pr, author)
     if existing is None:
         if NO_CHANGES in body:
             return "skipped", None
@@ -106,6 +121,25 @@ def post_sticky(client: Client, repo: str, pr: int, body: str) -> tuple[str, str
         return "unchanged", existing.get("html_url")
     done = client.call("PATCH", f"/repos/{repo}/issues/comments/{existing['id']}", {"body": body})
     return "updated", (done or {}).get("html_url")
+
+
+def _event(path: str | None) -> dict[str, Any]:
+    if not path or not Path(path).exists():
+        return {}
+    try:
+        event = json.loads(Path(path).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    return event if isinstance(event, dict) else {}
+
+
+def from_fork(path: str | None) -> bool:
+    """Is the pull request in this event from another repository? Its
+    workflow token is read-only, so a comment cannot be posted."""
+    pr = _event(path).get("pull_request") or {}
+    head = ((pr.get("head") or {}).get("repo") or {}).get("full_name")
+    base = ((pr.get("base") or {}).get("repo") or {}).get("full_name")
+    return bool(head and base and head != base)
 
 
 def pr_from_event(path: str | None) -> int | None:
@@ -130,6 +164,8 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
     parser.add_argument("--pr", type=int, default=None, help="pull request number (default: from $GITHUB_EVENT_PATH)")
     parser.add_argument("--token-env", default="GITHUB_TOKEN", metavar="VAR", help="variable with the token (default GITHUB_TOKEN)")
     parser.add_argument("--api", default=os.environ.get("GITHUB_API_URL", API), help="GitHub API URL (for GitHub Enterprise)")
+    parser.add_argument("--author", default=None, metavar="LOGIN",
+                        help="login that owns Throttle's comment, e.g. my-app[bot] (default: any bot account)")
 
 
 def handle(args: argparse.Namespace, *, opener: Opener | None = None) -> int:
@@ -145,8 +181,16 @@ def handle(args: argparse.Namespace, *, opener: Opener | None = None) -> int:
         return EXIT_USAGE
     try:
         body = args.body_file.read_text(encoding="utf-8")
-        action, url = post_sticky(Client(token, api=args.api, opener=opener), repo, pr, body)
-    except (OSError, GitHubError) as exc:
+        action, url = post_sticky(Client(token, api=args.api, opener=opener), repo, pr, body,
+                                  author=getattr(args, "author", None))
+    except GitHubError as exc:
+        if exc.status in (401, 403) and from_fork(os.environ.get("GITHUB_EVENT_PATH")):
+            print("throttle pr-comment: this pull request comes from a fork, so the workflow token cannot comment. "
+                  "The check is in the job summary instead.", file=sys.stderr)
+            return EXIT_OK
+        print(f"throttle pr-comment: {exc}", file=sys.stderr)
+        return EXIT_FAILED
+    except OSError as exc:
         print(f"throttle pr-comment: {exc}", file=sys.stderr)
         return EXIT_FAILED
     if action == "skipped":
