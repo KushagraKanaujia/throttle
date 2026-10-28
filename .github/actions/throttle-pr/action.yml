@@ -84,7 +84,7 @@ inputs:
     required: false
     default: ""
   github-token:
-    description: Token for the comment. The workflow token works with `pull-requests: write`.
+    description: "Token for the comment. The workflow token works with `pull-requests: write`."
     required: false
     default: ${{ github.token }}
 
