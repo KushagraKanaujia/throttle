@@ -9,6 +9,24 @@ what the new product does not need. Pricing moves to a share of measured
 savings, so the credit plans and every login/metering path are gone.
 
 ### Added
+Throttle for GitHub: a teammate that watches AI changes.
+- `throttle jobs scan` finds every OpenAI and Anthropic call in Python
+  (stdlib `ast`) and JavaScript/TypeScript (a small tokenizer), with a stable
+  job id per call site and its prompt as a template.
+- `throttle pr-check --base REF --head REF` lists the AI jobs a pull request
+  adds, changes, moves or removes, with API cost from matching captured
+  traffic, the newest job-level eval, and what happens next, as Markdown and
+  JSON. New jobs can get a labelled first look on made-up inputs.
+- `throttle pr-comment` and `.github/actions/throttle-pr` post one sticky
+  comment per pull request from the customer's own CI.
+- `throttle jobs sync/eval/approve/undo/pin/unpin/list/log/lessons`: routing
+  follows the code. Removed jobs are retired; a moved job whose prompt changes
+  goes back to testing; `capture --route` never serves a changed prompt.
+- `X-Throttle-Job` header (`throttle.own.tag`) tags captured calls; without
+  it calls are matched to jobs by prompt template.
+- Lessons stub: fallbacks and judged losses per job are saved as JSONL for a
+  later fine-tune loop.
+
 The own-your-intelligence loop. Each stage is its own command, and all data
 stays local under `~/.throttle/own` (or `$THROTTLE_OWN_DIR`, or `--dir`).
 - `throttle capture`: a local pass-through proxy for the OpenAI and Anthropic

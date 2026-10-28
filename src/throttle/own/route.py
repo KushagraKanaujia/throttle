@@ -84,6 +84,7 @@ from typing import Any, Callable, Mapping
 
 import httpx
 
+from . import jobs as jobs_mod
 from . import pricing as pricing_mod
 from . import records
 from . import workloads
@@ -384,6 +385,7 @@ class RouteDecision:
     sse: list[bytes] | None = None              # when served and the client asked for a stream
     owned_usage: records.Usage = field(default_factory=records.Usage)
     owned_latency_ms: float | None = None
+    job: str | None = None                      # the AI job this request came from, when known
 
     @property
     def served_by(self) -> str:
@@ -466,6 +468,7 @@ class Router:
         self._routes_key: tuple[int, int] | None = None
         self._ledger_lock = threading.Lock()
         self.stats: Counter[str] = Counter()
+        self.jobs = jobs_mod.RegistryCache(self.root)
 
     def routes(self) -> dict[str, Route]:
         path = routes_path(self.root)
@@ -486,7 +489,16 @@ class Router:
         rate = min(1.0, max(0.0, float(route.canary_rate or 0.0)))
         return self._rng.random() < rate
 
-    async def route(self, provider: str, endpoint: str, request: Mapping[str, Any], stream: bool) -> RouteDecision:
+    def job_route(self, entry: jobs_mod.JobEntry, norm: records.Normalized, kind: str) -> Route | None:
+        """The route of a tracked job: only while it is moved and the request
+        still fits the prompt it was approved on."""
+        data = self.jobs.approved_route(entry, norm)
+        if data is None:
+            return None
+        return Route.from_json(kind, data)
+
+    async def route(self, provider: str, endpoint: str, request: Mapping[str, Any], stream: bool, *,
+                    job: str | None = None) -> RouteDecision:
         exchange = records.Exchange(
             provider=provider, endpoint=endpoint, model=str(request.get("model") or ""),
             request=dict(request), response=None, status=200, latency_ms=0.0, redaction=records.REDACTION_OFF,
@@ -494,7 +506,11 @@ class Router:
         norm = records.normalize(exchange)
         kind = self.classify(exchange, norm)
         decision = RouteDecision(workload_type=kind)
-        route = self.routes().get(kind)
+        decision.job = self.jobs.match(exchange, norm, job)
+        entry = self.jobs.tracked(decision.job)
+        # A tracked job runs where its own state says; type routes are only
+        # for traffic that is not a tracked job.
+        route = self.job_route(entry, norm, kind) if entry is not None else self.routes().get(kind)
         if route is None or not routable(request, norm) or not self.sampled(route):
             self.stats["api"] += 1
             return decision
@@ -607,6 +623,7 @@ def ledger_entry(exchange: records.Exchange, decision: RouteDecision, prices: pr
         "ts": exchange.ts,
         "exchange_id": exchange.id,
         "type": decision.workload_type,
+        "job": decision.job,
         "candidate_label": route.candidate_label,
         "owned_model": route.model,
         "mode": route.mode,
