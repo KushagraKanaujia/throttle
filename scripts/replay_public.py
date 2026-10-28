@@ -257,7 +257,7 @@ def run(args: argparse.Namespace) -> int:
         "output_per_m": 1.60, "as_of": "2026-10-27",
         "source": f"{PRICE_AS} standard list price (bundled table, 2026-10-27) applied to the local {API_STAND_IN} stand-in",
     }]}, indent=1) + "\n", encoding="utf-8")
-    n = len(prompts)
+    n = min(len(prompts), args.max_requests) if args.max_requests else len(prompts)
     if "capture" in args.steps:
         _capture_with_ids(root, prompts, args.concurrency)
     for model in args.candidates:
@@ -352,6 +352,8 @@ def main(argv: list[str] | None = None) -> int:
     r.add_argument("--scale", type=int, default=DEFAULT_SCALE, help="requests a month each replayed request stands for")
     r.add_argument("--gpu-hourly", type=float, default=GPU_HOURLY, help="ASSUMED GPU $/hour")
     r.add_argument("--concurrency", type=int, default=4)
+    r.add_argument("--max-requests", type=int, default=0,
+                   help="shadow and judge at most this many captured requests (stratified, seeded); 0 = all")
     r.add_argument("--steps", nargs="+", default=["capture", "shadow", "eval", "check", "report"])
     args = parser.parse_args(argv)
     if args.cmd == "prepare":
