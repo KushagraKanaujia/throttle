@@ -1,22 +1,38 @@
-# Throttle: own your intelligence. Keep the savings.
+# Throttle: stop renting your AI.
 
-Throttle sits in front of your OpenAI or Anthropic traffic. It proves which
-share of that traffic can move to an open-weight model you run yourself,
-without losing quality. It moves that share, with automatic fallback to the
-API. And it reruns your tests every time a new open model comes out. We charge
-a share of the savings we measure: no savings, no bill.
+Throttle cuts your AI bill. It finds the AI calls in your app that a cheaper
+model can do just as well, proves it on your own traffic, and moves them.
 
-Throttle is an open-source CLI (MIT). It runs on your machine.
+It lives in your code: a GitHub Action, plus one change to your API base URL.
+When a pull request adds or changes an AI call, Throttle tests that job against
+other models, closed or open, on the requests your app really sends. If one
+does the job as well for less, your team approves and the job moves. If the
+new model errors or gives a broken answer, that request goes back to the API on
+its own. Every miss is kept as a lesson.
+
+Throttle is open source (MIT). We are looking for design partners: teams with a
+real AI bill who want to cut it. It has not run on a company's production
+traffic yet. Write to kush@throttle-pro.com.
+
+**Why the proof matters** (real runs; the FP8 results are on a rented AMD
+MI300X with vLLM, [raw data](validation/hotaisle-mi300x-20261001/)):
+
+- An FP8 checkpoint of Qwen2.5-72B cost $1.13 per million tokens instead of
+  $1.67, with correct answers.
+- vLLM's on-the-fly FP8 looked 47% cheaper, but the answers broke. The 32B
+  model replied "!!!!".
+- On a MacBook running Ollama, the same untouched server moved 27% one way
+  and 11% the other across four checks. A change has to beat that noise before
+  Throttle calls it a win.
 
 ## Try it in a minute
 
 ```sh
-pip install git+https://github.com/KushagraKanaujia/throttle@own/mvp
+pip install git+https://github.com/KushagraKanaujia/throttle
 throttle demo
 ```
 
-The loop is new and lives on the `own/mvp` branch for now. The `throttle-pro`
-package on PyPI is behind and does not have it yet.
+The `throttle-pro` package on PyPI is behind and does not have this loop yet.
 
 `throttle demo` runs the whole loop offline on made-up traffic: capture,
 workloads, shadow, eval and report. It needs no API key, no GPU and no
