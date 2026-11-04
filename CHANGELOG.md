@@ -4,9 +4,13 @@ All notable changes to Throttle will be documented in this file.
 
 ## [Unreleased]
 
-Throttle is repositioning to "own your intelligence". This release removes
-what the new product does not need. Pricing moves to a share of measured
-savings, so the credit plans and every login/metering path are gone.
+## [0.7.0] - 2026-11-03
+
+Stop renting your AI. Throttle now tests your app's OpenAI and Anthropic calls
+against cheaper models on your own traffic, moves the ones that pass after you
+approve, and falls back to the API on any error or broken answer. This release
+adds that loop and Throttle for GitHub, and removes what the new product does
+not need: the credit plans and every login and metering path are gone.
 
 ### Added
 Throttle for GitHub: a teammate that watches AI changes.
