@@ -4,25 +4,24 @@
 
 Throttle needs **Python 3.11 or newer**. The command is `throttle`.
 
-Install v0.7.0 from `main`, pinned to its full commit SHA so what you install never changes under you. These docs can be newer than that commit; each release moves the pin to itself.
+Install v0.7.0 from PyPI. Pin the version so what you install never changes under you.
 
-```bash loop (v0.7.0)
-pip install "git+https://github.com/KushagraKanaujia/throttle@64cb03e30b87b1de0e4bcc6bed55d0a54641eb95"  # v0.7.0
+```bash pip
+python3 -m pip install "throttle-pro==0.7.0"
 throttle demo
 ```
 
-That gives you the whole loop (`capture`, `workloads`, `shadow`, `eval`, `report`, `route`, `refresh`, `demo`), `jobs`, `pr-check` and the serving tools.
-
-The PyPI package `throttle-pro` is behind until 0.7.0 is published there. It does not have the loop yet, only the serving commands such as `check`:
-
 ```bash pipx
-pipx install throttle-pro
+pipx install "throttle-pro==0.7.0"
 throttle --version
 ```
 
-```bash pip
-python3 -m pip install throttle-pro
-throttle --version
+That gives you the whole loop (`capture`, `workloads`, `shadow`, `eval`, `report`, `route`, `refresh`, `demo`), `jobs`, `pr-check` and the serving tools such as `check`.
+
+To install straight from the source you can read, use the release tag:
+
+```bash
+pip install "git+https://github.com/KushagraKanaujia/throttle@v0.7.0"
 ```
 
 
@@ -30,7 +29,7 @@ throttle --version
 
 | Extra | Install | What it adds |
 | --- | --- | --- |
-| `embeddings` | `pip install "throttle-pro[embeddings] @ git+https://github.com/KushagraKanaujia/throttle@64cb03e30b87b1de0e4bcc6bed55d0a54641eb95"` | `throttle workloads --embed` (similarity clusters) and the opt-in semantic tier of the caching proxy. |
+| `embeddings` | `pip install "throttle-pro[embeddings]==0.7.0"` | `throttle workloads --embed` (similarity clusters) and the opt-in semantic tier of the caching proxy. |
 
 ## Check your setup
 

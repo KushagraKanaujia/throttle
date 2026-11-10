@@ -4,6 +4,11 @@ All notable changes to Throttle will be documented in this file.
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-11-10
+
+Stop renting your AI. First release of the loop on PyPI: `pip install "throttle-pro==0.7.0"`.
+Includes the security, trust and per-token pricing work below.
+
 ### Added
 - `throttle report` can price a cheaper model per token, with no GPU:
   `--candidate-model` (list price from the bundled table, labelled LIST PRICE)
@@ -53,9 +58,9 @@ All notable changes to Throttle will be documented in this file.
 - Subcommand help says "a cheaper model" or "the candidate model", which can be
   closed or open, to match the top-level help.
 
-## [0.7.0] - 2026-11-03
+### Loop (first tagged 2026-11-03, never published to PyPI)
 
-Stop renting your AI. Throttle now tests your app's OpenAI and Anthropic calls
+Throttle now tests your app's OpenAI and Anthropic calls
 against cheaper models on your own traffic, moves the ones that pass after you
 approve, and falls back to the API on any error or broken answer. This release
 adds that loop and Throttle for GitHub, and removes what the new product does
@@ -146,7 +151,7 @@ stays local under `~/.throttle/own` (or `$THROTTLE_OWN_DIR`, or `--dir`).
   removed commands. The README "70% cheaper" sample output (from mock
   endpoints) is gone.
 
-## [0.7.0] - 2026-10-26
+### Serving tools (first drafted 2026-10-26, never published to PyPI)
 
 Throttle cuts what your LLM inference costs on your own GPUs: whether a
 cheaper model, engine or config still gives good answers on your work

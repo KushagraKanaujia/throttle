@@ -5,10 +5,10 @@
 ## 1. Install
 
 ```bash
-pip install "git+https://github.com/KushagraKanaujia/throttle@64cb03e30b87b1de0e4bcc6bed55d0a54641eb95"  # v0.7.0
+pip install "throttle-pro==0.7.0"
 ```
 
-This pins v0.7.0 by its full commit SHA. The `throttle-pro` package on PyPI is behind until 0.7.0 is published there, and does not have the loop yet.
+This pins v0.7.0. To install from the source tag instead, see Installation.
 
 ## 2. Run the demo
 
