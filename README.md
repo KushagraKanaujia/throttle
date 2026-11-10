@@ -32,21 +32,22 @@ MI300X with vLLM, [raw data](validation/hotaisle-mi300x-20261001/)):
 ## Try it in a minute
 
 ```sh
-pip install "git+https://github.com/KushagraKanaujia/throttle@64cb03e30b87b1de0e4bcc6bed55d0a54641eb95"  # v0.7.0
+pip install "throttle-pro==0.7.0"
 throttle demo
 ```
 
-The install is pinned to the full commit of v0.7.0, so what you install
-never changes under you. This README can be newer than that commit; each
-release moves the pin to itself. The `throttle-pro` package on PyPI is behind and does not
-have this loop yet; this README switches to `pip install throttle-pro==0.7.0`
-once 0.7.0 is published there.
+Pin the version so what you install never changes under you.
 
 `throttle demo` runs the whole loop offline on made-up traffic: capture,
 workloads, shadow, eval and report. It needs no API key, no GPU and no
 network. It writes `throttle-demo/report.html`. Every number in it is
 labelled DEMO, because none of it is a measurement of a real company or a
 real model.
+
+Already serving your own model? `throttle check --url http://your-server:8000
+--model <name> --total-hourly-price <usd>` measures what it really costs per
+1M tokens, with a 95% interval, and refuses to call a change a win inside the
+noise. See [Serving your own model](#serving-your-own-model).
 
 ## How Throttle is different
 
@@ -128,7 +129,7 @@ with the date each price was checked and the page it came from. `--prices
 FILE` adds or replaces prices; those are labelled ASSUMED. The monthly figure
 scales the capture window to 30 days and is refused for a window shorter than
 a day. `--embed` also splits each kind into clusters by prompt similarity
-(needs `pip install "throttle-pro[embeddings]"`).
+(needs `pip install "throttle-pro[embeddings]==0.7.0"`).
 
 ### 3. Shadow
 

@@ -431,16 +431,18 @@ def readme_section(title: str) -> str:
     return text[start:end if end != -1 else None]
 
 
-def test_readme_install_and_action_are_pinned_to_a_full_sha() -> None:
+def test_readme_install_and_action_are_pinned() -> None:
     text = (REPO / "README.md").read_text(encoding="utf-8")
-    assert f'pip install "git+https://github.com/KushagraKanaujia/throttle@{PINNED_SHA}"  # v0.7.0' in text
+    assert 'pip install "throttle-pro==0.7.0"' in text
+    assert "PyPI is behind" not in text
     assert f"uses: KushagraKanaujia/throttle/.github/actions/throttle-pr@{PINNED_SHA} # v0.7.0" in text
     assert "Pin the action by its full commit SHA" in text
     assert "throttle-pr@main" not in text
     assert not re.search(r"pip install git\+https://github\.com/KushagraKanaujia/throttle\s*$", text, re.M)
     for doc in ("getting-started/installation.md", "getting-started/quickstart.md"):
         body = (REPO / "src/throttle/console/docs" / doc).read_text(encoding="utf-8")
-        assert PINNED_SHA in body, doc
+        assert 'throttle-pro==0.7.0' in body, doc
+        assert "behind until" not in body, doc
         assert "own/mvp" not in body and "pipx upgrade" not in body, doc
 
 
