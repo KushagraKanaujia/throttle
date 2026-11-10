@@ -84,7 +84,8 @@ def make_app(root, owned_respond, *, api=api_respond, seed=0, router=None):
 
 
 def front(app):
-    return httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://capture")
+    return httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://capture",
+                             headers={"authorization": "Bearer sk-test"})  # routing needs a key
 
 
 async def post(app, path, body, headers=None):
@@ -490,15 +491,18 @@ def seed_month(root, *, owned_lines, forced=0, fallbacks=(), history=True, no_us
     api_exchange(root, fallback=True, reason="timeout", ts="2026-09-06T00:00:00.000Z", cached=None)
 
 
-def test_savings_math_positive_and_forced_not_billable(tmp_path):
+def test_savings_math_positive_and_forced_not_counted(tmp_path):
     seed_month(tmp_path, owned_lines=10, forced=2, fallbacks=["timeout", "truncated", "http_error: 503"])
     doc = rt.savings_statement(tmp_path, "2026-10", gpu_hourly_rate=0.005, gpus=1)
     assert doc["period_hours"] == 31 * 24
     assert doc["api_cost_avoided_usd"] == pytest.approx(8 * SHARE_40)
-    assert doc["forced"] == {"requests": 2, "api_cost_avoided_usd": pytest.approx(2 * SHARE_40), "billable": False}
+    assert doc["forced"] == {"requests": 2, "api_cost_avoided_usd": pytest.approx(2 * SHARE_40),
+                             "counted_in_net": False}
     assert doc["owned_cost_usd"] == pytest.approx(0.005 * 744)
     assert doc["net_realized_savings_usd"] == pytest.approx(8 * SHARE_40 - 3.72)
-    assert doc["billable"] is True
+    assert doc["has_savings"] is True
+    assert doc["schema"] == "throttle.own.savings/2"
+    assert doc["period_hours_label"] == "October: 744 h, calendar month"
     assert doc["requests_served_owned"] == 11 and doc["requests_priced"] == 10
     assert doc["excluded"] == {"owned model reported no token usage": 1}
     assert doc["cache_basis_counts"] == {rt.CACHE_MEASURED: 10}
@@ -507,23 +511,30 @@ def test_savings_math_positive_and_forced_not_billable(tmp_path):
     assert set(doc["fallbacks_by_reason"]) == {"timeout", "truncated", "http_error"}
     assert "ASSUMED" in doc["owned_cost_label"] and "MEASURED" in doc["api_cost_avoided_label"]
     row = doc["by_type"]["chat"]
-    assert row["forced_requests"] == 2 and row["billable_avoided_usd"] == pytest.approx(8 * SHARE_40)
+    assert row["forced_requests"] == 2 and row["approved_avoided_usd"] == pytest.approx(8 * SHARE_40)
     text = rt.render_statement(doc)
-    assert "FORCED (not billable; quality not proven)" in text and "no bill" not in text
+    assert "FORCED (not counted in the net; quality not proven)" in text
+    assert "No savings this month." not in text
+    flat = " ".join(" ".join(line.strip().strip("│|").split()) for line in text.splitlines())
+    assert "October: 744 h, calendar month" in flat and "730 h is an average month projection" in flat
+    for retired in ("billable", "no bill", "we bill"):
+        assert retired not in text.lower(), retired
     assumptions = " ".join(doc["assumptions"])
     assert "input + output tokens" in assumptions and "cache-hit share is measured" in assumptions
-    assert "not billable" in assumptions
+    assert "not counted in the net" in assumptions
+    assert "calendar month" in assumptions and "730 h" in assumptions
 
 
-def test_forced_only_savings_are_never_billed(tmp_path):
+def test_forced_only_savings_are_never_counted(tmp_path):
     seed_month(tmp_path, owned_lines=5, forced=5, no_usage=False)
     doc = rt.savings_statement(tmp_path, "2026-10", owned_cost_usd=0.01)
     assert doc["forced"]["api_cost_avoided_usd"] == pytest.approx(5 * SHARE_40)
     assert doc["api_cost_avoided_usd"] == 0
     assert doc["net_realized_savings_usd"] == pytest.approx(-0.01)
-    assert doc["billable"] is False
+    assert doc["has_savings"] is False
     text = rt.render_statement(doc)
-    assert "No savings this period, no bill." in text and "FORCED (not billable" in text
+    assert "No savings this month." in text and "FORCED (not counted in the net" in text
+    assert "-$0.01" in text and "(billable)" not in text
 
 
 def test_no_cache_history_prices_all_input_at_cached_rate(tmp_path):
@@ -553,8 +564,8 @@ def test_cache_history_is_per_type_and_classifies_untyped_captures(tmp_path):
     untyped = {"model": INCUMBENT_OPENAI, "messages": [{"role": "user", "content": "hello there, how are you"}]}
     api_exchange(tmp_path, kind=None, request=untyped, input_tokens=1000, cached=0)   # classified as chat
     doc = rt.savings_statement(tmp_path, "2026-10", owned_cost_usd=0)
-    assert doc["by_type"]["chat"]["billable_avoided_usd"] == pytest.approx(UNCACHED)
-    assert doc["by_type"]["extraction"]["billable_avoided_usd"] == pytest.approx(ALL_CACHED)
+    assert doc["by_type"]["chat"]["approved_avoided_usd"] == pytest.approx(UNCACHED)
+    assert doc["by_type"]["extraction"]["approved_avoided_usd"] == pytest.approx(ALL_CACHED)
     assert doc["by_type"]["extraction"]["cache_basis"] == [rt.CACHE_NONE]
 
 
@@ -571,13 +582,15 @@ def test_no_published_cached_rate_is_labelled(tmp_path):
     assert "ASSUMED" in doc["api_cost_avoided_label"]
 
 
-def test_savings_zero_or_negative_says_no_bill(tmp_path, capsys):
+def test_savings_zero_or_negative_says_no_savings_this_month(tmp_path, capsys):
     seed_month(tmp_path, owned_lines=2, no_usage=False)
     doc = rt.savings_statement(tmp_path, "2026-10", owned_cost_usd=2 * SHARE_40)
     assert doc["net_realized_savings_usd"] == pytest.approx(0.0)
-    assert doc["billable"] is False
+    assert doc["has_savings"] is False
     assert doc["owned_cost_label"].startswith("OPERATOR-REPORTED")
-    assert "No savings this period, no bill." in rt.render_statement(doc)
+    text = rt.render_statement(doc)
+    assert "No savings this month." in text and "Net realized savings:  $0.00" in text
+    assert "Owned hours" not in text   # an invoiced cost has no hours to label
     from throttle.own.cli import dispatch
 
     args = build_parser().parse_args(["route", "savings", "--dir", str(tmp_path), "--month", "2026-10",
@@ -585,7 +598,8 @@ def test_savings_zero_or_negative_says_no_bill(tmp_path, capsys):
     assert dispatch(args) == 0
     out = json.loads(capsys.readouterr().out)
     assert out["net_realized_savings_usd"] == pytest.approx(2 * SHARE_40 - 1488.0)
-    assert out["billable"] is False
+    assert out["has_savings"] is False and "billable" not in out
+    assert out["period_hours_label"] == "October: 744 h, calendar month"
 
 
 def test_savings_requires_owned_cost_inputs(tmp_path, capsys):
@@ -597,3 +611,19 @@ def test_savings_requires_owned_cost_inputs(tmp_path, capsys):
     args = build_parser().parse_args(["route", "savings", "--dir", str(tmp_path), "--month", "10-2026",
                                       "--owned-cost-usd", "1"])
     assert dispatch(args) == 2
+
+
+def test_month_hours_label_is_the_calendar_month():
+    assert rt.month_hours_label("2026-11") == "November: 720 h, calendar month"
+    assert rt.month_hours_label("2028-02") == "February: 696 h, calendar month"
+
+
+def test_route_approve_help_explains_the_gate_and_canary(capsys):
+    with pytest.raises(SystemExit):
+        build_parser().parse_args(["route", "approve", "--help"])
+    out = " ".join(capsys.readouterr().out.split())
+    assert "approval is refused unless the latest `throttle eval` run" in out
+    assert "BETTER or NO MATERIAL DIFFERENCE" in out
+    assert "--canary RATE serves only that share" in out
+    assert "--force skips the gate" in out and "FORCED" in out
+    assert "falls back to the API" in out

@@ -13,6 +13,9 @@ from fastapi.responses import JSONResponse
 
 from throttle.proxy import ProxyServer
 
+# The proxy only caches and dedupes requests that carry a key.
+AUTH = {"Authorization": "Bearer test-key"}
+
 # Each server gets a fresh free port, so a server left over from an earlier
 # test (or another process) can't make the next bind fail.
 PORTS: Dict[str, int] = {}
@@ -172,7 +175,7 @@ async def test_five_concurrent_identical_requests_one_backend_call(proxy_to_mock
     }
 
     async def send_request(client_id: int):
-        async with httpx.AsyncClient(timeout=10.0) as client:
+        async with httpx.AsyncClient(timeout=10.0, headers=AUTH) as client:
             response = await client.post(
                 f"http://127.0.0.1:{PORTS['proxy']}/v1/chat/completions",
                 json=payload,
@@ -224,7 +227,7 @@ async def test_ten_concurrent_paraphrases_current_behavior(proxy_to_mock, mock_b
     ]
 
     async def send_request(idx: int, prompt: str):
-        async with httpx.AsyncClient(timeout=10.0) as client:
+        async with httpx.AsyncClient(timeout=10.0, headers=AUTH) as client:
             response = await client.post(
                 f"http://127.0.0.1:{PORTS['proxy']}/v1/chat/completions",
                 json={
@@ -315,7 +318,7 @@ async def test_backend_error_propagates_to_all_waiters(mock_backend_server):
         async def send_request(client_id: int):
             """Send request through HTTP client and capture status code."""
             try:
-                async with httpx.AsyncClient(timeout=5.0) as client:
+                async with httpx.AsyncClient(timeout=5.0, headers=AUTH) as client:
                     response = await client.post(
                         f"http://127.0.0.1:{PORTS['proxy2']}/v1/chat/completions",
                         json=payload,
@@ -389,7 +392,7 @@ async def test_backend_timeout_does_not_hang_waiters(mock_backend_server):
         async def send_request(client_id: int):
             try:
                 # Client timeout longer than proxy's backend timeout
-                async with httpx.AsyncClient(timeout=2.0) as client:
+                async with httpx.AsyncClient(timeout=2.0, headers=AUTH) as client:
                     # Call through proxy's HTTP endpoint
                     response = await client.post(
                         f"http://127.0.0.1:{PORTS['proxy']}/v1/chat/completions",
@@ -430,7 +433,7 @@ async def test_sequential_identical_requests_hit_cache(proxy_to_mock, mock_backe
         "stream": False,
     }
 
-    async with httpx.AsyncClient(timeout=10.0) as client:
+    async with httpx.AsyncClient(timeout=10.0, headers=AUTH) as client:
         # First request - cache miss
         response1 = await client.post(
             f"http://127.0.0.1:{PORTS['proxy']}/v1/chat/completions",
@@ -469,7 +472,7 @@ async def test_backend_calls_counter_matches_mock_count(proxy_to_mock, mock_back
     mock = mock_backend_server
 
     # Send various requests
-    async with httpx.AsyncClient(timeout=10.0) as client:
+    async with httpx.AsyncClient(timeout=10.0, headers=AUTH) as client:
         # 3 different prompts = 3 backend calls
         for i in range(3):
             await client.post(
@@ -507,7 +510,7 @@ async def test_concurrent_requests_with_mixed_prompts(proxy_to_mock, mock_backen
     ]
 
     async def send_request(idx: int):
-        async with httpx.AsyncClient(timeout=10.0) as client:
+        async with httpx.AsyncClient(timeout=10.0, headers=AUTH) as client:
             response = await client.post(
                 f"http://127.0.0.1:{PORTS['proxy']}/v1/chat/completions",
                 json={
@@ -557,7 +560,7 @@ async def test_cross_scope_hit_inflation_bug_regression(proxy_to_mock, mock_back
     mock = mock_backend_server
     messages = [{"role": "user", "content": "Say hello"}]
 
-    async with httpx.AsyncClient(timeout=10.0) as client:
+    async with httpx.AsyncClient(timeout=10.0, headers=AUTH) as client:
         # Prime cache with model A
         await client.post(
             f"http://127.0.0.1:{PORTS['proxy']}/v1/chat/completions",

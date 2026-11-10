@@ -4,14 +4,16 @@
 
 Throttle needs **Python 3.11 or newer**. The command is `throttle`.
 
-The own-your-intelligence loop (`capture`, `workloads`, `shadow`, `eval`, `report`, `route`, `refresh`, `demo`) lives on the `own/mvp` branch for now:
+Install v0.7.0 from `main`, pinned to its full commit SHA so what you install never changes under you. These docs can be newer than that commit; each release moves the pin to itself.
 
-```bash loop (own/mvp)
-pip install git+https://github.com/KushagraKanaujia/throttle@own/mvp
+```bash loop (v0.7.0)
+pip install "git+https://github.com/KushagraKanaujia/throttle@64cb03e30b87b1de0e4bcc6bed55d0a54641eb95"  # v0.7.0
 throttle demo
 ```
 
-The PyPI package `throttle-pro` is behind and does not have the loop yet. It has the serving commands such as `check`:
+That gives you the whole loop (`capture`, `workloads`, `shadow`, `eval`, `report`, `route`, `refresh`, `demo`), `jobs`, `pr-check` and the serving tools.
+
+The PyPI package `throttle-pro` is behind until 0.7.0 is published there. It does not have the loop yet, only the serving commands such as `check`:
 
 ```bash pipx
 pipx install throttle-pro
@@ -23,16 +25,12 @@ python3 -m pip install throttle-pro
 throttle --version
 ```
 
-```bash upgrade
-pipx upgrade throttle-pro
-```
-
 
 ## Optional extras
 
 | Extra | Install | What it adds |
 | --- | --- | --- |
-| `embeddings` | `pipx install 'throttle-pro[embeddings]'` | `throttle workloads --embed` (similarity clusters) and the opt-in semantic tier of the caching proxy. |
+| `embeddings` | `pip install "throttle-pro[embeddings] @ git+https://github.com/KushagraKanaujia/throttle@64cb03e30b87b1de0e4bcc6bed55d0a54641eb95"` | `throttle workloads --embed` (similarity clusters) and the opt-in semantic tier of the caching proxy. |
 
 ## Check your setup
 
@@ -42,4 +40,4 @@ throttle --help
 
 With no server running, `throttle demo` shows the whole loop on made-up data. With a server, point `throttle check` at its OpenAI-compatible URL (with or without `/v1`).
 
-> **Tip:** Throttle sends requests only to endpoints you name. Keys are never stored. See [Privacy](../more/privacy.md).
+> **Tip:** Throttle sends requests only to endpoints you name. Keys are never stored. The capture proxy sees your API keys in flight, so pin what you install by SHA. See [Privacy and data flow](../more/privacy.md).

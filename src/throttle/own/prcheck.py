@@ -26,7 +26,9 @@ sticky comment on the pull request.
 from __future__ import annotations
 
 import argparse
+import html
 import json
+import re
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -91,7 +93,7 @@ def diff_sites(base: Sequence[scan_mod.CallSite], head: Sequence[scan_mod.CallSi
     moved_old = {o.job for o, _ in moves}
     moved_new = {n.job for _, n in moves}
     for old, new in moves:
-        out.append(JobChange(MOVED_IN_CODE, old, new, [f"moved from {old.job}"]))
+        out.append(JobChange(MOVED_IN_CODE, old, new, [f"moved from {_code(old.job)}"]))
     unchanged = 0
     for job in sorted(set(before) & set(after)):
         what = jobs_mod.changes(before[job], after[job])
@@ -171,7 +173,10 @@ def quality_of(result: Mapping[str, Any] | None, run: Mapping[str, Any] | None) 
         "source": "job eval", "run_id": (run or {}).get("run_id"), "candidate": (run or {}).get("candidate"),
         "candidate_model": (run or {}).get("candidate_model"), "judge": (run or {}).get("judge"),
         "verdict": result.get("verdict"), "n": result.get("n"), "judged": judged,
-        "wins": result.get("wins"), "ties": int(result.get("ties") or 0) + int(result.get("order_disagree") or 0),
+        # Judge-unsure items (the judge flipped when the answers were swapped)
+        # stay apart: they are never counted as "same".
+        "wins": result.get("wins"), "ties": int(result.get("ties") or 0),
+        "order_disagree": int(result.get("order_disagree") or 0),
         "losses": result.get("losses"), "min_n": (run or {}).get("min_n"),
         "net_ci": [net.get("low"), net.get("high")] if net.get("low") is not None else None,
         "format_broken": [name for name, c in _format_checks(result).items() if not c],
@@ -232,7 +237,7 @@ def decide(change: JobChange, entry: jobs_mod.JobEntry | None, quality: Mapping[
                                    "then approve the move.")
             if api_call is not None and owned_call >= api_call:
                 return "keep", "Your model passed, but it costs more per call than the API here."
-            return "move", f"Your model passed. Approve the move with `throttle jobs approve {change.job} ...`."
+            return "move", f"Your model passed. Approve the move with {_code(f'throttle jobs approve {change.job} ...')}."
         if verdict == ev.WORSE:
             if quality.get("format_broken"):
                 return "keep", f"Your model breaks the output format here ({', '.join(quality['format_broken'])})."
@@ -242,7 +247,12 @@ def decide(change: JobChange, entry: jobs_mod.JobEntry | None, quality: Mapping[
         return "test_more", (f"Stays on the API while Throttle collects more calls "
                              f"({quality.get('judged') or 0} judged so far, needs {need}).")
     if change.kind == ADDED:
-        return "test_more", "Stays on the API. Throttle starts testing it on real calls once this ships."
+        site = change.site
+        if (not site.tag and (site.prompt_dynamic or site.prompt_fingerprint is None)
+                and site.match_template is None):
+            return "test_more", ("Throttle cannot read this prompt, so it stays on the API. "
+                                 "Tag it with X-Throttle-Job to test it.")
+        return "test_more", "Stays on the API. It can be tested once there is captured traffic and a candidate."
     if old_quality is not None and old_quality.get("verdict") in jobs_mod.PASSING:
         return "test_again", "Your model passed on the old prompt. The new one stays on the API until it passes too."
     return "test_more", "Stays on the API. The new version has not been tested on real calls yet."
@@ -395,7 +405,34 @@ def money(value: float | None) -> str:
 
 
 def _code(text: str) -> str:
-    return "`" + text.replace("`", "'") + "`"
+    """One inert Markdown code span (see :func:`jobs.code_span`)."""
+    return jobs_mod.code_span(text)
+
+
+# Characters that start Markdown or HTML syntax. Each gets a backslash.
+_MD_SPECIAL = frozenset("\\`*_{}[]()<>!|~#&")
+
+
+def md_escape(text: Any) -> str:
+    """Plain text that renders as itself in a GitHub comment: links, images,
+    emphasis, HTML, tables and line breaks are neutralised. ``@`` gets a
+    zero-width space after it so it never pings anyone, and ``://`` / ``www.``
+    get one too so bare URLs are not autolinked."""
+    out = []
+    for ch in " ".join(str(text).split()):
+        if ch in _MD_SPECIAL:
+            out.append("\\" + ch)
+        elif ch == "@":
+            out.append("@\u200b")
+        else:
+            out.append(ch)
+    escaped = "".join(out).replace("://", ":\u200b//")
+    return re.sub(r"(?i)\bwww\.", lambda m: m.group(0)[:3] + "\u200b.", escaped)
+
+
+def _sentence(text: str) -> str:
+    """First letter upper-cased; the rest (model names, JSON) untouched."""
+    return text[:1].upper() + text[1:]
 
 
 def _cell(text: str) -> str:
@@ -432,6 +469,13 @@ def _model_cell(row: Mapping[str, Any]) -> str:
     if oq:
         return f"old version: {oq['verdict'].lower()}; new one not tested"
     return "not tested yet"
+
+
+def _action_cell(row: Mapping[str, Any]) -> str:
+    title = f"**{row['action_title']}**"
+    if row["action"] == "move":
+        title += " (cheaper per call; see throttle report for the full monthly cost)"
+    return title
 
 
 def _change_cell(row: Mapping[str, Any]) -> str:
@@ -476,7 +520,7 @@ def render_markdown(doc: Mapping[str, Any]) -> str:
     for row in rows:
         out.append("| " + " | ".join([
             _cell(_code(row["job"])), _cell(_change_cell(row)), _cell(_api_cell(row)), _cell(_model_cell(row)),
-            f"**{row['action_title']}**",
+            _action_cell(row),
         ]) + " |")
     if doc.get("unchanged_jobs"):
         n_same = doc["unchanged_jobs"]
@@ -491,10 +535,10 @@ def render_markdown(doc: Mapping[str, Any]) -> str:
 
 def _details(row: Mapping[str, Any]) -> list[str]:
     title = {ADDED: "New", CHANGED: "Changed", MOVED_IN_CODE: "Moved", REMOVED: "Removed"}[row["change"]]
-    model = row.get("model") or "model set at run time"
+    model = _code(str(row["model"])) if row.get("model") else "model set at run time"
     lines = [f"#### {title}: {_code(row['job'])}", "",
-             f"{_code(row['location'])}, {row['provider']} {row['api']}, {_code(str(model))}. "
-             + ("" if row["change"] in (ADDED, REMOVED) else _cell(", ".join(row["what"]).capitalize() + ". "))
+             f"{_code(row['location'])}, {md_escape(row['provider'])} {md_escape(row['api'])}, {model}. "
+             + ("" if row["change"] in (ADDED, REMOVED) else _cell(_sentence(", ".join(row["what"])) + ". "))
              + row["action_text"], ""]
     if row["change"] == REMOVED:
         return lines
@@ -523,11 +567,11 @@ def _details(row: Mapping[str, Any]) -> list[str]:
     q = row.get("quality")
     look = row.get("first_look")
     if q:
-        lines.append(f"- **Proof:** job eval {_code(str(q['run_id']))} of {q.get('candidate') or 'your model'}: "
-                     f"better on {q['wins']}, same on {q['ties']}, worse on {q['losses']} of {q['judged']} real calls "
+        lines.append(f"- **Proof:** job eval {_code(str(q['run_id']))} of {md_escape(q.get('candidate') or 'your model')}: "
+                     f"{_split(q)} of {q['judged']} real calls "
                      f"(judge asked twice, answers swapped). Verdict: {q['verdict']}.")
         if q.get("reasons"):
-            lines.append("  <details><summary>Why</summary>" + "<br>".join(_cell(r) for r in q["reasons"])
+            lines.append("  <details><summary>Why</summary>" + "<br>".join(_cell(html.escape(str(r))) for r in q["reasons"])
                          + (f"<br>win minus loss 95% CI [{q['net_ci'][0]:+.2f}, {q['net_ci'][1]:+.2f}]" if q.get("net_ci") else "")
                          + "</details>")
     elif look and look.get("skipped"):
@@ -535,8 +579,7 @@ def _details(row: Mapping[str, Any]) -> list[str]:
     elif look:
         if row.get("old_quality"):
             oq = row["old_quality"]
-            lines.append(f"- **The old prompt, on real calls:** better on {oq['wins']}, same on {oq['ties']}, worse on "
-                         f"{oq['losses']} of {oq['judged']} judged ({oq['verdict']}). The new prompt is tested again from scratch.")
+            lines.append(f"- **The old prompt, on real calls:** {_split(oq)} of {oq['judged']} judged ({oq['verdict']}). The new prompt is tested again from scratch.")
         lines += _first_look_lines(look)
     elif row.get("old_quality"):
         oq = row["old_quality"]
@@ -548,11 +591,20 @@ def _details(row: Mapping[str, Any]) -> list[str]:
     return lines
 
 
+def _split(q: Mapping[str, Any]) -> str:
+    """'better on X, same on Y, judge unsure on Z, worse on W'. Judge unsure
+    is its own count and never folded into 'same'."""
+    unsure = int(q.get("order_disagree") or 0)
+    return (f"better on {q.get('wins') or 0}, same on {q.get('ties') or 0}, "
+            + (f"judge unsure on {unsure}, " if unsure else "")
+            + f"worse on {q.get('losses') or 0}")
+
+
 def _first_look_lines(look: Mapping[str, Any]) -> list[str]:
     good = int(look.get("wins") or 0) + int(look.get("ties") or 0)
     lines = [
         f"- **Proof (first look, not enough data yet):** {look['inputs']} made-up inputs, not your traffic. "
-        f"{look['candidate']} ({_code(look['candidate_model'])}) was as good or better on {good}, worse on "
+        f"{md_escape(look['candidate'])} ({_code(look['candidate_model'])}) was as good or better on {good}, worse on "
         f"{look.get('losses', 0)}" + (f", and the judge flipped on {look['order_disagree']}" if look.get("order_disagree") else "")
         + f" (judge {_code(look['judge']['model'])}, asked twice with the answers swapped). This is not a verdict and moves nothing.",
     ]
@@ -607,6 +659,7 @@ def _footer(doc: Mapping[str, Any]) -> list[str]:
         "<sub>MEASURED: token counts Throttle saw. LIST PRICE: the published price on the date shown. ASSUMED: a price "
         "your team gave Throttle. FIRST LOOK: made-up inputs, not your traffic. Ran in your CI: prompts went only to the "
         f"API, model and judge your team set up. Nothing moves without a passing test and your approval. "
+        f"After a move, any answer from your model that fails a check falls back to the API. "
         f"Base {_code(doc['base'][:12])}, head {_code(doc['head'][:12])}.</sub>",
     ]
 

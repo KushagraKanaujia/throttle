@@ -51,7 +51,8 @@ def make_app(root, owned=lambda req: httpx.Response(200, json=owned_answer()), *
 async def post(app, system, user, headers=None, **extra):
     body = {"model": "gpt-4o-mini", "messages": [{"role": "system", "content": system}, {"role": "user", "content": user}]}
     body.update(extra)
-    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://capture") as client:
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://capture",
+                             headers={"authorization": "Bearer sk-test"}) as client:  # routing needs a key
         resp = await client.post("/v1/chat/completions", content=json.dumps(body).encode(),
                                  headers={"content-type": "application/json", **(headers or {})})
     await app.state.capture.drain()

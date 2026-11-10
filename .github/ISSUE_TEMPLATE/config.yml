@@ -1,5 +1,8 @@
 blank_issues_enabled: true
 contact_links:
-  - name: Throttle Pilot and questions
-    url: https://www.throttle-pro.com/pilot
-    about: Running agents on your own GPUs? The pilot page has the terms and how to reach us (kush@throttle-pro.com)
+  - name: Stop renting your AI (plans and questions)
+    url: https://throttle-pro.com
+    about: Cut your AI bill by moving each AI job to a cheaper model that does it as well, tested on your own traffic. Questions go to kush@throttle-pro.com
+  - name: Report a security issue privately
+    url: https://github.com/KushagraKanaujia/throttle/blob/main/SECURITY.md
+    about: Please do not open a public issue for a vulnerability. SECURITY.md says how to reach us.

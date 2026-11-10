@@ -11,6 +11,9 @@ import pytest
 
 from throttle.proxy import create_app
 
+# The proxy only caches and dedupes requests that carry a key.
+AUTH = {"Authorization": "Bearer test-key"}
+
 # Backend configuration from environment
 BACKEND_URL = os.getenv("BACKEND_URL", "http://localhost:11434")
 BACKEND_MODEL = os.getenv("BACKEND_MODEL", "llama3.2:1b")
@@ -79,7 +82,7 @@ async def test_proxy_cache_hit_with_real_http_client():
 
     try:
         # Create a real HTTP client (external to Throttle's benchmark code)
-        async with httpx.AsyncClient(timeout=30.0) as client:
+        async with httpx.AsyncClient(timeout=30.0, headers=AUTH) as client:
 
             # First request - should be a cache miss, forwarded to backend
             request_body = {
@@ -232,7 +235,7 @@ async def test_proxy_streaming_with_cache():
     await asyncio.sleep(2)
 
     try:
-        async with httpx.AsyncClient(timeout=30.0) as client:
+        async with httpx.AsyncClient(timeout=30.0, headers=AUTH) as client:
 
             # First streaming request (cache miss)
             request_body = {

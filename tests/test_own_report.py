@@ -351,8 +351,10 @@ def test_json_schema(tmp_path):
                          "window", "traffic_scale", "owned_cost", "not_measured_hint", "deployment", "workloads",
                          "totals", "labels", "does_not_prove"}
     assert data["demo"] is False
-    assert set(data["owned_cost"]) == {"check_id", "model", "label", "usd_per_m_tokens", "gpu_hourly_rate_usd",
+    assert data["owned_cost_mode"] == "gpu"
+    assert set(data["owned_cost"]) == {"mode", "check_id", "model", "label", "usd_per_m_tokens", "gpu_hourly_rate_usd",
                                        "gpu_count", "rate_label", "endpoint", "created_at"}
+    assert data["owned_cost"]["mode"] == "gpu"
     assert data["owned_cost"]["label"] == "MEASURED" and data["owned_cost"]["rate_label"] == "ASSUMED"
     assert set(data["deployment"]) == {"gpu_hourly_rate_usd", "gpus", "hours_per_month", "floor_usd_per_month", "label"}
     for w in data["workloads"]:
@@ -481,3 +483,258 @@ def test_report_page_figure_and_job_table(tmp_path):
     for w in report["workloads"]:
         q = w["quality"]
         assert f"As good or better in {q['wins'] + q['ties']} of {q['judged']} tests" in page
+
+
+def test_report_reasons_show_judge_unsure_apart():
+    from throttle.own import report as rep_mod
+
+    q = {"win_rate": 0.25, "tie_rate": 0.25, "loss_rate": 0.30, "order_disagree": 8, "order_disagree_rate": 0.20}
+    assert rep_mod._wtl(q) == "win/tie/loss 25%/25%/30%, judge unsure 20%"
+    q0 = {"win_rate": 0.5, "tie_rate": 0.5, "loss_rate": 0.0, "order_disagree": 0, "order_disagree_rate": 0.0}
+    assert "unsure" not in rep_mod._wtl(q0)
+
+
+def test_old_eval_doc_tie_ci_is_recomputed_from_ties_only():
+    from throttle import statistics as stats
+    from throttle.own import report as rep_mod
+
+    judged, ties, unsure = 40, 10, 8
+    old = {"verdict": "NO MATERIAL DIFFERENCE", "n": judged, "judged": judged, "wins": 10, "ties": ties,
+           "losses": 12, "order_disagree": unsure,
+           "tie_rate_ci": stats.wilson_interval_95(ties + unsure, judged)}   # schema-1 meaning: ties + unsure
+    q = rep_mod._quality(old)
+    low, high = q["tie_rate_ci"]
+    assert low <= q["tie_rate"] <= high
+    expect = stats.wilson_interval_95(ties, judged)
+    assert (low, high) == (expect["low"], expect["high"])
+    new = dict(old, tie_rate_ci=stats.wilson_interval_95(ties, judged),
+               order_disagree_rate_ci=stats.wilson_interval_95(unsure, judged))
+    assert rep_mod._quality(new)["tie_rate_ci"] == [expect["low"], expect["high"]]
+
+
+def test_report_panel_owned_column_is_the_high_end(tmp_path):
+    from throttle.own import demo
+    from throttle.own import report as rep_mod
+
+    result = demo.run_demo(tmp_path / "out", seed=7, requests=600, work_dir=tmp_path / "work")
+    panel = rep_mod.render_panel(result.report)
+    owned = [w for w in result.report["workloads"] if w["owned_usd_per_month"]]
+    assert owned
+    for w in owned:
+        assert rep_mod.usd(w["owned_usd_per_month"]["high"]) in panel
+    assert "at the high end of its 95% CI" in " ".join(panel.replace("│", " ").split())
+
+
+# ---------------------------------------------------------------------------
+# Panel: per-type owned column is the high end, in both modes
+# ---------------------------------------------------------------------------
+
+
+def test_panel_uses_high_end_of_owned_cost_in_gpu_mode():
+    report = _build({"classification": 60}, {"classification": _type_eval(ev.NO_DIFF)},
+                    _check(mean=0.30, low=0.20, high=0.40), rate=0.01, scale=1000)
+    owned = _row(report, "classification")["owned_usd_per_month"]
+    assert owned["point"] != owned["high"]
+    panel = rep.render_panel(report)
+    assert "owned $/mo (high)" in panel
+    assert rep.usd(owned["high"]) in panel and rep.usd(owned["point"]) not in panel
+    assert "Owned cost:" in panel and "GPU" in panel and "check c1" in panel
+
+
+def test_panel_without_check_says_gpu_not_measured():
+    report = _build({"classification": 60}, {"classification": _type_eval(ev.NO_DIFF)}, None, scale=1000)
+    panel = rep.render_panel(report)
+    assert "GPU, not measured" in panel and "owned $/mo (high)" in panel
+
+
+# ---------------------------------------------------------------------------
+# Per-token mode: a cheaper API model or a hosted open model, no GPU
+# All token counts and per-token prices below are SAMPLES for the test; list
+# prices come from the bundled prices.json.
+# ---------------------------------------------------------------------------
+
+from throttle.own import candidate_cost as cc  # noqa: E402
+
+
+def _samples(kinds, pairs):
+    """{type: candidate usage per shadow answer}; ``pairs`` are sample (in, out) token counts."""
+    return {k: [r.Usage(input_tokens=i, output_tokens=o) for i, o in pairs] for k in kinds}
+
+
+def _build_per_token(per_type, types, price, samples, *, scale=1, eval_doc=None):
+    return rep.build_report(_traffic(per_type), PRICES, candidate="cand", eval_doc=eval_doc or _eval_doc(types),
+                            candidate_price=price, candidate_samples=samples, traffic_scale=scale,
+                            generated_at="2026-10-03T00:00:00Z")
+
+
+def test_list_price_candidate_moves_without_gpu():
+    # API model gpt-4.1; candidate gpt-4.1-mini, found in prices.json.
+    price = cc.lookup_price(PRICES, "gpt-4.1-mini")
+    types = {"classification": _type_eval(ev.NO_DIFF)}
+    samples = _samples(types, [(1000, 180), (1000, 220)] * 20)
+    report = _build_per_token({"classification": 60}, types, price, samples, scale=100)
+    row = _row(report, "classification")
+    assert row["recommendation"] == rep.MOVE
+    assert "no GPU to run" in row["reasons"][1]
+    assert report["owned_cost_mode"] == "per_token" and report["deployment"] is None
+    owned = report["owned_cost"]
+    assert owned["mode"] == "per_token" and owned["label"] == "LIST PRICE"
+    assert owned["label_detail"].startswith("LIST PRICE (")
+    assert owned["price"]["input_per_m"] == PRICES.lookup("openai", "gpt-4.1-mini").input_per_m
+    # Owned = requests/mo x candidate's own mean $/request.
+    per_request = (1000 * price.price.input_per_m + 200 * price.price.output_per_m) / 1e6
+    assert row["owned_usd_per_month"]["point"] == pytest.approx(row["requests_per_month"] * per_request)
+    assert row["owned_usd_per_month"]["high"] < row["api_usd_per_month"]
+    totals = report["totals"]
+    assert totals["floor_applied"] is False
+    assert totals["owned_usd_per_month"]["high"] == pytest.approx(row["owned_usd_per_month"]["high"])   # no floor
+    assert totals["conservative_savings_usd"] == pytest.approx(row["api_usd_per_month"] - row["owned_usd_per_month"]["high"])
+    assert "no GPU floor" in totals["savings_note"]
+    labels = {i["what"]: i["label"] for i in report["labels"]}
+    assert labels["Owned cost mode"] == "PER TOKEN"
+    assert labels["Candidate $ per 1M tokens"].startswith("LIST PRICE (")
+    assert "Deployment floor" not in labels and "GPU $ per hour in that check" not in labels
+    panel = rep.render_panel(report)
+    assert "per token, LIST PRICE (" in panel and "no GPU floor" in panel and "owned $/mo (high)" in panel
+    assert f"${price.price.input_per_m:g}/M in, ${price.price.output_per_m:g}/M out (gpt-4.1-mini)" in panel
+    page = rep.render_html(report)
+    assert "always-on GPU" not in page and "GPU price assumed" not in page
+    assert "per-token price, LIST PRICE (" in page and "no GPU to pay for" in page
+    assert rep.usd(row["owned_usd_per_month"]["high"]) in panel
+
+
+def test_assumed_price_candidate_is_labelled_assumed(tmp_path):
+    price = cc.assumed_price(0.2, 0.8)       # sample prices for a hosted open model
+    types = {"classification": _type_eval(ev.NO_DIFF)}
+    report = _build_per_token({"classification": 60}, types, price, _samples(types, [(1000, 200)] * 30), scale=100)
+    assert report["owned_cost"]["label"] == "ASSUMED"
+    assert report["owned_cost"]["model"] == "open-70b"        # from the eval when no --candidate-model
+    assert any(i["what"] == "Candidate $ per 1M tokens" and i["label"].startswith("ASSUMED") for i in report["labels"])
+    assert "per token, ASSUMED" in rep.render_panel(report)
+    _, html_path = rep.write_outputs(report, tmp_path)
+    page = html_path.read_text()
+    assert "ASSUMED" in page and "<script" not in page.lower()
+
+
+def test_cheaper_list_price_with_more_output_tokens_does_not_move():
+    # o4-mini is cheaper per token than gpt-4.1 on the list, but here it writes
+    # 4-5x the output tokens (sample counts), so it costs more in real use.
+    price = cc.lookup_price(PRICES, "o4-mini")
+    types = {"classification": _type_eval(ev.NO_DIFF)}
+    report = _build_per_token({"classification": 60}, types, price,
+                              _samples(types, [(1000, 800), (1000, 1000)] * 20), scale=100)
+    row = _row(report, "classification")
+    assert row["owned_usd_per_month"]["low"] > row["api_usd_per_month"]
+    assert row["recommendation"] == rep.KEEP
+    assert row["conservative_savings_usd_per_month"] < 0
+    assert report["totals"]["conservative_savings_usd"] is None
+
+
+def test_per_token_without_shadow_usage_is_not_measured():
+    price = cc.assumed_price(0.2, 0.8)
+    types = {"classification": _type_eval(ev.NO_DIFF)}
+    report = _build_per_token({"classification": 60}, types, price, {}, scale=100)
+    row = _row(report, "classification")
+    assert row["owned_usd_per_month"] is None and row["recommendation"] == rep.MORE_DATA
+    assert row["owned_note"].startswith("not measured")
+
+
+def test_priced_model_that_did_not_answer_is_flagged():
+    price = cc.lookup_price(PRICES, "gpt-4.1-mini")
+    types = {"classification": _type_eval(ev.NO_DIFF)}
+    report = _build_per_token({"classification": 60}, types, price, _samples(types, [(1000, 200)] * 30))
+    assert report["owned_cost"]["model_matches_shadow"] is False      # the eval's model is open-70b
+    assert any(i["label"] == "WARNING" and "Priced model" in i["what"] for i in report["labels"])
+    assert "Warning: the price is for gpt-4.1-mini" in rep.render_panel(report)
+
+
+def test_per_token_json_schema(tmp_path):
+    price = cc.lookup_price(PRICES, "gpt-4.1-mini")
+    types = {"classification": _type_eval(ev.NO_DIFF)}
+    report = _build_per_token({"classification": 60}, types, price, _samples(types, [(1000, 200)] * 30))
+    data = json.loads(rep.write_outputs(report, tmp_path)[0].read_text())
+    assert data["owned_cost_mode"] == "per_token" and data["deployment"] is None and data["check_id"] is None
+    assert set(data["owned_cost"]) == {"mode", "model", "label", "label_detail", "price", "model_matches_shadow"}
+    assert set(data["owned_cost"]["price"]) == {"label", "label_detail", "model", "input_per_m", "cached_input_per_m",
+                                                "output_per_m", "as_of", "source"}
+    assert any("per-token price" in x for x in data["does_not_prove"])
+
+
+def test_build_report_needs_exactly_one_mode():
+    types = {"classification": _type_eval(ev.NO_DIFF)}
+    with pytest.raises(ValueError):
+        rep.build_report(_traffic({"classification": 4}), PRICES, candidate="cand", eval_doc=_eval_doc(types),
+                         check_record=None)
+    with pytest.raises(ValueError):
+        rep.build_report(_traffic({"classification": 4}), PRICES, candidate="cand", eval_doc=_eval_doc(types),
+                         check_record=None, gpu_hourly_rate=2.0, gpus=1, candidate_price=cc.assumed_price(0.2, 0.8))
+
+
+def _populate_shadow(root: Path, model="gpt-4.1-mini", out_tokens=(180, 220)):
+    """Shadow answers for every captured exchange, with sample usage."""
+    for i, ex in enumerate(r.iter_exchanges(root)):
+        r.append_shadow(r.ShadowResult(
+            exchange_id=ex.id, candidate="cand", candidate_model=model, output_text="ok", tool_calls=[],
+            usage=r.Usage(input_tokens=1000, output_tokens=out_tokens[i % len(out_tokens)]),
+            latency_ms=5.0, status=200), root)
+
+
+def test_cli_per_token_assumed_runs_without_gpu_flags(tmp_path, monkeypatch, capsys):
+    root, out = tmp_path / "own", tmp_path / "out"
+    _populate(root, None)
+    _populate_shadow(root)
+    monkeypatch.setenv(check_mod.HISTORY_ENV, str(tmp_path / "empty"))
+    args = _parser().parse_args(["report", "--candidate", "cand", "--candidate-price-in", "0.2",
+                                 "--candidate-price-out", "0.8", "--dir", str(root), "--out", str(out)])
+    assert rep.handle(args) == 0
+    text = capsys.readouterr().out
+    assert "per token, ASSUMED" in text and "owned $/mo (high)" in text
+    data = json.loads((out / "report.json").read_text())
+    assert data["owned_cost"]["label"] == "ASSUMED" and data["owned_cost"]["price"]["output_per_m"] == 0.8
+    row = next(w for w in data["workloads"] if w["type"] == "classification")
+    assert row["owned_usd_per_month"] is not None and row["recommendation"] == rep.MOVE
+
+
+def test_cli_per_token_list_price_from_candidate_model(tmp_path, monkeypatch, capsys):
+    from throttle.cli import main
+
+    root, out = tmp_path / "own", tmp_path / "out"
+    _populate(root, None)
+    _populate_shadow(root)
+    monkeypatch.setenv(check_mod.HISTORY_ENV, str(tmp_path / "empty"))
+    code = main(["report", "--candidate", "cand", "--candidate-model", "gpt-4.1-mini",
+                 "--dir", str(root), "--out", str(out)])
+    assert code == 0
+    assert "per token, LIST PRICE (" in capsys.readouterr().out
+    data = json.loads((out / "report.json").read_text())
+    assert data["owned_cost"]["label"] == "LIST PRICE"
+    assert next(w for w in data["workloads"] if w["type"] == "classification")["recommendation"] == rep.MOVE
+
+
+def test_cli_without_either_mode_exits_2_naming_both(tmp_path, monkeypatch, capsys):
+    root = tmp_path / "own"
+    _populate(root, None)
+    args = _parser().parse_args(["report", "--candidate", "cand", "--dir", str(root), "--out", str(tmp_path / "o")])
+    assert rep.handle(args) == 2
+    err = capsys.readouterr().err
+    for flag in ("--gpu-hourly-rate", "--gpus", "--candidate-price-in", "--candidate-price-out", "--candidate-model"):
+        assert flag in err
+    assert "GPU mode" in err and "per-token mode" in err
+    assert not (tmp_path / "o").exists()
+
+
+@pytest.mark.parametrize("extra,needle", [
+    (["--gpu-hourly-rate", "2", "--gpus", "1", "--candidate-price-in", "0.2", "--candidate-price-out", "0.8"], "both given"),
+    (["--gpu-hourly-rate", "2", "--candidate-model", "gpt-4.1-mini"], "both given"),
+    (["--gpu-hourly-rate", "2"], "needs both --gpu-hourly-rate and --gpus"),
+    (["--gpus", "0", "--gpu-hourly-rate", "2"], "must be positive"),
+    (["--candidate-price-in", "0.2"], "give both --candidate-price-in and --candidate-price-out"),
+    (["--candidate-price-in", "-1", "--candidate-price-out", "0.8"], "non-negative"),
+    (["--candidate-model", "not-a-listed-model"], "not in the bundled price list"),
+])
+def test_cli_mode_errors_exit_2(tmp_path, monkeypatch, capsys, extra, needle):
+    root = tmp_path / "own"
+    _populate(root, None)
+    args = _parser().parse_args(["report", "--candidate", "cand", "--dir", str(root), "--out", str(tmp_path / "o")] + extra)
+    assert rep.handle(args) == 2
+    assert needle in capsys.readouterr().err

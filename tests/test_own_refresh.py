@@ -43,9 +43,8 @@ def _judge_transport(rule, seen=None):
         if seen is not None:
             seen.append(body)
         prompt = body["messages"][-1]["content"]
-        a = prompt.split("=== Answer A ===\n")[1].split("\n\n=== Answer B")[0]
-        b = prompt.split("=== Answer B ===\n")[1].split("\n\nWhich answer")[0]
-        return httpx.Response(200, json={"choices": [{"message": {"content": "Reason.\n" + rule(a, b)}}]})
+        _, a, b = j.split_prompt(prompt)
+        return httpx.Response(200, json={"choices": [{"message": {"content": rule(a, b)}}]})
     return httpx.MockTransport(handler)
 
 
@@ -160,7 +159,7 @@ def test_pairwise_both_orders_and_disagreement_is_order_disagree():
     outcomes, seen = _pairwise([(_pair("old", "cur"), _pair("new", "new"))], lambda a, b: "A")
     assert outcomes == [j.ORDER_DISAGREE] and len(seen) == 2       # always "A": the orders disagree
     first, second = (s["messages"][-1]["content"] for s in seen)
-    assert "=== Answer A ===\nold" in first and "=== Answer A ===\nnew" in second
+    assert j.split_prompt(first)[1] == "old" and j.split_prompt(second)[1] == "new"
     outcomes, _ = _pairwise([(_pair("old", "cur"), _pair("new", "new"))],
                             lambda a, b: "A" if a == "new" else "B")
     assert outcomes == [j.WIN]
@@ -285,3 +284,11 @@ def test_small_all_tie_refresh_is_not_an_upgrade(tmp_path):
     _setup(tmp_path, n=40)
     t = _run(tmp_path, lambda text: "positive")["types"]["classification"]
     assert t["vs_current"]["verdict"] == ev.INCONCLUSIVE and t["verdict"] == rf.NEEDS_MORE_DATA
+
+
+def test_refresh_wtl_keeps_judge_unsure_out_of_ties():
+    from throttle.own import refresh as refresh_mod
+
+    block = {"n": 40, "wins": 10, "ties": 10, "order_disagree": 8, "losses": 12}
+    assert refresh_mod._wtl(block) == "25%/25%/20%/30%"
+    assert refresh_mod._wtl({"n": 0, "wins": 0, "ties": 0, "losses": 0}) == "-"

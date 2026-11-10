@@ -4,6 +4,55 @@ All notable changes to Throttle will be documented in this file.
 
 ## [Unreleased]
 
+### Added
+- `throttle report` can price a cheaper model per token, with no GPU:
+  `--candidate-model` (list price from the bundled table, labelled LIST PRICE)
+  or `--candidate-price-in`/`--candidate-price-out` (labelled ASSUMED). Cost
+  comes from the candidate's own measured tokens, with a 95% CI.
+- README "Security model and data flow" section.
+
+### Security
+- Proxy cache and in-flight dedup are kept apart per caller (keyed on a salted
+  hash of the auth headers). Calls with no key are never cached. When bound to
+  loopback, only localhost Host headers are answered.
+- `capture` refuses browser requests (any Origin), non-localhost Host names
+  and non-JSON POSTs. With `--route`, only calls that carry a key reach your
+  model. Invalid `X-Throttle-Job` tags are dropped.
+- Pull request comments escape every PR-derived string, so a model name or tag
+  cannot add links, images or @mentions.
+- Redaction also catches private key blocks, AWS secrets, Slack/Discord/Stripe
+  tokens and webhooks, URL passwords and labelled secrets.
+- Captured data is written owner-only (0700 folders, 0600 files).
+- Judge prompts wrap each answer in random per-call markers so answer text
+  cannot steer the verdict.
+- The GitHub Action installs only from a tag or full SHA; workflows pin every
+  action by SHA; release publishes only from main or a v* tag.
+
+### Changed (breaking for scripts that read the JSON)
+- `throttle route savings --json` now writes schema
+  `throttle.own.savings/2`. Renamed keys: `billable` is now `has_savings`,
+  `by_type.*.billable_avoided_usd` is now `by_type.*.approved_avoided_usd`,
+  and `forced.billable` is now `forced.counted_in_net`. New key:
+  `period_hours_label`. Throttle is a flat monthly plan, not a share of
+  savings, so "billable" was the wrong word.
+- Eval JSON (`throttle.own.eval/1`): `tie_rate_ci` now counts ties only (both
+  judge orders said TIE). Judge-unsure items (the judge flipped when the
+  answers were swapped) get their own `order_disagree_rate_ci`. An older eval
+  file has no `order_disagree_rate_ci`; `throttle report` recomputes its tie
+  interval from the counts.
+
+### Fixed
+- Judge unsure is never counted as "same". The eval table, report page, demo
+  JSON, `throttle report` reasons, `throttle jobs eval`, the `refresh` table
+  (now win/tie/unsure/loss) and the pull request comment all show it as its
+  own count.
+- The `throttle report` terminal table shows your model's $/mo at the high end
+  of its 95% CI, the same number as report.html.
+- The report page's "Not ready" tile counts only jobs that need a fine-tune or
+  more data. Jobs that stay on the API have their own tile.
+- Subcommand help says "a cheaper model" or "the candidate model", which can be
+  closed or open, to match the top-level help.
+
 ## [0.7.0] - 2026-11-03
 
 Stop renting your AI. Throttle now tests your app's OpenAI and Anthropic calls

@@ -478,9 +478,7 @@ class FakeJudge:
     calls: int = 0
 
     def decide(self, prompt: str) -> str:
-        request = prompt.split("=== Request ===\n", 1)[-1].split("\n\n=== Answer A ===", 1)[0]
-        a = prompt.split("=== Answer A ===\n", 1)[1].split("\n\n=== Answer B ===", 1)[0]
-        b = prompt.split("=== Answer B ===\n", 1)[1].split("\n\nWhich answer", 1)[0]
+        request, a, b = judge_mod.split_prompt(prompt)
         s = _find(request, self.registry)
         if s is None:
             self.unmatched += 1
@@ -503,7 +501,7 @@ class FakeJudge:
         body = json.loads(request.content)
         verdict = self.decide(body["messages"][-1]["content"])
         return httpx.Response(200, json={
-            "choices": [{"message": {"role": "assistant", "content": f"Compared both against the rubric.\n{verdict}"},
+            "choices": [{"message": {"role": "assistant", "content": verdict},
                          "finish_reason": "stop"}],
             "usage": {"prompt_tokens": 400, "completion_tokens": 12},
         })
@@ -574,7 +572,12 @@ def write_check(check_dir: Path, seed: int) -> dict[str, Any]:
 
 
 def site_json(report: Mapping[str, Any]) -> dict[str, Any]:
-    """The landing page's demo-report.json format; null where the report has no number."""
+    """The landing page's demo-report.json format; null where the report has no number.
+
+    ``projected_owned_usd`` is the high end of the owned cost's 95% CI, the
+    same figure the report page shows. ``tie`` is ties only (both judge orders
+    said TIE); ``judge_unsure`` is the share where the two orders disagreed.
+    win + tie + judge_unsure + loss = 1."""
 
     rows = []
     for w in report["workloads"]:
@@ -583,9 +586,10 @@ def site_json(report: Mapping[str, Any]) -> dict[str, Any]:
         rows.append({
             "type": w["type"],
             "monthly_api_usd": _round(w.get("api_usd_per_month")),
-            "projected_owned_usd": _round(owned["point"]) if owned else None,
+            "projected_owned_usd": _round(owned["high"]) if owned else None,
             "verdict": w["recommendation"],
-            "quality": {"win": _round(q.get("win_rate"), 4), "tie": _round(_tie_like(q), 4),
+            "quality": {"win": _round(q.get("win_rate"), 4), "tie": _round(q.get("tie_rate"), 4),
+                        "judge_unsure": _round(q.get("order_disagree_rate"), 4),
                         "loss": _round(q.get("loss_rate"), 4),
                         "net_ci": [_round(x, 4) for x in q["net_ci"]] if q.get("net_ci") else [None, None]},
         })
@@ -599,13 +603,6 @@ def site_json(report: Mapping[str, Any]) -> dict[str, Any]:
                    "movable_usd": _round(totals.get("movable_api_usd")),
                    "projected_savings_usd": _round(totals.get("conservative_savings_usd"))},
     }
-
-
-def _tie_like(q: Mapping[str, Any]) -> float | None:
-    # The landing page shows three shares; an order disagreement scores 0 like a tie.
-    if q.get("tie_rate") is None:
-        return None
-    return q["tie_rate"] + (q.get("order_disagree_rate") or 0.0)
 
 
 def _round(value: float | None, digits: int = 2) -> float | None:

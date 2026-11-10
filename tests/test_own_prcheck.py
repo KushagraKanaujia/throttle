@@ -99,7 +99,7 @@ def test_passing_job_eval_and_owned_cost_lead_to_move(tmp_path):
     doc = pc.run_check(data, scan.scan_ref(repo, base), head_sites, base_ref=base, head_ref=head,
                        options=pc.Options(candidate="qwen"))
     row = [x for x in doc["jobs"] if x["job"] == "app/triage.py::triage"][0]
-    assert row["what"] == ["model changed from gpt-4o-mini to gpt-4.1-mini"]
+    assert row["what"] == ["model changed from `gpt-4o-mini` to `gpt-4.1-mini`"]
     assert row["action"] == "measure" and row["quality"]["verdict"] == ev.NO_DIFF
     owned = {"usd_per_m_tokens": {"mean": 0.1, "low": 0.05, "high": 0.2}}
     usage = {"calls": 40, "input_tokens": 40_000, "output_tokens": 4_000}
@@ -229,3 +229,30 @@ def test_money_formatting():
     assert pc.money(1234.6) == "$1,235"
     assert pc.money(12.345) == "$12.35" and pc.money(0.42) == "$0.42"
     assert pc.money(0.00123) == "$0.0012" and pc.money(None) == "-" and pc.money(0) == "$0"
+
+
+def test_pr_comment_never_counts_judge_unsure_as_same(tmp_path):
+    """Judge unsure (the judge flipped when the answers were swapped) is its own
+    count in the PR comment, never folded into 'same'."""
+    repo, base, _, data = setup(tmp_path)
+    head = commit_files(repo, {"app/triage.py": py_call("triage", TRIAGE, "{ticket}", model="gpt-4.1-mini")}, "model")
+    head_sites = scan.scan_ref(repo, head)
+    new_site = [s for s in head_sites if s.job == "app/triage.py::triage"][0]
+    run_id = write_job_eval(data, "app/triage.py::triage", ev.NO_DIFF, new_site)
+    path = jobs.job_eval_dir(data) / f"{run_id}.json"
+    saved = json.loads(path.read_text())
+    saved["jobs"]["app/triage.py::triage"].update({"wins": 5, "ties": 25, "order_disagree": 8, "losses": 2})
+    path.write_text(json.dumps(saved))
+    doc = pc.run_check(data, scan.scan_ref(repo, base), head_sites, base_ref=base, head_ref=head,
+                       options=pc.Options(candidate="qwen"))
+    row = [x for x in doc["jobs"] if x["job"] == "app/triage.py::triage"][0]
+    assert row["quality"]["ties"] == 25 and row["quality"]["order_disagree"] == 8
+    md = pc.render_markdown(doc)
+    assert "better on 5, same on 25, judge unsure on 8, worse on 2 of 40 real calls" in md
+    assert "same on 33" not in md
+
+
+def test_split_words_skip_judge_unsure_when_zero():
+    assert pc._split({"wins": 1, "ties": 2, "losses": 3}) == "better on 1, same on 2, worse on 3"
+    assert pc._split({"wins": 1, "ties": 2, "order_disagree": 4, "losses": 3}) == (
+        "better on 1, same on 2, judge unsure on 4, worse on 3")

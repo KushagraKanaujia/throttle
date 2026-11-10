@@ -435,7 +435,7 @@ class LiveShadow:
 def add_parser(subparsers: argparse._SubParsersAction) -> None:
     parser = subparsers.add_parser(
         "shadow",
-        help="replay captured requests against your own open-weight model (never served)",
+        help="replay captured requests against a cheaper candidate model (never served)",
         description=(
             "Sample captured API requests by workload type and send each one to a "
             "self-hosted OpenAI-compatible model (vLLM, SGLang, Ollama, LMDeploy). "

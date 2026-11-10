@@ -70,8 +70,9 @@ inputs:
     default: ""
   throttle-version:
     description: >-
-      throttle-pro to install: auto (the release matching this action's tag,
-      else latest), latest, a version like 0.4.1, or a local path.
+      throttle-pro to install: auto (the release matching this action's tag;
+      when the action is pinned to a full commit SHA, that exact commit from
+      GitHub; else latest), latest, a version like 0.4.1, or a local path.
     required: false
     default: auto
   history-key:

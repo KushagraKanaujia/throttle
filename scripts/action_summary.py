@@ -80,6 +80,9 @@ def fail(message: str, code: int = 2) -> int:
 # --------------------------------------------------------------------------
 
 
+REPO_GIT = "git+https://github.com/KushagraKanaujia/throttle"
+
+
 def _pip_spec(requested: str, action_ref: str) -> tuple[str | None, str]:
     """(pip requirement, how it was chosen); None means invalid input."""
 
@@ -95,6 +98,10 @@ def _pip_spec(requested: str, action_ref: str) -> tuple[str | None, str]:
     match = re.fullmatch(r"v?(\d+\.\d+\.\d+(?:[.-]?(?:a|b|rc|post|dev)\d+)?)", action_ref)
     if match:
         return f"throttle-pro=={match.group(1)}", f"same as the action ref {action_ref}"
+    if re.fullmatch(r"[0-9a-f]{40}", action_ref):
+        # Pinned to a commit: install that exact commit, not whatever is
+        # newest on PyPI.
+        return f"{REPO_GIT}@{action_ref}", f"the action's own commit {action_ref[:12]}"
     shown = action_ref or "(none: local action)"
     return "throttle-pro", f"latest from PyPI (action ref {shown} is not a release tag)"
 

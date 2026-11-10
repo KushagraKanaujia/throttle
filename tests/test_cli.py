@@ -2355,3 +2355,53 @@ class OfflineGuardRegressionTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TopLevelHelpTest(unittest.TestCase):
+    """`throttle --help`: the money line first, the loop before the serving tools."""
+
+    def help_text(self, *argv: str) -> str:
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out), self.assertRaises(SystemExit):
+            main([*argv, "--help"])
+        return out.getvalue()
+
+    def test_money_line_comes_first(self) -> None:
+        text = self.help_text()
+        body = " ".join(text.split("\n\n", 1)[1].split())
+        self.assertTrue(body.startswith(
+            "Stop renting your AI: move each AI job to a cheaper model that does it as well, "
+            "tested on your own traffic."), body[:160])
+
+    def test_loop_is_listed_before_the_serving_tools(self) -> None:
+        text = self.help_text()
+        listing = text.split("positional arguments:", 1)[1].split("options:", 1)[0]
+        names = [line.split()[0] for line in listing.splitlines() if line.startswith("    ") and line.split()
+                 and not line.startswith("      ")]
+        loop = ["demo", "capture", "workloads", "shadow", "eval", "report", "route", "refresh", "jobs", "pr-check"]
+        self.assertEqual(names[:len(loop)], loop)
+        for serving in ("check", "plan", "smoke", "benchmark", "golden", "autotune", "proxy", "savings"):
+            self.assertGreater(names.index(serving), names.index("pr-check"), serving)
+        # Nothing was removed or renamed.
+        self.assertEqual(sorted(names), sorted(build_parser()._throttle_subparsers))  # type: ignore[attr-defined]
+
+    def test_epilog_lists_demo_loop_code_then_serving_tools(self) -> None:
+        text = self.help_text()
+        epilog = text.split("options:", 1)[1]
+        order = ["throttle demo", "throttle capture", "throttle workloads", "throttle shadow", "throttle eval",
+                 "throttle report", "throttle route approve", "throttle refresh", "throttle jobs scan",
+                 "throttle pr-check", "Serving tools (advanced)", "check ($/M tokens"]
+        positions = [epilog.index(item) for item in order]
+        self.assertEqual(positions, sorted(positions))
+        for retired in ("Own your intelligence", "keep the savings", "share of the savings", "no bill"):
+            self.assertNotIn(retired.lower(), text.lower())
+
+    def test_proxy_help_says_single_tenant(self) -> None:
+        text = " ".join(self.help_text().split()).replace("single- tenant", "single-tenant")
+        self.assertIn("OpenAI-compatible caching proxy for one team (single-tenant)", text)
+
+    def test_proxy_description_explains_the_per_caller_cache(self) -> None:
+        text = " ".join(self.help_text("proxy").split())
+        self.assertIn("Single tenant", text)
+        self.assertIn("Cached answers are kept apart per caller", text)
+        self.assertNotIn("one cache is shared by every caller", text)

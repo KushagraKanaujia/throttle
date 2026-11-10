@@ -22,18 +22,83 @@ SAFE_ARTIFACT_REFERENCE = re.compile(
     rf"^(?:{_ARTIFACT_DIGEST}|{_ARTIFACT_LABEL}(?:@{_ARTIFACT_DIGEST})?)$"
 )
 
+# An env-var style label: OPENAI_KEY, STRIPE_API_KEY, aws-secret, GH_TOKEN.
+# Bounded repeats keep the scan linear on long snake_case text.
+_ENV_LABEL = (
+    r"[a-z0-9]{1,40}(?:[_-][a-z0-9]{1,40}){0,6}[_-]"
+    r"(?:api[_-]?)?(?:key|token|secret|password|pass)"
+)
 _CREDENTIAL_ASSIGNMENT = re.compile(
     r"(?:^|[^a-z0-9])(?:access[\s_-]*token|api[\s_-]*key|"
     r"auth[\s_-]*token|authorization|bearer|client[\s_-]*secret|"
     r"credentials?|password|passwd|private[\s_-]*key|"
-    r"secret(?:[\s_-]*key)?|token)\s*[:=]",
+    r"secret(?:[\s_-]*(?:access[\s_-]*)?key)?|token|"
+    + _ENV_LABEL
+    + r")\s*[:=]",
+    re.IGNORECASE,
+)
+# A label followed by a space and then the value: "api-key sk123...",
+# "OPENAI_KEY abc123...". The value check (letters and digits) is the
+# caller's job, so "api key is" is left alone.
+_CREDENTIAL_SPACED = re.compile(
+    r"(?:^|[^a-z0-9])(?:api[\s_-]*key|access[\s_-]*token|auth[\s_-]*token|"
+    r"client[\s_-]*secret|secret[\s_-]*(?:access[\s_-]*)?key|"
+    # underscores only: "completion-token gaps" is English, OPENAI_KEY is not
+    r"[a-z0-9]{1,40}(?:_[a-z0-9]{1,40}){0,6}_(?:api_?)?(?:key|token|secret)"
+    r")[ \t]+[\"']?([^\s\"',;}\])]{8,})",
+    re.IGNORECASE,
+)
+
+
+def spaced_credentials(text: str) -> list[re.Match[str]]:
+    """``api-key <value>`` style matches whose value has letters and digits
+    (group 1 is the value), so "api key is" or "api key for" are left alone."""
+    return [
+        m for m in _CREDENTIAL_SPACED.finditer(text)
+        if re.search(r"\d", m.group(1)) and re.search(r"[A-Za-z]", m.group(1))
+        and not m.group(1).startswith("<")
+    ]
+# PEM / OpenSSH / PGP private keys, header to footer (or to the end of the
+# text when the footer is missing). Works on real newlines and on "\\n".
+_PRIVATE_KEY_BLOCK = re.compile(
+    r"-----BEGIN[A-Z0-9 ]{0,40}PRIVATE KEY(?: BLOCK)?-----.*?"
+    r"(?:-----END[A-Z0-9 ]{0,40}PRIVATE KEY(?: BLOCK)?-----|\Z)",
+    re.DOTALL,
+)
+# Incoming-webhook URLs carry their secret in the path.
+_WEBHOOK_URL = re.compile(
+    r"https?://(?:hooks\.slack\.com/(?:services|workflows|triggers)/[A-Za-z0-9/_-]+|"
+    r"(?:[a-z]+\.)?discord(?:app)?\.com/api/webhooks/\d+/[A-Za-z0-9_-]+)",
+    re.IGNORECASE,
+)
+# Discord bot tokens: base64 user id . timestamp . HMAC.
+_DISCORD_TOKEN = re.compile(
+    r"(?<![A-Za-z0-9_.-])[MNO][A-Za-z0-9_-]{23,27}\.[A-Za-z0-9_-]{6,7}\."
+    r"[A-Za-z0-9_-]{27,40}(?![A-Za-z0-9_.-])"
+)
+# user:password@ in a URL. The whole userinfo is the secret.
+_URL_USERINFO = re.compile(r"(?<=://)[^\s/?#@:\"'<>]{0,256}:[^\s/?#@\"'<>]{1,256}@")
+# An AWS secret access key (40 base64 characters) within a short distance
+# after an access key id.
+_AWS_SECRET_NEAR_ID = re.compile(
+    r"(?:AKIA|ASIA)[A-Z0-9]{16}(?![A-Z0-9])[^\n]{0,80}?"
+    r"(?<![A-Za-z0-9/+=])([A-Za-z0-9/+]{40})(?![A-Za-z0-9/+=])"
+)
+# A long hex or base64 run right before or after the word key, token or
+# secret ("key 9f86d0...", "the token is QUJD...", "...a08 secret").
+_LABELLED_RUN = re.compile(
+    r"\b(?:keys?|tokens?|secrets?)\b[^\n]{0,24}?"
+    r"(?<![A-Za-z0-9+/=_-])([A-Za-z0-9+/_-]{32,}={0,2})(?![A-Za-z0-9+/=_-])"
+    r"|(?<![A-Za-z0-9+/=_-])([A-Za-z0-9+/_-]{32,}={0,2})(?![A-Za-z0-9+/=_-])"
+    r"[^\n]{0,12}?\b(?:key|token|secret)\b",
     re.IGNORECASE,
 )
 _CREDENTIAL_TOKEN = re.compile(
     r"(?:^|[^A-Za-z0-9])(?:(?:hf|npm|pk|pypi|rk|rpa|rps|sk)"
     r"[-_][A-Za-z0-9_-]{8,}|"
     r"gh[oprsu]_[A-Za-z0-9_]{8,}|github_pat_[A-Za-z0-9_]{8,}|"
-    r"glpat-[A-Za-z0-9_-]{8,}|xox[baprs]-[A-Za-z0-9-]{8,}|"
+    r"glpat-[A-Za-z0-9_-]{8,}|xox[a-z](?:\.xox[a-z])?-[A-Za-z0-9-]{8,}|"
+    r"xapp-[A-Za-z0-9-]{8,}|whsec_[A-Za-z0-9+/=]{16,}|"
     r"(?:AKIA|ASIA)[A-Z0-9]{16}|AIza[A-Za-z0-9_-]{20,}|"
     r"SG\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}|"
     r"ya29\.[A-Za-z0-9_-]{8,})(?=$|@|[^A-Za-z0-9_])",
@@ -136,6 +201,9 @@ def _metadata_form_is_unsafe(value: str) -> bool:
         or "authorization:" in lowered
         or _CREDENTIAL_ASSIGNMENT.search(value)
         or _CREDENTIAL_TOKEN.search(value)
+        or spaced_credentials(value)
+        or _PRIVATE_KEY_BLOCK.search(value)
+        or _DISCORD_TOKEN.search(value)
         or _contains_userinfo(value)
         or _JWT_TOKEN.search(value)
         or _UNSAFE_URI_AT_OFFSET.search(value)

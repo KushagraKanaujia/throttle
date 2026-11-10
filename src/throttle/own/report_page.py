@@ -47,6 +47,41 @@ STATUS = {
 }
 
 
+# check name -> plain words
+CHECK_WORDS = {
+    "json_valid": "valid JSON",
+    "schema_valid": "matches the JSON schema",
+    "tool_calls_valid": "valid tool calls",
+    "exact_match": "same label as the API",
+    "truncated": "not cut off",
+}
+
+OWNED_COLUMN = "Your model $/mo (high end of 95% CI)"
+
+# Words in the report's reasons that this page says more plainly.
+_PLAIN = (
+    ("; this kind of gap is what fine-tuning on your own traffic usually closes", ""),
+    ("the open model", "your model"),
+    ("The open model", "Your model"),
+)
+
+
+def check_words(name: str) -> str:
+    return CHECK_WORDS.get(name, name.replace("_", " "))
+
+
+def plain(text: Any) -> str:
+    """A reason from the report document, in the page's words: 'your model', and check names as words."""
+
+    out = str(text)
+    for old, new in _PLAIN:
+        out = out.replace(old, new)
+    for name in sorted(CHECK_WORDS, key=len, reverse=True):
+        if "_" in name:   # "truncated" is also an ordinary word; only snake_case names are swapped
+            out = out.replace(name, CHECK_WORDS[name])
+    return out
+
+
 def e(value: Any) -> str:
     return html.escape(str(value), quote=True)
 
@@ -108,13 +143,16 @@ def proof_words(q: Mapping[str, Any] | None) -> str:
     if not judged:
         return f"Not judged yet ({q.get('verdict') or 'no verdict'})."
     good = int(q.get("wins") or 0) + int(q.get("ties") or 0)
-    text = f"As good or better in {good} of {judged} tests"
     unsure = int(q.get("order_disagree") or 0)
+    worse = int(q.get("losses") or 0)
+    if q.get("verdict") == "WORSE":
+        text = f"Worse on {worse} of {judged} tests; as good or better in {good}"
+    else:
+        text = f"As good or better in {good} of {judged} tests"
+        if worse:
+            text += f"; worse on {worse}"
     if unsure:
         text += f"; judge unsure on {unsure}"
-    worse = int(q.get("losses") or 0)
-    if worse:
-        text += f"; worse on {worse}"
     return text + "."
 
 
@@ -131,6 +169,21 @@ def _rate_bar(label: str, rate: float | None, ci: Sequence[float] | None, cls: s
     return (f'<div class="rate"><span class="rate-name">{e(label)}</span>'
             f'<span class="rate-track"><span class="rate-fill f-{cls}" style="width:{rate * 100:.1f}%"></span>{whisker}</span>'
             f'<span class="rate-num">{rate:.0%}<small>95% CI {e(ci_text)}</small></span></div>')
+
+
+def unsure_ci(q: Mapping[str, Any]) -> list[float] | None:
+    """Wilson 95% CI of the judge-unsure share: from the eval document when it has one, else from the counts."""
+
+    given = q.get("order_disagree_rate_ci")
+    if given:
+        return [float(given[0]), float(given[1])]
+    judged = int(q.get("judged") or 0)
+    if not judged:
+        return None
+    from .. import statistics as stats
+
+    ci = stats.wilson_interval_95(int(q.get("order_disagree") or 0), judged)
+    return None if ci.get("low") is None else [float(ci["low"]), float(ci["high"])]
 
 
 def _net_axis(net: Sequence[float] | None) -> str:
@@ -197,9 +250,15 @@ def _bill_bar(report: Mapping[str, Any]) -> str:
         f'<div class="bill">{"".join(segs)}</div>{owned_row}'
         f'<ul class="bill-key">{"".join(keys)}</ul>'
         '<p class="legend"><span><i class="dot d-own"></i>moves to your model</span>'
-        '<span><i class="dot d-test"></i>still testing</span><span><i class="dot d-api"></i>stays on the API</span>'
+        '<span><i class="dot d-test"></i>not ready: needs a fine-tune or more data</span><span><i class="dot d-api"></i>stays on the API</span>'
         + ('<span><i class="dot d-gold"></i>your model, all-in</span>' if owned else '') + '</p></div>'
     )
+
+
+def _per_token(report: Mapping[str, Any]) -> bool:
+    """True when the candidate is priced per token (no GPU, no floor)."""
+
+    return report.get("owned_cost_mode") == "per_token"
 
 
 def _hero(report: Mapping[str, Any]) -> str:
@@ -213,7 +272,9 @@ def _hero(report: Mapping[str, Any]) -> str:
     if savings is not None:
         figure = (f'<p class="figure" aria-label="{e(money(savings, cents=False))} per month">'
                   f'<span class="cur">$</span>{e(f"{round(savings):,}")}<span class="per">a month</span></p>')
-        note = "Conservative: the low end of the 95% range, after paying for the always-on GPU."
+        note = ("Conservative: the low end of the 95% range, at the candidate's per-token price."
+                if _per_token(report) else
+                "Conservative: the low end of the 95% range, after paying for the always-on GPU.")
         if point is not None and abs(point - savings) >= 1:
             note += f" Likely figure: {money(point)} a month."
         elif totals.get("floor_applied"):
@@ -228,9 +289,16 @@ def _hero(report: Mapping[str, Any]) -> str:
             note = str(totals.get("savings_note") or "").rstrip(".") + "."
             note = note[:1].upper() + note[1:]
     jobs = report["workloads"]
-    testing = sum(1 for w in jobs if w["recommendation"] in (NEEDS_FINETUNE, MORE_DATA))
+    finetune = sum(1 for w in jobs if w["recommendation"] == NEEDS_FINETUNE)
+    more_data = sum(1 for w in jobs if w["recommendation"] == MORE_DATA)
+    testing = finetune + more_data
     moving = sum(1 for w in jobs if w["recommendation"] == MOVE)
     staying = sum(1 for w in jobs if w["recommendation"] == KEEP)
+    # "Not ready" is only the jobs that could still move. KEEP ON API is a
+    # final call, so it gets its own fact instead of padding this count.
+    not_ready = f"{finetune} need{'s' if finetune == 1 else ''} a fine-tune"
+    if more_data:
+        not_ready += f", {more_data} need{'s' if more_data == 1 else ''} more data"
     api = totals.get("monthly_api_usd")
     movable = totals.get("movable_api_usd")
     facts = [
@@ -240,7 +308,9 @@ def _hero(report: Mapping[str, Any]) -> str:
         ("gold", "Your model costs", money(owned_total["high"]) if owned_total else
          ("not measured" if not measured else "-"),
          "a month, high end" + (", the always-on GPU" if totals.get("floor_applied") else "")),
-        ("test", "Still testing", str(testing), f"{staying} job{'s' if staying != 1 else ''} stay{'s' if staying == 1 else ''} on the API"),
+        ("test", "Not ready", str(testing), not_ready),
+        ("api", "Stay on the API", str(staying),
+         f"job{'s' if staying != 1 else ''}: no saving or broken output, a final call"),
     ]
     cells = "".join(f'<div class="fact f-{cls}"><dt>{e(name)}</dt><dd><b>{e(value)}</b><span>{e(sub)}</span></dd></div>'
                     for cls, name, value, sub in facts)
@@ -249,8 +319,11 @@ def _hero(report: Mapping[str, Any]) -> str:
         lede = (f"Of a {money(api)} monthly API bill, <em>{e(money(movable))}</em> can move to your own model. "
                 + (f"Running it costs about {e(money(owned_total['high']))}." if owned_total else ""))
     elif api is not None:
-        lede = (f"Nothing is ready to move off the {e(money(api))} monthly API bill yet. "
-                f"{testing} job{'s are' if testing != 1 else ' is'} still being tested.")
+        lede = f"Nothing is ready to move off the {e(money(api))} monthly API bill yet."
+        if testing:
+            lede += f" {testing} job{'s need' if testing != 1 else ' needs'} a fine-tune or more data first."
+        elif staying:
+            lede += f" {staying} job{'s stay' if staying != 1 else ' stays'} on the API."
     else:
         lede = "The capture window is too short to project a monthly bill."
     return (
@@ -281,7 +354,7 @@ def _jobs(report: Mapping[str, Any]) -> str:
         gap = "not projected" if str(w.get("owned_note", "")).startswith("not projected") else "not measured"
         own_text = money(owned["high"]) if owned else gap
         reqs = w.get("requests_per_month")
-        reason = (w.get("reasons") or [""])[0]
+        reason = plain((w.get("reasons") or [""])[0])
         rows.append(
             f'<tr class="job j-{cls}"><th scope="row"><span class="job-name">{e(job_name(w["type"]))}</span>'
             f'<span class="job-reqs">{e(f"{reqs:,.0f} requests a month" if reqs is not None else "")}</span></th>'
@@ -307,12 +380,15 @@ def _jobs(report: Mapping[str, Any]) -> str:
         '<p>Where each kind of job runs, what it costs, and the proof. Nothing moves without your OK, '
         'and if your model stumbles the request goes to the API.</p></header>'
         '<div class="table-wrap"><table class="jobtable"><thead><tr><th scope="col">Job</th><th scope="col">Where it runs</th>'
-        '<th scope="col" class="num">API, a month</th><th scope="col" class="num">Your model, a month</th>'
+        f'<th scope="col" class="num">API, a month</th><th scope="col" class="num">{e(OWNED_COLUMN)}</th>'
         f'<th scope="col">Proof</th></tr></thead><tbody>{"".join(rows)}</tbody></table></div>'
         f'<div class="sums">{sum_rows}</div>'
         '<p class="fine">Saved = API bill of the jobs that move, minus your model at the high end of its 95% range. '
-        'The always-on GPU is counted once. A job\'s model cost is its token cost only; the GPU floor is in '
-        '"Your model, all-in".</p></section>'
+        + ("Your model is billed per token from its own measured tokens, so there is no GPU to pay for."
+           if _per_token(report) else
+           'The always-on GPU is counted once. A job\'s model cost is its token cost only; the GPU floor is in '
+           '"Your model, all-in".')
+        + '</p></section>'
     )
 
 
@@ -338,28 +414,30 @@ def _proof(report: Mapping[str, Any]) -> str:
                 ) + '</div><div class="stack-key">' + "".join(
                     f'<span><i class="dot d-{c}"></i>{e(word)} <b>{v}</b></span>' for c, v, word in parts
                 ) + '</div>'
+            disagree = int(q.get("order_disagree") or 0)
             bars = (_rate_bar("Your model better", q.get("win_rate"), q.get("win_rate_ci"), "own")
                     + _rate_bar("Same", q.get("tie_rate"), q.get("tie_rate_ci"), "tie")
+                    + _rate_bar("Judge unsure", q.get("order_disagree_rate"), unsure_ci(q), "test")
                     + _rate_bar("Your model worse", q.get("loss_rate"), q.get("loss_rate_ci"), "api"))
-            disagree = int(q.get("order_disagree") or 0)
             judge_note = (f"The judge read every pair twice with the answers swapped. It changed its mind on {disagree} "
-                          f"of {judged} ({pct(q.get('order_disagree_rate'))}); those count as a tie, not a win."
+                          f"of {judged} ({pct(q.get('order_disagree_rate'))}). Those are shown as judge unsure, "
+                          "not as same: they score 0 in wins minus losses, never a win."
                           if judged else "Not judged yet.")
             fmt = q.get("format_checks") or {}
             fmt_rows = "".join(
-                f'<tr><td>{e(name.replace("_", " "))}</td><td class="num">{e(pct(c.get("incumbent")))}</td>'
+                f'<tr><td>{e(check_words(name))}</td><td class="num">{e(pct(c.get("incumbent")))}</td>'
                 f'<td class="num">{e(pct(c.get("candidate")))}</td><td>{"overlap" if c.get("overlap") else "<b>below the API</b>"}</td></tr>'
                 for name, c in fmt.items()
             )
             fmt_html = (f'<table class="fmt"><thead><tr><th>Format check</th><th class="num">API</th>'
                         f'<th class="num">Your model</th><th>95% CIs</th></tr></thead><tbody>{fmt_rows}</tbody></table>'
                         ) if fmt_rows else ""
-            reasons = "".join(f"<li>{e(r)}</li>" for r in (q.get("reasons") or []))
+            reasons = "".join(f"<li>{e(plain(r))}</li>" for r in (q.get("reasons") or []))
             body = (f'{stack}<div class="rates">{bars}</div>{_net_axis(q.get("net_ci"))}'
                     f'<p class="fine">{e(judge_note)}</p>{fmt_html}'
                     f'<p class="verdict">Quality verdict <b>{e(q.get("verdict"))}</b></p>'
                     + (f'<ul class="why">{reasons}</ul>' if reasons else ""))
-        recs = "".join(f"<li>{e(r)}</li>" for r in w.get("reasons") or [])
+        recs = "".join(f"<li>{e(plain(r))}</li>" for r in w.get("reasons") or [])
         items.append(
             f'<details class="pf"><summary><span class="pf-name">{e(job_name(w["type"]))}</span>'
             f'<span class="pf-n">{e(n_text)}</span><span class="pf-status"><i class="dot d-{cls}"></i>{e(status)}</span>'
@@ -401,6 +479,9 @@ def render(report: Mapping[str, Any], *, demo_banner: str, rules: str) -> str:
     cls, words = stamp(report)
     sub = {"demo": "synthetic traffic, fake models", "replay": "public dataset replay, local models, GPU price assumed",
            "live": "your captured traffic, GPU price assumed"}[kind]
+    if _per_token(report) and kind != "demo":
+        label = str((report.get("owned_cost") or {}).get("label_detail") or "per-token price")
+        sub = sub.replace("GPU price assumed", f"per-token price, {label}")
     when = str(report.get("generated_at") or "")[:10]
     head = (
         '<header class="top">'
@@ -473,7 +554,7 @@ font-variation-settings:"opsz" 144;font-feature-settings:"lnum","tnum"}
 .figure .per{font:400 italic 22px/1 var(--serif);letter-spacing:0;color:var(--ivory2);margin-left:16px}
 .figure.none{font-size:clamp(44px,7vw,84px);font-style:italic;color:var(--ivory2);letter-spacing:-.02em}
 .hero-note{margin:18px 0 0;max-width:620px;color:var(--ivory2);font-size:15px}
-.facts{display:grid;grid-template-columns:repeat(4,1fr);margin:42px 0 0;border-top:1px solid var(--line);border-bottom:1px solid var(--line)}
+.facts{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));margin:42px 0 0;border-top:1px solid var(--line);border-bottom:1px solid var(--line)}
 .fact{padding:18px 20px 18px 0;margin:0}
 .fact+.fact{padding-left:22px;border-left:1px solid var(--line)}
 .fact dt{font-size:11.5px;letter-spacing:.16em;text-transform:uppercase;color:var(--muted)}
@@ -551,7 +632,7 @@ h3{font:400 26px/1.2 var(--serif);margin:44px 0 12px;letter-spacing:-.01em}
 .rate-name{font-size:13.5px;color:var(--ivory2)}
 .rate-track{position:relative;height:8px;background:var(--faint)}
 .rate-fill{position:absolute;left:0;top:0;bottom:0}
-.f-own.rate-fill{background:var(--sage)}.f-tie.rate-fill{background:var(--tie)}.f-api.rate-fill{background:var(--brick)}
+.f-own.rate-fill{background:var(--sage)}.f-tie.rate-fill{background:var(--tie)}.f-test.rate-fill{background:var(--mist)}.f-api.rate-fill{background:var(--brick)}
 .whisker{position:absolute;top:-5px;bottom:-5px;border-left:1.5px solid var(--gold2);border-right:1.5px solid var(--gold2)}
 .whisker:after{content:"";position:absolute;left:0;right:0;top:50%;border-top:1.5px solid var(--gold2)}
 .rate-num{font:500 18px/1 var(--serif)}.rate-num small{font:400 11.5px var(--sans);color:var(--muted);margin-left:8px}
@@ -590,7 +671,7 @@ footer .word{font-size:16px;color:var(--ivory);margin-right:8px}
 @media (max-width:900px){
 .hero-top{grid-template-columns:1fr}.lede{padding-left:0;border-left:none;font-size:22px}
 .facts{grid-template-columns:1fr 1fr}
-.fact:nth-child(3){padding-left:0;border-left:none}
+.fact:nth-child(odd){padding-left:0;border-left:none}
 .fact:nth-child(n+3){border-top:1px solid var(--line)}
 .sec{grid-template-columns:1fr}
 .rate{grid-template-columns:1fr;gap:4px}
@@ -601,7 +682,7 @@ footer .word{font-size:16px;color:var(--ivory);margin-right:8px}
 .jobtable td.num{display:inline-block;width:auto;margin-right:22px}
 .jobtable td.num:before{display:block;font:600 10.5px var(--sans);letter-spacing:.14em;text-transform:uppercase;color:var(--muted);margin-bottom:2px}
 .jobtable td.num:nth-of-type(2):before{content:"API, a month"}
-.jobtable td.num:nth-of-type(3):before{content:"Your model, a month"}
+.jobtable td.num:nth-of-type(3):before{content:"Your model $/mo (high end of 95% CI)"}
 .proof-cell{max-width:none}
 .pf-status{min-width:0}
 }

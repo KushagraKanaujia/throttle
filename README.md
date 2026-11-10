@@ -10,6 +10,10 @@ does the job as well for less, your team approves and the job moves. If the
 new model errors or gives a broken answer, that request goes back to the API on
 its own. Every miss is kept as a lesson.
 
+Setup: one base-URL change to a proxy you run, a model server or cheaper API
+model to test against, and a judge key you choose. The GitHub Action comments
+on PRs.
+
 Throttle is open source (MIT). We are looking for design partners: teams with a
 real AI bill who want to cut it. It has not run on a company's production
 traffic yet. Write to kush@throttle-pro.com.
@@ -28,17 +32,41 @@ MI300X with vLLM, [raw data](validation/hotaisle-mi300x-20261001/)):
 ## Try it in a minute
 
 ```sh
-pip install git+https://github.com/KushagraKanaujia/throttle
+pip install "git+https://github.com/KushagraKanaujia/throttle@64cb03e30b87b1de0e4bcc6bed55d0a54641eb95"  # v0.7.0
 throttle demo
 ```
 
-The `throttle-pro` package on PyPI is behind and does not have this loop yet.
+The install is pinned to the full commit of v0.7.0, so what you install
+never changes under you. This README can be newer than that commit; each
+release moves the pin to itself. The `throttle-pro` package on PyPI is behind and does not
+have this loop yet; this README switches to `pip install throttle-pro==0.7.0`
+once 0.7.0 is published there.
 
 `throttle demo` runs the whole loop offline on made-up traffic: capture,
 workloads, shadow, eval and report. It needs no API key, no GPU and no
 network. It writes `throttle-demo/report.html`. Every number in it is
 labelled DEMO, because none of it is a measurement of a real company or a
 real model.
+
+## How Throttle is different
+
+- **AI jobs are tracked in pull requests.** Each AI call in your code is a
+  job. A pull request that adds or changes one gets a comment with its cost
+  and its proof. A changed prompt is never moved silently: it goes back to
+  the API until the new version passes.
+- **It refuses to call a winner inside the noise.** vLLM's on-the-fly FP8
+  "looked 47% cheaper", but the answers broke (the 32B model replied "!!!!").
+  Throttle flags that as OUTPUT CHANGED, not a saving. The pre-quantized FP8
+  checkpoint of Qwen2.5-72B on an MI300X went from $1.67 to $1.13 per 1M
+  tokens (32% cheaper) with correct answers. That came from a serving change,
+  measured against the same model in BF16, not against an API.
+- **Fallback per request.** When a moved job's answer is an error, cut off,
+  bad JSON or a bad tool call, that one request goes to the API instead.
+- **Nothing hosted, nothing to shut down.** Your data, your models, your CI.
+- **Flat fee.** No cut of each request.
+
+Throttle's default path tests existing models and does not train on provider
+outputs.
 
 ## The loop
 
@@ -75,7 +103,7 @@ redacted copy of each call is written to `~/.throttle/own/capture/`. Nothing
 is cached. Your API keys are never written down.
 
 - `--redact off|mask|hash|metadata` picks how much of each body is kept (see
-  [Privacy](#privacy)).
+  [Security model and data flow](#security-model-and-data-flow)).
 - `--openai-upstream` and `--anthropic-upstream` point at a different
   upstream, such as a gateway you already run.
 - `throttle capture stats` shows what you have: calls, errors, models, and how
@@ -160,6 +188,18 @@ throttle report --candidate qwen72b@vllm --gpu-hourly-rate 2.49 --gpus 2
 `report --gpu-hourly-rate` is the price of one GPU, and `--gpus` is how many
 an always-on deployment needs.
 
+Testing a cheaper hosted model instead (for example a smaller OpenAI or
+Anthropic model, or an open model on a per-token provider)? Skip the GPU
+flags and price it per token:
+
+```sh
+throttle report --candidate-model gpt-4.1-mini            # list price from the bundled price table
+throttle report --candidate-price-in 0.20 --candidate-price-out 0.80   # your price per 1M tokens (sample values)
+```
+
+The cost always uses the candidate's own measured token counts, so a model
+with a cheaper list price but longer answers can still lose.
+
 The report gives one recommendation per kind of work:
 
 | Recommendation | Means |
@@ -203,11 +243,13 @@ failure, or a tool call that is unknown or has bad arguments.
 throttle route savings --month 2026-11 --gpu-hourly-rate 2.49 --gpus 2
 ```
 
-This is the realized-savings statement, and it is the number we bill on. It
-prices the requests your model actually served at the API price they avoided,
-then subtracts what your GPUs cost for every hour of the month. If your
-invoice is the better number, pass `--owned-cost-usd` instead. If the net is
-zero or less, there is no bill.
+This is a realized-savings statement you can audit (good for showing your
+boss). It prices the requests your model actually served at the API price
+they avoided, then subtracts what your GPUs cost for every hour of that
+calendar month (720 hours in November). If your invoice is the better number,
+pass `--owned-cost-usd` instead. If the net is zero or less, it says "No
+savings this month." The report's 730 hours is an average month, used only
+for its projection.
 
 ### 7. Refresh
 
@@ -244,9 +286,13 @@ jobs:
   throttle:
     runs-on: ubuntu-latest   # or a runner in your cloud that can read ~/.throttle/own
     steps:
-      - uses: actions/checkout@v4
-      - uses: KushagraKanaujia/throttle/.github/actions/throttle-pr@main
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: KushagraKanaujia/throttle/.github/actions/throttle-pr@64cb03e30b87b1de0e4bcc6bed55d0a54641eb95 # v0.7.0
 ```
+
+Pin the action by its full commit SHA, as above, not by `@main` or a tag: a
+SHA cannot be moved under you. The action installs Throttle from the same
+commit, so one pin covers both.
 
 That is all. It runs in your CI with your workflow token, and there is no
 Throttle server. On a GitHub-hosted runner it sees only the code, so the
@@ -377,8 +423,9 @@ excluded. The same goes for a model with no known price.
 
 - Each item is judged twice, with the two answers swapped. It is a win or a
   loss only when both orders agree. It is a tie only when both say tie.
-- When the two orders disagree, the item counts like a tie but is tracked on
-  its own. If more than 30% of items disagree, the judge is mostly picking a
+- When the two orders disagree, the judge is unsure. The item scores 0 like a
+  tie, but it is shown on its own as "judge unsure" and never counted as a
+  tie. If more than 30% of items disagree, the judge is mostly picking a
   position, not an answer, and the verdict is INSUFFICIENT DATA. More than 20%
   judge errors also means INSUFFICIENT DATA.
 - Fewer than 30 judged items (`--min-n`) is INSUFFICIENT DATA.
@@ -397,13 +444,13 @@ excluded. The same goes for a model with no known price.
 
 **Savings only from measured runs.** The report shows a savings number only
 when there is a measured `throttle check` of your model. It uses the
-expensive end of that check's confidence interval. The billed number comes
-only from requests your model actually served. Requests that fell back to the
+expensive end of that check's confidence interval. The realized-savings
+number comes only from requests your model actually served. Requests that fell back to the
 API are already on your API bill and are not counted as savings.
 
-**Forced routes are not billable.** `route approve --force` skips the passing
-eval. Those routes are marked FORCED everywhere, shown on their own line in
-`route savings`, and never billed.
+**Forced routes are never counted.** `route approve --force` skips the
+passing eval. Those routes are marked FORCED everywhere, shown on their own
+line in `route savings`, and never counted in the net.
 
 **Prompt caching is counted against us.** When we price what the API would
 have charged, we use the share of input the API served from its prompt cache
@@ -411,30 +458,55 @@ for that kind of work, priced at the cheaper cached rate. With no cache
 history, all input is priced at the cached rate, which is the lowest the API
 could have charged.
 
-## Privacy
+## Security model and data flow
 
-- **It runs on your machine.** Capture listens on `127.0.0.1` by default. Your
-  data stays in `~/.throttle/own`.
-- **Nothing leaves your machine** except the API call your client already
-  makes, and calls to endpoints you configure yourself: your candidate model
-  and your judge. If your judge is a public API, the captured prompts it
-  judges go to that provider. Use your current provider, or a judge you host.
-- **No telemetry.** Throttle does not phone home.
-- **API keys** are read from environment variables you name. They are never
-  printed or stored. Capture never writes auth headers.
-- **Redaction modes** for captured bodies:
-  - `mask` (default): emails, phone numbers, US SSNs, card numbers, IP
-    addresses and secrets (API keys, tokens, passwords) become placeholders
-    like `<EMAIL>`. Inline images and audio become `<IMAGE>` or `<AUDIO>`.
-  - `hash`: the same, plus a salted hash, so repeats of one value can be
-    matched. Set the salt with `THROTTLE_OWN_SALT`.
-  - `metadata`: no bodies at all, only model, token counts and timing.
-    Workloads still shows spend, but shadow and eval need bodies.
-  - `off`: bodies kept as sent.
-- **What pattern redaction does not catch:** names, street addresses, dates of
-  birth, and free-text medical or financial details. It matches patterns; it
-  does not understand text. If that content cannot sit on your disk, capture
-  with `--redact metadata`.
+**What runs where.** Everything Throttle runs is yours:
+
+- **A proxy you run.** `throttle capture` is a pass-through proxy on your
+  machine or server. It binds to `127.0.0.1` by default and warns you if you
+  bind it anywhere else.
+- **Your CI.** The GitHub Action runs on your runner with your workflow token.
+  There is no Throttle server.
+- **The CLI.** Workloads, shadow, eval, report, route and refresh run where
+  you run them. Data stays in `~/.throttle/own` (or `$THROTTLE_OWN_DIR`).
+
+**What leaves your infra.**
+
+- The API calls your app already makes, unchanged.
+- **Judge calls** go to the provider and key you choose. If the judge is a
+  public API, the captured prompts and answers it judges go to that provider.
+  Use your current provider, or a judge you host.
+- **Candidate API models** see the prompts you send them. A model you host
+  sees them only on your own hardware.
+- **Throttle the company receives nothing.** No telemetry: the CLI does not
+  phone home, log in or meter anything.
+
+**Keys.** API keys are read from environment variables you name. They are
+never printed or written to disk, and capture never stores auth headers.
+
+**Redaction modes** for captured bodies (`throttle capture --redact`):
+
+- `mask` (default): emails, phone numbers, US SSNs, card numbers, IP
+  addresses and secrets (API keys, tokens, passwords) become placeholders
+  like `<EMAIL>`. Inline images and audio become `<IMAGE>` or `<AUDIO>`.
+- `hash`: the same, plus a salted hash, so repeats of one value can be
+  matched. Set the salt with `THROTTLE_OWN_SALT`.
+- `metadata`: no bodies at all, only model, token counts and timing.
+  Workloads still shows spend, but shadow and eval need bodies.
+- `off`: bodies kept as sent.
+
+Pattern redaction does not catch names, street addresses, dates of birth, or
+free-text medical or financial details. It matches patterns; it does not
+understand text. If that content cannot sit on your disk, capture with
+`--redact metadata`.
+
+**Supply chain.** Releases go to PyPI through trusted publishing (OIDC), so no
+upload token is stored anywhere, and the release workflow pins every action it
+uses by SHA. Pin your install and the GitHub Action to a full commit SHA, as
+shown above. This matters most for the capture proxy: it sees your API keys in
+flight, so run only code you have pinned.
+
+To report a vulnerability, see [SECURITY.md](SECURITY.md).
 
 ## Serving your own model
 
@@ -477,9 +549,9 @@ Real runs only. Each one links to its raw data.
 The A100 baseline was deliberately bad (one sequence at a time), so it shows
 the measurement, not a saving to expect.
 
-**The own-your-intelligence loop has not yet run on a real company's
-traffic.** Its tests use fakes, and `throttle demo` uses made-up data. When it
-runs on real traffic, the results go here.
+**The loop has not yet run on a real company's traffic.** Its tests use
+fakes, and `throttle demo` uses made-up data. When it runs on real traffic,
+the results go here.
 
 ## Limits
 

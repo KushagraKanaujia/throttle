@@ -340,22 +340,52 @@ RETIRED_PATTERNS = {
     "20% of verified": re.compile(r"20% of verified", re.IGNORECASE),
     "$500/month": re.compile(r"\$500\s*/\s*month", re.IGNORECASE),
     "2 weeks": re.compile(r"\b2 weeks\b", re.IGNORECASE),
-    # Throttle Cloud credit plans (retired 2026-10-27): pricing is now a share
-    # of measured savings, and the CLI never logs in or meters anything.
+    # Throttle Cloud credit plans (retired 2026-10-27). Pricing is a flat
+    # monthly fee, and the CLI never logs in or meters anything.
     "Throttle Cloud": re.compile(r"Throttle Cloud", re.IGNORECASE),
     "$10 of credits": re.compile(r"\$10 (?:of )?(?:free )?credits?", re.IGNORECASE),
     "credits left": re.compile(r"credits left", re.IGNORECASE),
     "$30/$50/$100 plans": re.compile(r"\$(?:30|50|100)\s*/\s*mo(?:nth)?\b", re.IGNORECASE),
     "throttle upgrade": re.compile(r"throttle upgrade\b", re.IGNORECASE),
     "throttle login": re.compile(r"throttle (?:login|logout|whoami)\b", re.IGNORECASE),
+    # Share-of-savings billing (retired for the flat monthly fee, 2026-11).
+    "we bill on": re.compile(r"we bill on", re.IGNORECASE),
+    "share of the savings": re.compile(r"share of the savings", re.IGNORECASE),
+    "no bill": re.compile(r"\bno bill\b", re.IGNORECASE),
+    "billable": re.compile(r"\bbillable\b", re.IGNORECASE),
 }
+
+SKIP_SUFFIXES = (".pyc", ".png", ".ico", ".woff2")
+
+
+def _is_build_junk(path: Path) -> bool:
+    """A stale build or cache folder (src/*.egg-info, __pycache__) is not source."""
+
+    return any(part == "__pycache__" or part.endswith(".egg-info") for part in path.parts)
+
+
+def tracked_src_files() -> list[Path]:
+    """The files git tracks under src/, or every file there when git is not available."""
+
+    import subprocess
+
+    try:
+        listed = subprocess.run(
+            ["git", "ls-files", "-z", "src"], cwd=REPO, capture_output=True, check=True, timeout=30,
+        ).stdout.decode("utf-8").split("\0")
+        files = [REPO / name for name in listed if name]
+    except (OSError, subprocess.SubprocessError, UnicodeDecodeError):
+        files = []
+    if not files:
+        files = sorted((REPO / "src").rglob("*"))
+    return [path for path in files if not _is_build_junk(path.relative_to(REPO))]
 
 
 def test_no_retired_offer_strings_in_src_or_readme() -> None:
-    files = [REPO / "README.md", *sorted((REPO / "src").rglob("*"))]
+    files = [REPO / "README.md", *tracked_src_files()]
     hits = []
     for path in files:
-        if not path.is_file() or "_vendor" in path.parts or path.suffix in (".pyc", ".png", ".ico", ".woff2"):
+        if not path.is_file() or "_vendor" in path.parts or path.suffix in SKIP_SUFFIXES:
             continue
         if path.name.lower() == "changelog.md":
             continue  # release history may name the offers it retired
@@ -368,3 +398,98 @@ def test_no_retired_offer_strings_in_src_or_readme() -> None:
                 line = text.count("\n", 0, match.start()) + 1
                 hits.append(f"{path.relative_to(REPO)}:{line}: {name}")
     assert hits == []
+
+
+def test_retired_scan_skips_stale_build_folders(tmp_path) -> None:
+    assert _is_build_junk(Path("src/throttle_pro.egg-info/PKG-INFO"))
+    assert _is_build_junk(Path("src/throttle/__pycache__/cli.cpython-312.pyc"))
+    assert not _is_build_junk(Path("src/throttle/cli.py"))
+    scanned = {path.relative_to(REPO).as_posix() for path in tracked_src_files()}
+    assert "src/throttle/cli.py" in scanned
+    assert not any(".egg-info" in name or "__pycache__" in name for name in scanned)
+
+
+@pytest.mark.parametrize("text", [
+    "the number we bill on", "we take a share of the savings", "No savings this period, no bill",
+    "net savings (billable)",
+])
+def test_retired_billing_language_is_caught(text: str) -> None:
+    assert any(pattern.search(text) for pattern in RETIRED_PATTERNS.values()), text
+
+
+# --------------------------------------------------------------------------
+# README trust sections
+# --------------------------------------------------------------------------
+
+PINNED_SHA = "64cb03e30b87b1de0e4bcc6bed55d0a54641eb95"  # v0.7.0
+
+
+def readme_section(title: str) -> str:
+    text = (REPO / "README.md").read_text(encoding="utf-8")
+    start = text.index(f"## {title}\n")
+    end = text.find("\n## ", start + 1)
+    return text[start:end if end != -1 else None]
+
+
+def test_readme_install_and_action_are_pinned_to_a_full_sha() -> None:
+    text = (REPO / "README.md").read_text(encoding="utf-8")
+    assert f'pip install "git+https://github.com/KushagraKanaujia/throttle@{PINNED_SHA}"  # v0.7.0' in text
+    assert f"uses: KushagraKanaujia/throttle/.github/actions/throttle-pr@{PINNED_SHA} # v0.7.0" in text
+    assert "Pin the action by its full commit SHA" in text
+    assert "throttle-pr@main" not in text
+    assert not re.search(r"pip install git\+https://github\.com/KushagraKanaujia/throttle\s*$", text, re.M)
+    for doc in ("getting-started/installation.md", "getting-started/quickstart.md"):
+        body = (REPO / "src/throttle/console/docs" / doc).read_text(encoding="utf-8")
+        assert PINNED_SHA in body, doc
+        assert "own/mvp" not in body and "pipx upgrade" not in body, doc
+
+
+def test_readme_has_the_honest_setup_line() -> None:
+    flat_text = " ".join((REPO / "README.md").read_text(encoding="utf-8").split())
+    assert ("Setup: one base-URL change to a proxy you run, a model server or cheaper API model to test "
+            "against, and a judge key you choose. The GitHub Action comments on PRs.") in flat_text
+
+
+def test_readme_security_model_and_data_flow() -> None:
+    section = " ".join(readme_section("Security model and data flow").split())
+    for needed in ("A proxy you run", "127.0.0.1", "Your CI", "The CLI", "Judge calls", "provider and key you choose",
+                   "Candidate API models", "Throttle the company receives nothing", "No telemetry",
+                   "environment variables you name", "never printed or written to disk", "`mask` (default)",
+                   "`hash`", "`metadata`", "`off`", "trusted publishing", "pinned", "sees your API keys",
+                   "[SECURITY.md](SECURITY.md)"):
+        assert needed in section, needed
+    security = " ".join((REPO / "SECURITY.md").read_text(encoding="utf-8").split())
+    for needed in ("Security model and data flow", "Throttle the company receives nothing",
+                   "Judge calls go to the provider and key you choose", "Candidate API models",
+                   "trusted publishing", "0.7.x"):
+        assert needed in security, needed
+
+
+def test_readme_how_throttle_is_different_uses_only_real_numbers() -> None:
+    section = readme_section("How Throttle is different")
+    flat_text = " ".join(section.split())
+    for needed in ("tracked in pull requests", "never moved silently", "inside the noise", '"looked 47% cheaper"',
+                   '"!!!!"', "$1.67 to $1.13 per 1M tokens (32% cheaper)", "not against an API",
+                   "Fallback per request", "Nothing hosted, nothing to shut down", "Flat fee",
+                   "No cut of each request",
+                   "default path tests existing models and does not train on provider outputs"):
+        assert needed in flat_text, needed
+    # Only the real receipts: on-the-fly FP8 looked 47% cheaper (32B said "!!!!"),
+    # and pre-quantized FP8 Qwen2.5-72B on an MI300X went $1.67 -> $1.13 (32% cheaper).
+    allowed = {"47%", "32B", "Qwen2.5-72B", "MI300X", "$1.67", "$1.13", "1M", "32%", "FP8", "BF16"}
+    numbers = set(re.findall(r"[\w$.-]*\d[\w%.-]*", section))
+    assert numbers <= allowed, numbers - allowed
+
+
+def test_readme_and_docs_have_no_em_dashes() -> None:
+    docs = REPO / "src/throttle/console/docs"
+    paths = [REPO / "README.md", REPO / "SECURITY.md", docs / "index.md",
+             *(docs / "getting-started").glob("*.md"), *(docs / "loop").glob("*.md"), *(docs / "more").glob("*.md")]
+    offenders = [str(p.relative_to(REPO)) for p in paths if "—" in p.read_text(encoding="utf-8")]
+    assert offenders == []
+
+
+def test_issue_template_links_the_current_pitch() -> None:
+    text = (REPO / ".github/ISSUE_TEMPLATE/config.yml").read_text(encoding="utf-8")
+    assert "url: https://throttle-pro.com" in text and "Stop renting your AI" in text
+    assert "Pilot" not in text and "own GPUs" not in text

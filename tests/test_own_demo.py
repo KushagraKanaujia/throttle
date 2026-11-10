@@ -109,8 +109,9 @@ def test_site_json_matches_landing_schema(run):
         assert w["verdict"] in landing_verdicts
         assert isinstance(w["monthly_api_usd"], float) and isinstance(w["projected_owned_usd"], float)
         q = w["quality"]
-        assert set(q) == {"win", "tie", "loss", "net_ci"}
-        assert all(0 <= q[k] <= 1 for k in ("win", "tie", "loss"))
+        assert set(q) == {"win", "tie", "judge_unsure", "loss", "net_ci"}
+        assert all(0 <= q[k] <= 1 for k in ("win", "tie", "judge_unsure", "loss"))
+        assert q["win"] + q["tie"] + q["judge_unsure"] + q["loss"] == pytest.approx(1.0, abs=1e-3)
         assert len(q["net_ci"]) == 2 and q["net_ci"][0] <= q["net_ci"][1]
 
 
@@ -121,7 +122,7 @@ def test_site_json_uses_null_without_numbers():
     site = demo.site_json(report)
     row = site["workloads"][0]
     assert row["monthly_api_usd"] is None and row["projected_owned_usd"] is None
-    assert row["quality"] == {"win": None, "tie": None, "loss": None, "net_ci": [None, None]}
+    assert row["quality"] == {"win": None, "tie": None, "judge_unsure": None, "loss": None, "net_ci": [None, None]}
     assert site["totals"] == {"monthly_api_usd": None, "movable_usd": None, "projected_savings_usd": None}
 
 
@@ -143,3 +144,42 @@ def test_real_cli_dispatches_demo(tmp_path, capsys):
     assert main(["demo", "--out", str(tmp_path / "out"), "--seed", "3", "--requests", "300"]) == 0
     assert (tmp_path / "out" / "report.html").exists()
     assert "Report: llama-3.3-70b@vllm vs API (DEMO)" in capsys.readouterr().out
+
+
+def test_site_json_tie_is_ties_only_and_unsure_is_separate(run):
+    result, _, _ = run
+    by_type = {w["type"]: w for w in result.report["workloads"]}
+    for row in result.site["workloads"]:
+        q = by_type[row["type"]]["quality"]
+        assert row["quality"]["tie"] == pytest.approx(round(q["ties"] / q["judged"], 4))
+        assert row["quality"]["judge_unsure"] == pytest.approx(round(q["order_disagree"] / q["judged"], 4))
+
+
+def test_site_json_with_judge_unsure_items():
+    quality = {"win_rate": 0.25, "tie_rate": 0.25, "order_disagree_rate": 0.2, "loss_rate": 0.3,
+               "net_ci": [-0.2, 0.1]}
+    report = {"generated_at": "x", "workloads": [{
+        "type": "chat", "api_usd_per_month": 100.0, "owned_usd_per_month": {"point": 40.0, "low": 30.0, "high": 55.0},
+        "recommendation": rep.MORE_DATA, "quality": quality}],
+        "totals": {"monthly_api_usd": 100.0, "movable_api_usd": 0.0, "conservative_savings_usd": None}}
+    row = demo.site_json(report)["workloads"][0]
+    assert row["quality"]["tie"] == 0.25 and row["quality"]["judge_unsure"] == 0.2   # not folded together
+    assert sum(row["quality"][k] for k in ("win", "tie", "judge_unsure", "loss")) == pytest.approx(1.0)
+    assert row["projected_owned_usd"] == 55.0   # the high end, as on the report page
+
+
+def test_report_page_and_site_json_show_the_same_owned_cost(run):
+    """Cross-lane contract: owned $/mo is the high end of the 95% CI everywhere."""
+    from throttle.own import report_page
+
+    result, _, _ = run
+    page = result.html_path.read_text()
+    assert report_page.OWNED_COLUMN in page
+    by_type = {w["type"]: w for w in result.report["workloads"]}
+    for row in result.site["workloads"]:
+        owned = by_type[row["type"]]["owned_usd_per_month"]
+        assert row["projected_owned_usd"] == pytest.approx(round(owned["high"], 2))
+        # The page's job row for this type prints the same high-end figure.
+        name = report_page.job_name(row["type"])
+        job_row = re.search(rf'<span class="job-name">{re.escape(name)}</span>.*?</tr>', page, re.S).group(0)
+        assert report_page.money(owned["high"]) in job_row, (row["type"], report_page.money(owned["high"]))

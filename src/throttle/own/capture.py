@@ -10,7 +10,25 @@ non-streaming response.
 After a response finishes, one :class:`records.Exchange` is written (bodies
 redacted per ``--redact``) and each ``on_exchange`` callback is started as a
 fire-and-forget task. Auth headers are never written anywhere. Nothing is
-cached. Nothing is sent anywhere except the upstream.
+cached. Without ``--route`` nothing is sent anywhere except the upstream.
+
+With ``--route`` (a :class:`throttle.own.route.Router`), a call whose job or
+kind your team approved may be answered by your own model. Only calls that
+carry an ``Authorization`` or ``x-api-key`` header are considered; any other
+call goes to the upstream unchanged, so the upstream still checks the key.
+The call falls back to the upstream on errors, timeouts, empty or cut-off
+answers, bad JSON, and schema or tool-call failures.
+
+Request guards (a local proxy must not be usable from a web page):
+
+- bound to a loopback address, only loopback ``Host`` names are answered
+  (DNS-rebinding guard); others get 403;
+- any request with a browser ``Origin`` header gets 403;
+- ``POST /v1/chat/completions`` and ``POST /v1/messages`` need
+  ``Content-Type: application/json`` (415 otherwise); other ``POST`` calls
+  need JSON or ``multipart/form-data`` (file uploads), or an empty body.
+- ``X-Throttle-Job`` must match :data:`throttle.own.tag._VALID`; an invalid
+  value is dropped: not forwarded and not recorded.
 """
 
 from __future__ import annotations
@@ -36,6 +54,7 @@ from starlette.background import BackgroundTask
 
 from . import records
 from .redact import redact_body
+from .tag import _VALID as _VALID_JOB
 
 log = logging.getLogger("throttle.own.capture")
 
@@ -55,6 +74,44 @@ JOB_HEADER = "x-throttle-job"
 _DROP_REQUEST = HOP_BY_HOP | {"host", "content-length", JOB_HEADER}
 _DROP_RESPONSE = HOP_BY_HOP | {"content-length"}
 _PASSTHROUGH_METHODS = ["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"]
+# A routed call must carry one of these; the upstream is what checks the key,
+# so a call without one is never answered by the owned model.
+_KEY_HEADERS = ("authorization", "x-api-key")
+
+
+def is_loopback_host(host: str) -> bool:
+    import ipaddress
+
+    host = (host or "").strip().strip("[]").lower()
+    if host == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return False
+
+
+def _host_name(header: str) -> str:
+    header = (header or "").strip()
+    if header.startswith("["):
+        return header[1:].split("]", 1)[0]
+    if header.count(":") == 1:
+        return header.split(":", 1)[0]
+    return header
+
+
+def _media_type(request: Request) -> str:
+    return (request.headers.get("content-type") or "").split(";", 1)[0].strip().lower()
+
+
+def valid_job(value: str | None) -> str | None:
+    """The X-Throttle-Job value when it is a valid job name, else None."""
+    value = (value or "").strip()
+    return value if value and _VALID_JOB.match(value) else None
+
+
+def has_key(request: Request) -> bool:
+    return any((request.headers.get(name) or "").strip() for name in _KEY_HEADERS)
 
 
 # ---------------------------------------------------------------------------
@@ -433,9 +490,14 @@ def create_capture_app(
     on_exchange: Sequence[ExchangeCallback] = (),
     client: httpx.AsyncClient | None = None,
     router: Any = None,
+    bind_host: str | None = None,
 ) -> FastAPI:
     """``router`` (a :class:`throttle.own.route.Router`) may answer a request
-    from an owned model; on any doubt or error the request goes upstream unchanged."""
+    from an owned model; on any doubt or error the request goes upstream unchanged.
+
+    ``bind_host`` is the address the server listens on. When it is a loopback
+    address, requests with a non-loopback ``Host`` get 403. None (in-process
+    use) skips the Host check; the Origin and Content-Type checks always apply."""
     if redaction not in records.REDACTION_MODES:
         raise ValueError(f"unknown redaction mode {redaction!r}")
     salt_bytes = salt.encode("utf-8") if isinstance(salt, str) else (salt or secrets.token_bytes(32))
@@ -467,6 +529,23 @@ def create_capture_app(
 
     app = FastAPI(title="Throttle capture", docs_url=None, redoc_url=None, openapi_url=None, lifespan=lifespan)
     app.state.capture = state
+    host_guard = bind_host is not None and is_loopback_host(bind_host)
+
+    def refuse(request: Request, *, json_only: bool, body: bytes = b"") -> Response | None:
+        """A 4xx for requests a local proxy must not take, else None."""
+        if host_guard and not is_loopback_host(_host_name(request.headers.get("host", ""))):
+            return JSONResponse(status_code=403, content={"error": {"type": "forbidden_host", "message":
+                                "throttle capture only answers to localhost when bound to a loopback address"}})
+        if "origin" in request.headers:
+            return JSONResponse(status_code=403, content={"error": {"type": "browser_request", "message":
+                                "throttle capture does not accept requests from web pages (Origin header)"}})
+        if request.method == "POST":
+            media = _media_type(request)
+            allowed = {"application/json"} if json_only else {"application/json", "multipart/form-data"}
+            if media not in allowed and (json_only or body):
+                return JSONResponse(status_code=415, content={"error": {"type": "unsupported_media_type", "message":
+                                    "throttle capture needs Content-Type: application/json"}})
+        return None
 
     def build_exchange(p: _Pending) -> records.Exchange:
         finished = p.finished or time.perf_counter()
@@ -592,6 +671,9 @@ def create_capture_app(
         )
 
     async def captured(provider: str, request: Request) -> Response:
+        refused = refuse(request, json_only=True)
+        if refused is not None:
+            return refused
         body = await request.body()
         started = time.perf_counter()
         try:
@@ -601,8 +683,10 @@ def create_capture_app(
         request_json = parsed if isinstance(parsed, dict) else None
         wants_stream = bool(request_json and request_json.get("stream") is True)
         pending = _Pending(provider=provider, endpoint=request.url.path, request_json=request_json, started=started,
-                           stream=wants_stream, job=(request.headers.get(JOB_HEADER) or "").strip()[:120] or None)
-        if router is not None and request_json is not None:
+                           stream=wants_stream, job=valid_job(request.headers.get(JOB_HEADER)))
+        # Only a call that carries a key is ever answered by the owned model;
+        # without one it goes upstream unchanged and the upstream checks it.
+        if router is not None and request_json is not None and has_key(request):
             owned = await decide(pending)
             if owned is not None:
                 return owned
@@ -696,13 +780,16 @@ def create_capture_app(
         return response
 
     async def passthrough(request: Request) -> Response:
+        body = await request.body()
+        refused = refuse(request, json_only=False, body=body)
+        if refused is not None:
+            return refused
         headers = request.headers
         provider = (
             records.PROVIDER_ANTHROPIC
             if "x-api-key" in headers or "anthropic-version" in headers
             else records.PROVIDER_OPENAI
         )
-        body = await request.body()
         try:
             upstream = await open_upstream(provider, request, body)
         except httpx.HTTPError as exc:
@@ -720,7 +807,10 @@ def create_capture_app(
         return response
 
     @app.get("/health")
-    async def health() -> dict[str, Any]:
+    async def health(request: Request) -> Any:
+        refused = refuse(request, json_only=False)
+        if refused is not None:
+            return refused
         return {
             "status": "ok",
             "redaction": state.redaction,
@@ -788,13 +878,19 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
         "capture",
         help="record your OpenAI/Anthropic API traffic locally (pass-through proxy)",
         description=(
-            "Run a local pass-through proxy in front of the OpenAI and Anthropic APIs. "
-            "Every call goes to the upstream you already use, unchanged; a redacted copy "
-            "is written to a local folder. Nothing is cached and nothing is sent anywhere else."
+            "Run a local proxy in front of the OpenAI and Anthropic APIs. By default every call "
+            "goes to your upstream unchanged and is recorded locally (redacted per --redact). "
+            "Nothing is cached. With --route, calls of the kinds your team approved are sent to "
+            "your own model instead, and fall back to the API on errors, timeouts, empty or "
+            "cut-off answers, bad JSON, and schema or tool-call failures. Only calls that carry "
+            "an API key are routed. Requests from web pages (an Origin header) are refused."
         ),
     )
-    parser.add_argument("--port", type=int, default=DEFAULT_PORT)
-    parser.add_argument("--host", default="127.0.0.1")
+    parser.add_argument("--port", type=int, default=DEFAULT_PORT,
+                        help=f"port to listen on (default: {DEFAULT_PORT})")
+    parser.add_argument("--host", default="127.0.0.1",
+                        help="address to listen on (default: 127.0.0.1, this machine only). "
+                             "Any other address lets anyone who can reach the port send traffic through it.")
     parser.add_argument("--openai-upstream", default=DEFAULT_OPENAI_UPSTREAM)
     parser.add_argument("--anthropic-upstream", default=DEFAULT_ANTHROPIC_UPSTREAM)
     parser.add_argument(
@@ -806,7 +902,7 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
     )
     parser.add_argument("--dir", type=Path, default=None, help="data folder (default: ~/.throttle/own or $THROTTLE_OWN_DIR)")
     parser.add_argument("--route", action="store_true",
-                        help="serve approved workload types from your own model (see: throttle route)")
+                        help="serve approved workload types from the cheaper model you tested (see: throttle route)")
     actions = parser.add_subparsers(dest="capture_action", metavar="{stats}")
     stats = actions.add_parser("stats", help="summarize what has been captured")
     # SUPPRESS keeps `throttle capture --dir X stats` working too.
@@ -835,7 +931,7 @@ def _serve(args: argparse.Namespace, root: Path) -> int:
 
         router = Router(root)
     app = create_capture_app(args.openai_upstream, args.anthropic_upstream, redaction=args.redact, root=root, salt=salt,
-                             router=router)
+                             router=router, bind_host=args.host)
     print(startup_panel(args, root, style.get()), flush=True)
     if router is not None:
         print("\n".join(router.describe()), flush=True)
@@ -860,7 +956,10 @@ def startup_panel(args: argparse.Namespace, root: Path, st: Any) -> str:
         "",
         (f"OpenAI calls go to {_strip_base(args.openai_upstream)}", ()),
         (f"Anthropic calls go to {_strip_base(args.anthropic_upstream)}", ()),
-        ("Nothing is sent anywhere except the upstream you already call. Nothing is cached.", ()),
+        (("Calls with an API key whose kind your team approved go to your model, and fall back to the "
+          "upstream on any failure. Everything else goes to the upstream. Nothing is cached.")
+         if getattr(args, "route", False) else
+         "Nothing is sent anywhere except the upstream you already call. Nothing is cached.", ()),
         "",
         "Point your clients here:",
         f"  OPENAI_BASE_URL={base}/v1",

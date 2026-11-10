@@ -23,7 +23,7 @@ Scored the same way for both answers, as a pass rate with a 95% Wilson interval:
 
 ## The judge
 
-The judge sees the conversation and both answers, and is asked twice with the answers swapped. It is a win or a loss only when both orders agree, and a tie only when both say tie. Anything else is "order disagree": it counts like a tie but is tracked on its own.
+The judge sees the conversation and both answers, and is asked twice with the answers swapped. It is a win or a loss only when both orders agree, and a tie only when both say tie. Anything else is "order disagree", shown as **judge unsure**. It scores 0 in wins minus losses, like a tie, but it is never folded into the tie rate: the eval table shows win/tie/unsure/loss, the eval JSON has `tie_rate_ci` (ties only) and `order_disagree_rate_ci`, and the report page draws a separate "Judge unsure" bar.
 
 ## Verdict per kind of work
 

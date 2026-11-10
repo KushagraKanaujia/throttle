@@ -2,9 +2,22 @@
 
 What this catches: email addresses, phone numbers written with separators,
 US social security numbers (dashed), payment card numbers (Luhn-checked, with
-a known card prefix and length), IPv4/IPv6 addresses, and secrets (API keys,
-tokens, JWTs, ``password: ...`` style assignments, and string values under
-keys such as ``api_key`` or ``password``).
+a known card prefix and length), IPv4/IPv6 addresses, and secrets:
+
+- provider API keys and tokens with a known prefix (OpenAI/Anthropic ``sk-``,
+  Hugging Face, npm, PyPI, GitHub, GitLab, Slack ``xox*-`` / ``xapp-``, AWS
+  access key ids, Google ``AIza``, SendGrid, Stripe ``sk_``/``rk_``/``pk_``
+  and ``whsec_``), JWTs and Discord bot tokens;
+- PEM / OpenSSH / PGP private key blocks, header to footer;
+- an AWS secret access key next to an access key id or a secret label;
+- Slack and Discord incoming-webhook URLs;
+- the whole ``user:password@`` part of a URL;
+- a 32+ character hex or base64 run next to the word key, token or secret;
+- the value after a label: ``password: ...``, ``api_key = ...``,
+  ``OPENAI_KEY: ...``, ``api-key <value>``, ``Authorization: Bearer ...``;
+- in JSON, every string value whose key names a credential, matched
+  anywhere in the key (``OPENAI_API_KEY``, ``client_secret``,
+  ``githubToken``, ``x-api-key``), and long mixed values under ``*_key``.
 
 What this does NOT catch: names, street addresses, dates of birth, free-text
 medical or financial details, or anything else that has no fixed shape. It is
@@ -36,7 +49,19 @@ import ipaddress
 import re
 from typing import Any, Callable
 
-from ..provenance import _CREDENTIAL_ASSIGNMENT, _CREDENTIAL_TOKEN, _CREDENTIAL_VALUE_LABEL, _JWT_TOKEN
+from ..provenance import (
+    _AWS_SECRET_NEAR_ID,
+    _CREDENTIAL_ASSIGNMENT,
+    _CREDENTIAL_TOKEN,
+    _CREDENTIAL_VALUE_LABEL,
+    _DISCORD_TOKEN,
+    _JWT_TOKEN,
+    _LABELLED_RUN,
+    _PRIVATE_KEY_BLOCK,
+    _URL_USERINFO,
+    _WEBHOOK_URL,
+    spaced_credentials,
+)
 from .records import REDACTION_HASH, REDACTION_MASK, REDACTION_METADATA, REDACTION_MODES, REDACTION_OFF
 
 EMAIL = "EMAIL"
@@ -74,12 +99,35 @@ _CARD = re.compile(
 _IPV4 = re.compile(r"(?<![\w.])(?:\d{1,3}\.){3}\d{1,3}(?![\w]|\.\d)")
 _IPV6_CANDIDATE = re.compile(r"(?<![\w:.])[0-9A-Fa-f]{0,4}(?::[0-9A-Fa-f]{0,4}){2,7}(?![\w:])")
 _SECRET_VALUE = re.compile(r"""\s*["']?(?:bearer\s+)?([^\s"',;}\])]+)""", re.IGNORECASE)
-_PASSWORD_LABEL = re.compile(r"pass(?:word|wd)|secret|private", re.IGNORECASE)
+_PASSWORD_LABEL = re.compile(r"pass(?:word|wd)?(?![a-z])|secret|private", re.IGNORECASE)
 _JSON_SECRET_PAIR = re.compile(
     r'"(' + _CREDENTIAL_VALUE_LABEL.pattern + r')"\s*:\s*"((?:[^"\\]|\\.)+)"', re.IGNORECASE
 )
 # A bare "token" key is a logprobs entry far more often than a credential.
 _AMBIGUOUS_KEYS = frozenset({"token"})
+# A JSON key that names a credential anywhere in it, between word breaks
+# (camelCase is split first): OPENAI_API_KEY, client_secret, githubToken,
+# x-api-key, slack_webhook_url. "max_tokens" and "tokenizer" do not match.
+_SECRET_KEY_NAME = re.compile(
+    r"(?:^|[^a-z0-9])(?:access[\s_-]*token|api[\s_-]*key|auth[\s_-]*token|authorization|bearer|"
+    r"client[\s_-]*secret|credentials?|password|passwd|private[\s_-]*key|secret(?:[\s_-]*(?:access[\s_-]*)?key)?|"
+    r"token|webhook[\s_-]*url)(?:$|[^a-z0-9])"
+)
+# "OPENAI_KEY", "stripeKey": masked when the value looks like a key.
+_KEY_SUFFIX_NAME = re.compile(r"(?:^|[^a-z0-9])key$")
+_CAMEL = re.compile(r"([a-z0-9])([A-Z])")
+
+
+def _secret_key_name(key: str) -> bool:
+    name = _CAMEL.sub(r"\1_\2", key).lower()
+    if name in _AMBIGUOUS_KEYS:
+        return False
+    return bool(_SECRET_KEY_NAME.search(name))
+
+
+def _looks_like_key(value: str) -> bool:
+    return (len(value) >= 12 and " " not in value.strip()
+            and bool(re.search(r"\d", value)) and bool(re.search(r"[A-Za-z]", value)))
 
 Span = tuple[int, int, str, str]  # start, end, kind, normalized value
 
@@ -205,12 +253,27 @@ def _token_start(match: re.Match[str]) -> int:
     return start
 
 
+def _mixed(value: str) -> bool:
+    return bool(re.search(r"\d", value)) and bool(re.search(r"[A-Za-z]", value))
+
+
 def _find_secrets(text: str) -> list[Span]:
     out: list[Span] = []
     for pattern in (_CREDENTIAL_TOKEN, _JWT_TOKEN):
         for m in pattern.finditer(text):
             start = _token_start(m)
             out.append((start, m.end(), SECRET, text[start:m.end()]))
+    for pattern in (_PRIVATE_KEY_BLOCK, _WEBHOOK_URL, _DISCORD_TOKEN, _URL_USERINFO):
+        for m in pattern.finditer(text):
+            out.append((m.start(), m.end(), SECRET, m.group(0)))
+    for m in _AWS_SECRET_NEAR_ID.finditer(text):
+        out.append((m.start(1), m.end(1), SECRET, m.group(1)))
+    for m in _LABELLED_RUN.finditer(text):
+        group = 1 if m.group(1) is not None else 2
+        if _mixed(m.group(group)):
+            out.append((m.start(group), m.end(group), SECRET, m.group(group)))
+    for m in spaced_credentials(text):
+        out.append((m.start(1), m.end(1), SECRET, m.group(1)))
     for m in _CREDENTIAL_ASSIGNMENT.finditer(text):
         value = _SECRET_VALUE.match(text, m.end())
         if not value:
@@ -320,7 +383,9 @@ def redact_body(obj: Any, mode: str, salt: str | bytes | None = None) -> Any:
         if isinstance(value, str):
             if key in _NEVER_REDACTED_KEYS:
                 return value
-            if key and value and key.lower() not in _AMBIGUOUS_KEYS and _CREDENTIAL_VALUE_LABEL.fullmatch(key):
+            if key and value and _secret_key_name(key):
+                return label(SECRET, value)
+            if key and _KEY_SUFFIX_NAME.search(_CAMEL.sub(r"\1_\2", key).lower()) and _looks_like_key(value):
                 return label(SECRET, value)
             return _redact(value, label)
         return value

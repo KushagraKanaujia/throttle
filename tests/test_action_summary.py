@@ -124,3 +124,31 @@ def test_summary_lists_workload_differences(action):
     assert outputs["verdict"] == "NO WINNER"
     assert "| workload.prompt_cache_mode | warm | cold |" in markdown
     assert "What changed: nothing Throttle can see" not in markdown
+
+
+SHA = "0123456789abcdef0123456789abcdef01234567"
+
+
+@pytest.mark.parametrize("requested, ref, expected", [
+    ("", f"{SHA}", f"git+https://github.com/KushagraKanaujia/throttle@{SHA}"),
+    ("auto", f"{SHA}", f"git+https://github.com/KushagraKanaujia/throttle@{SHA}"),
+    ("auto", "v0.7.0", "throttle-pro==0.7.0"),
+    ("auto", "0.7.0", "throttle-pro==0.7.0"),
+    ("0.6.1", SHA, "throttle-pro==0.6.1"),         # an explicit version wins over the ref
+    ("latest", SHA, "throttle-pro"),
+    ("auto", "main", "throttle-pro"),
+    ("auto", "", "throttle-pro"),
+    ("auto", SHA[:12], "throttle-pro"),             # a short SHA is not a pin
+    ("auto", SHA.upper(), "throttle-pro"),          # GitHub refs are lowercase hex
+])
+def test_pip_spec_pins_a_sha_ref_to_that_commit(action, requested, ref, expected):
+    spec, why = action._pip_spec(requested, ref)
+    assert spec == expected, why
+
+
+def test_resolve_prints_the_pinned_commit(action, monkeypatch, tmp_path, capsys):
+    monkeypatch.setenv("ACTION_REF", SHA)
+    monkeypatch.setenv("INPUT_THROTTLE_VERSION", "auto")
+    out = resolve(action, monkeypatch, tmp_path, "prod")
+    assert out["pip-spec"] == f"git+https://github.com/KushagraKanaujia/throttle@{SHA}"
+    assert SHA[:12] in capsys.readouterr().out

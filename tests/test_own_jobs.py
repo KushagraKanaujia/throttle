@@ -54,7 +54,8 @@ def test_changes_in_plain_words():
     before = sites()[0]
     after = sites({"app/support.py": py_call("summarize", SUMMARY + " Use bullets.", model="gpt-4.1",
                                              extra=", response_format={'type': 'json_object'}")})[0]
-    assert jobs.changes(before, after) == ["prompt edited", "model changed from gpt-4o-mini to gpt-4.1", "JSON output turned on"]
+    assert jobs.changes(before, after) == ["prompt edited", "model changed from `gpt-4o-mini` to `gpt-4.1`",
+                                          "JSON output turned on"]
     assert jobs.changes(before, before) == []
 
 
@@ -151,7 +152,7 @@ def test_cli_scan_sync_list_pin_log(tmp_path, capsys):
     capsys.readouterr()
     assert run("list") == 0
     out = capsys.readouterr().out
-    assert "pinned to the API" in out and "on the API, being tested" in out
+    assert "pinned to the API" in out and "on the API, not tested yet" in out
     assert run("log", "app/triage.py::triage") == 0
     assert "pinned to the API by the team" in capsys.readouterr().out
     assert run("approve", "app/triage.py::triage", "--candidate", "q", "--url", "u", "--model", "m") == 1
@@ -249,3 +250,20 @@ def test_job_eval_only_counts_calls_of_this_version(tmp_path):
     assert "app/support.py::summarize" not in doc["jobs"]
     doc = jobs.run_job_eval(tmp_path, "qwen", sites(), judge_config=None, min_n=1)
     assert doc["jobs"]["app/support.py::summarize"]["n"] == 3
+
+
+def test_jobs_eval_prints_judge_unsure_apart_from_same(tmp_path, monkeypatch, capsys):
+    import argparse
+
+    from throttle.own import jobs as jobs_mod
+
+    doc = {"path": str(tmp_path / "x.json"), "jobs": {"app/a.py::a": {
+        "verdict": "NO MATERIAL DIFFERENCE", "judged": 40, "wins": 5, "ties": 25, "order_disagree": 8, "losses": 2}}}
+    monkeypatch.setattr(jobs_mod, "_sites", lambda args: ([], None))
+    monkeypatch.setattr(jobs_mod, "run_job_eval", lambda *a, **k: doc)
+    args = argparse.Namespace(no_judge=True, candidate="qwen", margin=0.05, min_n=30, judge_concurrency=1,
+                              max_per_job=None, json=False)
+    jobs_mod._eval(args, tmp_path, None)
+    out = capsys.readouterr().out
+    assert "5 better, 25 same, 8 judge unsure, 2 worse of 40 judged" in out
+    assert "33 same" not in out
