@@ -421,7 +421,7 @@ def test_retired_billing_language_is_caught(text: str) -> None:
 # README trust sections
 # --------------------------------------------------------------------------
 
-PINNED_SHA = "64cb03e30b87b1de0e4bcc6bed55d0a54641eb95"  # v0.7.0
+PINNED_SHA = "c817ceae8e0e70d8a1ea389df837f51f91a991d4"  # v0.7.0
 
 
 def readme_section(title: str) -> str:
