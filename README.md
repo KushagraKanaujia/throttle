@@ -288,7 +288,7 @@ jobs:
     runs-on: ubuntu-latest   # or a runner in your cloud that can read ~/.throttle/own
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
-      - uses: KushagraKanaujia/throttle/.github/actions/throttle-pr@64cb03e30b87b1de0e4bcc6bed55d0a54641eb95 # v0.7.0
+      - uses: KushagraKanaujia/throttle/.github/actions/throttle-pr@c817ceae8e0e70d8a1ea389df837f51f91a991d4 # v0.7.0
 ```
 
 Pin the action by its full commit SHA, as above, not by `@main` or a tag: a
