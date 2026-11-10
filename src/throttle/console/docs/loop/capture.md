@@ -22,7 +22,7 @@ export ANTHROPIC_BASE_URL=http://127.0.0.1:8790
 
 | Flag | Default | What it does |
 | --- | --- | --- |
-| `--redact off\|mask\|hash\|metadata` | `mask` | How much of each body to keep. See [Privacy](../more/privacy.md). |
+| `--redact off\|mask\|hash\|metadata` | `mask` | How much of each body to keep. See [Privacy and data flow](../more/privacy.md). |
 | `--port` | `8790` | Port to listen on |
 | `--host` | `127.0.0.1` | Address to listen on. Anything else lets other machines send traffic through it. |
 | `--openai-upstream` | `https://api.openai.com` | Where OpenAI calls go |

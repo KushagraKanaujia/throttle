@@ -91,7 +91,9 @@ inputs:
   throttle-version:
     description: >-
       pip spec for Throttle. Empty means this action's own ref of
-      github.com/KushagraKanaujia/throttle. A local path works too.
+      github.com/KushagraKanaujia/throttle, which must then be a release tag
+      (v0.7.0) or a full 40-character commit SHA; a branch ref fails. A local
+      path works too.
     required: false
     default: ""
   github-token:
@@ -110,6 +112,28 @@ outputs:
 runs:
   using: composite
   steps:
+    - name: Refuse to run fork code with API keys
+      shell: bash
+      env:
+        EVENT_NAME: ${{ github.event_name }}
+        IN_API_KEY_ENV: ${{ inputs.api-key-env }}
+        IN_ANTHROPIC_KEY_ENV: ${{ inputs.anthropic-key-env }}
+        IN_JUDGE_KEY_ENV: ${{ inputs.judge-key-env }}
+        IN_CANDIDATE_KEY_ENV: ${{ inputs.candidate-key-env }}
+      run: |
+        # pull_request_target runs with the base repo's secrets while the
+        # prompts come from the pull request, which may be a fork. First
+        # looks would send those prompts with your keys. Use pull_request.
+        if [ "$EVENT_NAME" = "pull_request_target" ]; then
+          for name in "$IN_API_KEY_ENV" "$IN_ANTHROPIC_KEY_ENV" "$IN_JUDGE_KEY_ENV" "$IN_CANDIDATE_KEY_ENV" \
+                      OPENAI_API_KEY ANTHROPIC_API_KEY; do
+            if [ -n "$name" ] && [ -n "${!name:-}" ]; then
+              echo "::error::Throttle for GitHub will not run on pull_request_target with provider keys set ($name). Run it on pull_request instead."
+              exit 1
+            fi
+          done
+        fi
+
     - name: Install Throttle
       shell: bash
       env:
@@ -119,7 +143,14 @@ runs:
         py="$(command -v python3 || command -v python)"
         venv="$RUNNER_TEMP/throttle-pr-venv"
         if [ -z "$SPEC" ]; then
-          SPEC="git+https://github.com/KushagraKanaujia/throttle@${ACTION_REF:-main}"
+          # Install this action's own code only from an immutable ref: a
+          # release tag (v1.2.3) or a full commit SHA. Never a branch.
+          if printf '%s' "$ACTION_REF" | grep -Eq '^([0-9a-f]{40}|v?[0-9]+\.[0-9]+\.[0-9]+([.-]?(a|b|rc|post|dev)[0-9]+)?)$'; then
+            SPEC="git+https://github.com/KushagraKanaujia/throttle@${ACTION_REF}"
+          else
+            echo "::error::Pin Throttle for GitHub to a release tag or a full commit SHA, e.g. uses: KushagraKanaujia/throttle/.github/actions/throttle-pr@v0.7.0 (got ref '${ACTION_REF}'), or set the throttle-version input."
+            exit 1
+          fi
         fi
         "$py" -m venv "$venv"
         "$venv/bin/python" -m pip install --quiet --disable-pip-version-check "$SPEC"

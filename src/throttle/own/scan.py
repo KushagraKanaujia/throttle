@@ -48,11 +48,16 @@ from __future__ import annotations
 import ast
 import hashlib
 import json
+import logging
 import re
 import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
 from typing import Any, Iterable, Mapping, Sequence
+
+from .tag import _VALID as _VALID_TAG
+
+log = logging.getLogger("throttle.own.scan")
 
 PROVIDER_OPENAI = "openai"
 PROVIDER_ANTHROPIC = "anthropic"
@@ -295,6 +300,20 @@ def _comment_tag(lines: Sequence[str], line: int) -> str | None:
             found = _TAG_COMMENT.search(lines[index])
             if found:
                 return found.group(1)
+    return None
+
+
+def _valid_tag(tag: str | None, path: str, line: int) -> str | None:
+    """The tag when it is a valid job name (:data:`throttle.own.tag._VALID`).
+    An invalid one is ignored with a scan warning: the call keeps its
+    ``<path>::<function>`` id, and the text never reaches a job id or a
+    pull request comment."""
+    if tag is None:
+        return None
+    if isinstance(tag, str) and _VALID_TAG.match(tag):
+        return tag
+    log.warning("%s:%s: ignoring invalid X-Throttle-Job tag (a job name is 1-120 letters, digits or . _ : / @ -)",
+                path, line)
     return None
 
 
@@ -661,7 +680,9 @@ def _scan_python_tree(path: str, source: str, tree: ast.Module) -> list[CallSite
             path=path, line=call.lineno, function=".".join(scope) or "<module>", language="python",
             provider=provider, api=api, model=model, model_expr=model_expr, system=system, user=user,
             prompt_dynamic=dynamic, has_tools="tools" in kwargs or "functions" in kwargs,
-            wants_json=_uses_json(kwargs, api), tag=_py_tag(kwargs) or _comment_tag(lines, call.lineno),
+            wants_json=_uses_json(kwargs, api),
+            tag=(_valid_tag(_py_tag(kwargs), path, call.lineno)
+                 or _valid_tag(_comment_tag(lines, call.lineno), path, call.lineno)),
             call_digest=_py_call_digest(call, names),
         )
 
@@ -1191,7 +1212,7 @@ def scan_javascript(path: str, source: str) -> list[CallSite]:
             model=model, model_expr=model_expr, system=system, user=user, prompt_dynamic=bool(dynamic),
             has_tools="tools" in fields or "functions" in fields,
             wants_json="response_format" in fields or (api == "ai-sdk" and chain[-1].endswith("Object")),
-            tag=tag or _comment_tag(js.lines, line),
+            tag=_valid_tag(tag, path, line) or _valid_tag(_comment_tag(js.lines, line), path, line),
             call_digest=_digest(" ".join(t.text for t in toks[i + 1:close])),
         ))
     return sites

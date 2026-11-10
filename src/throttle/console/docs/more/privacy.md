@@ -1,8 +1,23 @@
-# Privacy
+# Privacy and data flow
 
-*What Throttle sends, stores and never sees.*
+*What runs where, what leaves your infra, and what Throttle never sees.*
 
-Throttle runs on your machine. There is no telemetry.
+## What runs where
+
+- **A proxy you run.** `throttle capture` binds to `127.0.0.1` by default and warns you if you bind it anywhere else.
+- **Your CI.** The GitHub Action runs on your runner with your workflow token. There is no Throttle server.
+- **The CLI.** Every other command runs where you run it.
+
+## What leaves your infra
+
+- The API calls your app already makes, unchanged.
+- **Judge calls** go to the provider and key you choose.
+- **Candidate API models** see the prompts you send them. A model you host sees them only on your hardware.
+- **Throttle the company receives nothing.** There is no telemetry: the CLI does not phone home, log in or meter anything.
+
+## Supply chain
+
+Releases go to PyPI through trusted publishing (OIDC), with every action in the release workflow pinned by SHA. Pin your install and the GitHub Action to a full commit SHA too. The capture proxy sees your API keys in flight, so run only code you have pinned. To report a vulnerability, see `SECURITY.md` in the repository.
 
 ## The loop (capture, shadow, eval, route)
 

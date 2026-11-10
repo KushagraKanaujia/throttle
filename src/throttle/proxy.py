@@ -19,19 +19,72 @@ balances precision (avoiding false positives) with recall (catching duplicates).
 Agent Session Profiling: When enable_session_tracking=True, the proxy records
 multi-turn agent sessions to ~/.throttle/sessions.db for analysis. Tracking is
 async and adds <5ms overhead per request.
+
+Single tenant: run one proxy per team or app, not one shared by unrelated
+callers. Within one proxy, cached answers are still kept apart per caller:
+
+- The cache scope and the in-flight dedup key include a salted hash of the
+  Authorization, x-api-key, OpenAI-Organization and OpenAI-Project headers,
+  so two callers with different keys never share an answer.
+- A request with no Authorization and no x-api-key header is never served
+  from the cache, never deduplicated and never cached. It goes straight to the
+  backend. (OpenAI SDKs always send an Authorization header, even for a local
+  server; any value works.)
+- When the proxy is bound to a loopback address, it only answers requests
+  whose Host header is a loopback name (a DNS-rebinding guard, the same one
+  the Throttle Console uses).
+
+The raw header values are forwarded to the backend and are never stored.
 """
 
 import asyncio
+import hashlib
+import hmac
+import ipaddress
 import json
+import secrets
 import time
 from contextlib import asynccontextmanager
 from typing import Any, AsyncIterator, Dict, Optional
 
 import httpx
 from fastapi import FastAPI, Request
-from fastapi.responses import StreamingResponse, JSONResponse
+from fastapi.responses import PlainTextResponse, StreamingResponse, JSONResponse
 
 from .cache import SimilarityCache
+
+# Headers that identify the caller. Their (salted) hash is part of every cache
+# scope and dedup key; they are forwarded to the backend as they came.
+IDENTITY_HEADERS = ("authorization", "x-api-key", "openai-organization", "openai-project")
+# Without one of these the request is anonymous: never cached, never deduped.
+AUTH_HEADERS = ("authorization", "x-api-key")
+_FORWARDED_NAMES = {
+    "authorization": "Authorization",
+    "x-api-key": "x-api-key",
+    "openai-organization": "OpenAI-Organization",
+    "openai-project": "OpenAI-Project",
+}
+
+
+def is_loopback_host(host: str) -> bool:
+    """True for localhost and loopback IP literals (with or without [])."""
+    host = (host or "").strip().strip("[]").lower()
+    if host == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return False
+
+
+def _host_name(header: str) -> str:
+    """The host part of a Host header: 'a:80' -> 'a', '[::1]:80' -> '::1'."""
+    header = (header or "").strip()
+    if header.startswith("["):
+        return header[1:].split("]", 1)[0]
+    if header.count(":") == 1:
+        return header.split(":", 1)[0]
+    return header
 
 
 class ProxyServer:
@@ -61,8 +114,17 @@ class ProxyServer:
         enable_session_tracking: bool = False,
         session_db_path: Optional[str] = None,
         lifespan=None,
+        bind_host: Optional[str] = None,
     ):
+        """``bind_host``: the address the server listens on. When it is a
+        loopback address, requests whose Host header is not a loopback name
+        get 403. None (in-process use, tests) applies no Host check."""
         self.backend_url = backend_url.rstrip("/")
+        self.bind_host = bind_host
+        self._host_guard = bind_host is not None and is_loopback_host(bind_host)
+        # Per-process salt for the caller hash: the hash is only compared in
+        # memory and never leaves this process.
+        self._identity_salt = secrets.token_bytes(32)
         # IMPORTANT: _extract_scope_key() depends on this mapping. Mutating model_backends
         # after construction changes scope keys for all subsequent requests, orphaning every
         # existing cache entry.
@@ -97,6 +159,14 @@ class ProxyServer:
             )
 
         self.app = FastAPI(title="Throttle Proxy", version="0.3.0", lifespan=lifespan)
+        if self._host_guard:
+            @self.app.middleware("http")
+            async def _loopback_host_guard(request: Request, call_next):  # type: ignore[no-untyped-def]
+                # DNS-rebinding guard: a loopback-bound proxy only answers to
+                # loopback host names.
+                if not is_loopback_host(_host_name(request.headers.get("host", ""))):
+                    return PlainTextResponse("forbidden host", status_code=403)
+                return await call_next(request)
         self.app.post("/v1/chat/completions")(self.chat_completions)
         self.app.get("/health")(self.health)
 
@@ -154,7 +224,25 @@ class ProxyServer:
         """
         return self.model_backends.get(model, self.backend_url).rstrip("/")
 
-    def _extract_scope_key(self, request_body: Dict[str, Any]) -> str:
+    def _caller_scope(self, headers: Any) -> Optional[str]:
+        """Salted hash of the caller's identity headers, or None when the
+        request carries no Authorization and no x-api-key header."""
+        if not any(headers.get(name) for name in AUTH_HEADERS):
+            return None
+        parts = [[name, headers.get(name) or ""] for name in IDENTITY_HEADERS]
+        payload = json.dumps(parts, separators=(",", ":")).encode("utf-8")
+        return hmac.new(self._identity_salt, payload, hashlib.sha256).hexdigest()
+
+    @staticmethod
+    def _forward_headers(headers: Any) -> Dict[str, str]:
+        out = {"Content-Type": "application/json"}
+        for name in IDENTITY_HEADERS:
+            value = headers.get(name)
+            if value:
+                out[_FORWARDED_NAMES[name]] = value
+        return out
+
+    def _extract_scope_key(self, request_body: Dict[str, Any], caller: Optional[str] = None) -> str:
         """Extract scope parameters that must match exactly for cache hits.
 
         Includes all request fields EXCEPT:
@@ -167,6 +255,9 @@ class ProxyServer:
 
         When model_backends is non-empty, also includes the resolved backend URL to prevent
         cache collisions when different backends serve models with the same name.
+
+        ``caller`` (from :meth:`_caller_scope`) is added as ``_caller`` so two
+        callers with different keys never share a cache entry or a dedup slot.
         """
         excluded = {"messages", "stream"}
         scope_params = {
@@ -189,6 +280,9 @@ class ProxyServer:
             model = request_body.get("model", "")
             backend_url = self._get_backend_url(model)
             scope_params["_backend_url"] = backend_url
+
+        if caller is not None:
+            scope_params["_caller"] = caller
 
         return json.dumps(scope_params, sort_keys=True)
 
@@ -468,9 +562,17 @@ class ProxyServer:
             request_body = await request.json()
 
             # Extract scope and semantic text
-            scope_key = self._extract_scope_key(request_body)
+            caller = self._caller_scope(request.headers)
+            scope_key = self._extract_scope_key(request_body, caller)
             prompt = self._extract_prompt(request_body)
             is_streaming = request_body.get("stream", False)
+
+            if caller is None:
+                # No Authorization / x-api-key: never served from the cache,
+                # never deduplicated, never cached. The backend decides.
+                return await self._forward_uncached(
+                    request, request_body, prompt, is_streaming, start_time, started_at_wall
+                )
 
             # Check cache first (fast path)
             if self.enable_cache and self.cache:
@@ -515,9 +617,7 @@ class ProxyServer:
                     is_waiter = False
 
             if not is_waiter:
-                headers = {"Content-Type": "application/json"}
-                if "authorization" in request.headers:
-                    headers["Authorization"] = request.headers["authorization"]
+                headers = self._forward_headers(request.headers)
 
                 try:
                     response_data = await self._make_backend_request(
@@ -596,6 +696,35 @@ class ProxyServer:
         except (httpx.ReadTimeout, httpx.ConnectTimeout, httpx.WriteTimeout) as e:
             return JSONResponse(content={"error": f"Backend timeout: {str(e)}"}, status_code=504)
 
+    async def _forward_uncached(
+        self,
+        request: Request,
+        request_body: Dict[str, Any],
+        prompt: str,
+        is_streaming: bool,
+        start_time: float,
+        started_at_wall: float,
+    ):
+        """Send an anonymous request straight to the backend: no cache read,
+        no dedup, no cache write."""
+        try:
+            response_data = await self._make_backend_request(
+                request_body, self._forward_headers(request.headers), prompt, is_streaming
+            )
+        except httpx.TimeoutException:
+            return JSONResponse(status_code=504, content={"error": "Backend request timed out"})
+        except httpx.HTTPStatusError as e:
+            try:
+                error_body = e.response.json()
+            except Exception:
+                error_body = {"error": e.response.text or str(e)}
+            return JSONResponse(content=error_body, status_code=e.response.status_code)
+        total_latency_ms = (time.perf_counter() - start_time) * 1000
+        self._track_session_turn(request, request_body, response_data, total_latency_ms, None, started_at_wall)
+        if is_streaming:
+            return StreamingResponse(self._fake_stream_response(response_data), media_type="text/event-stream")
+        return JSONResponse(response_data)
+
 
 def create_app(
     backend_url: str,
@@ -610,8 +739,14 @@ def create_app(
     backend_timeout_seconds: float = 120.0,
     enable_session_tracking: bool = False,
     session_db_path: Optional[str] = None,
+    host: Optional[str] = "127.0.0.1",
 ) -> FastAPI:
-    """Factory function to create a proxy app."""
+    """Factory function to create a proxy app.
+
+    ``host`` is the address the server will listen on; when it is a loopback
+    address only loopback Host headers are answered (pass None to skip the
+    check, e.g. behind your own reverse proxy).
+    """
     # ProxyServer will be captured by the lifespan closure
     proxy = None
 
@@ -636,6 +771,7 @@ def create_app(
         enable_session_tracking=enable_session_tracking,
         session_db_path=session_db_path,
         lifespan=lifespan,
+        bind_host=host,
     )
 
     return proxy.app

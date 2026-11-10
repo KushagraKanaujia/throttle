@@ -225,8 +225,7 @@ def _judge_transport(rule, seen):
         body = json.loads(request.content)
         seen.append(body)
         prompt = body["messages"][-1]["content"]
-        a = prompt.split("=== Answer A ===\n")[1].split("\n\n=== Answer B")[0]
-        b = prompt.split("=== Answer B ===\n")[1].split("\n\nWhich answer")[0]
+        _, a, b = j.split_prompt(prompt)
         return httpx.Response(200, json={"choices": [{"message": {"content": rule(a, b)}}]})
     return httpx.MockTransport(handler)
 
@@ -363,10 +362,11 @@ JUDGE_CFG = j.JudgeConfig(provider="openai", model="judge-m", url="http://judge/
 def test_position_biased_judge_is_insufficient_not_no_difference(tmp_path):
     _flat(tmp_path, 40)
     doc = ev.run_eval(tmp_path, "cand", judge_config=JUDGE_CFG, classify=by_workload_field,
-                      transport=_judge_transport(lambda a, b: "thinking...\nA", []))
+                      transport=_judge_transport(lambda a, b: "A", []))
     t = doc["types"]["chat"]
     assert (t["wins"], t["ties"], t["losses"], t["order_disagree"]) == (0, 0, 0, 40)
-    assert t["judged"] == 40 and t["tie_rate_ci"]["point"] == 1.0
+    assert t["judged"] == 40 and t["tie_rate_ci"]["point"] == 0.0   # ties only: none said TIE both ways
+    assert t["order_disagree_rate_ci"]["point"] == 1.0
     assert t["verdict"] == ev.INSUFFICIENT
     assert "disagreed with itself when answers were swapped on 100% of items; use a stronger judge" in t["reasons"][0]
     saved = json.loads((tmp_path / "evals" / f"{doc['run_id']}.json").read_text())
@@ -480,4 +480,34 @@ def test_table_calls_out_judge_order_flips():
            "types": {"extraction": {"judged": 8, "ties": 0, "order_disagree": 8, "wins": 0, "losses": 0, "n": 8,
                                     "net_ci": {"low": 0.0, "high": 0.0}, "verdict": "INSUFFICIENT DATA",
                                     "reasons": ["only 8 judged items; need at least 30"]}}}
-    assert "flipped its answer on 8 of 8" in render_table(doc)
+    table = render_table(doc)
+    assert "judge unsure on 8 of 8 items" in table and "shown apart from ties" in table
+    assert "win/tie/unsure/loss" in table and "0%/0%/100%/0%" in table
+
+
+def _mixed_rule(a, b):
+    """A quarter each: judge unsure (position-biased), TIE, API better, candidate better."""
+    cand_side = "A" if "banana" in a else "B"
+    api_side = "B" if cand_side == "A" else "A"
+    i = int(b if cand_side == "A" else a) // 2
+    return ["A", "TIE", api_side, cand_side][i % 4]
+
+
+def test_tie_rate_is_ties_only_and_judge_unsure_is_separate(tmp_path, capsys):
+    _flat(tmp_path, 40)
+    doc = ev.run_eval(tmp_path, "cand", judge_config=JUDGE_CFG, classify=by_workload_field,
+                      budget=j.JudgeBudget(max_calls=1000), transport=_judge_transport(_mixed_rule, []))
+    t = doc["types"]["chat"]
+    assert (t["wins"], t["ties"], t["losses"], t["order_disagree"]) == (10, 10, 10, 10)
+    shares = {}
+    for key, count in (("win_rate_ci", "wins"), ("tie_rate_ci", "ties"),
+                       ("order_disagree_rate_ci", "order_disagree"), ("loss_rate_ci", "losses")):
+        ci = t[key]
+        assert ci["n"] == t["judged"] == 40
+        assert ci["point"] == pytest.approx(t[count] / 40)
+        assert ci["low"] <= ci["point"] <= ci["high"], key   # the point lies inside its own CI
+        shares[key] = ci["point"]
+    assert sum(shares.values()) == pytest.approx(1.0)       # win + tie + unsure + loss = 1
+    assert t["tie_rate_ci"]["point"] == pytest.approx(0.25)  # not 0.5: unsure is not folded into ties
+    table = ev.render_table(doc)
+    assert "25%/25%/25%/25%" in table and "judge unsure on 10 of 40 items" in table

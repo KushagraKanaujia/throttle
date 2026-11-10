@@ -23,6 +23,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import secrets
 import uuid
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
@@ -170,11 +171,62 @@ def _month_file(directory: Path, ts: str) -> Path:
     return directory / f"{ts[:7]}.jsonl"
 
 
+# Captured bodies, ledgers and lessons can hold customer text: folders Throttle
+# creates are owner-only (0700) and new files are owner read/write (0600).
+# Folders and files that already exist keep their mode.
+PRIVATE_DIR_MODE = 0o700
+PRIVATE_FILE_MODE = 0o600
+
+
+def ensure_private_dir(directory: Path) -> Path:
+    """Create ``directory`` and any missing parents with mode 0700."""
+    directory = Path(directory)
+    missing: list[Path] = []
+    current = directory
+    while not current.exists():
+        missing.append(current)
+        if current.parent == current:
+            break
+        current = current.parent
+    for folder in reversed(missing):
+        try:
+            folder.mkdir(mode=PRIVATE_DIR_MODE)
+        except FileExistsError:
+            continue
+        try:
+            os.chmod(folder, PRIVATE_DIR_MODE)  # mkdir's mode is cut by the umask
+        except OSError:
+            pass
+    return directory
+
+
+def _open_private(path: Path, flags: int) -> int:
+    return os.open(path, flags | getattr(os, "O_CLOEXEC", 0), PRIVATE_FILE_MODE)
+
+
 def append_jsonl(path: Path, record: Mapping[str, Any]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
+    ensure_private_dir(path.parent)
     line = json.dumps(record, separators=(",", ":"), ensure_ascii=False, sort_keys=True)
-    with path.open("a", encoding="utf-8") as handle:
+    fd = _open_private(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND)
+    with os.fdopen(fd, "a", encoding="utf-8") as handle:
         handle.write(line + "\n")
+
+
+def write_private_text(path: Path, text: str) -> None:
+    """Replace ``path`` atomically with a new 0600 file."""
+    ensure_private_dir(path.parent)
+    tmp = path.with_name(f".{path.name}.{os.getpid()}.{secrets.token_hex(4)}.tmp")
+    fd = _open_private(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(text)
+        os.replace(tmp, path)
+    except BaseException:
+        try:
+            tmp.unlink()
+        except OSError:
+            pass
+        raise
 
 
 def read_jsonl(path: Path) -> Iterator[dict[str, Any]]:

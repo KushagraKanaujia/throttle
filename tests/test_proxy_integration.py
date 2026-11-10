@@ -25,6 +25,9 @@ import uvicorn
 
 from throttle.proxy import ProxyServer
 
+# The proxy only caches and dedupes requests that carry a key.
+AUTH = {"Authorization": "Bearer test-key"}
+
 
 def is_backend_available(backend_url: str) -> bool:
     """Check if backend is reachable.
@@ -124,7 +127,7 @@ class ProxyIntegrationTests(unittest.IsolatedAsyncioTestCase):
         if model is None:
             model = BACKEND_MODEL
 
-        async with httpx.AsyncClient(timeout=60.0) as client:
+        async with httpx.AsyncClient(timeout=60.0, headers=AUTH) as client:
             payload = {
                 "model": model,
                 "messages": messages,

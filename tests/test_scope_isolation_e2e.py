@@ -77,7 +77,7 @@ async def test_same_prompt_different_models_isolated_responses():
     class MockRequest:
         def __init__(self, body):
             self._body = body
-            self.headers = {}
+            self.headers = {"authorization": "Bearer test-key"}
 
         async def json(self):
             return self._body

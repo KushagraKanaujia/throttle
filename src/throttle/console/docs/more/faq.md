@@ -2,6 +2,18 @@
 
 *Common questions about Throttle.*
 
+<details><summary>Does my data go to Throttle?</summary>
+
+    No. Throttle the company receives nothing and the CLI has no telemetry. Your app's API calls go where they already go. Judge calls go to the provider and key you choose, and a candidate API model sees the prompts you send it. See [Privacy and data flow](privacy.md).
+
+</details>
+
+<details><summary>Does Throttle train on my traffic or on provider answers?</summary>
+
+    No. The default path tests existing models and does not train on provider outputs. Fallbacks and judged losses are kept on your disk as lessons, and nothing trains on them.
+
+</details>
+
 <details><summary>Does Throttle change my server?</summary>
 
     No. It provisions nothing and never changes your server. `--config` only records what you changed.

@@ -227,7 +227,8 @@ async def test_openai_stream_with_tool_calls_and_usage(tmp_path):
     raw = json.dumps({"model": "gpt-4o", "stream": True, "stream_options": {"include_usage": True},
                       "messages": [{"role": "user", "content": "weather?"}]}).encode()
     async with front(app) as client:
-        resp = await client.post("/v1/chat/completions", content=raw, headers={"authorization": f"Bearer {OPENAI_KEY}"})
+        resp = await client.post("/v1/chat/completions", content=raw, headers={"authorization": f"Bearer {OPENAI_KEY}",
+                                                                              "content-type": "application/json"})
     assert resp.status_code == 200
     assert resp.content == blob
     assert resp.headers["content-type"].startswith("text/event-stream")
@@ -259,7 +260,7 @@ async def test_openai_stream_without_usage_is_not_modified_and_usage_is_missing(
     app, upstream = make_app(tmp_path, lambda req: stream_response(sse(events)))
     raw = b'{"model":"gpt-4o","stream":true,"messages":[{"role":"user","content":"hi"}]}'
     async with front(app) as client:
-        resp = await client.post("/v1/chat/completions", content=raw)
+        resp = await client.post("/v1/chat/completions", content=raw, headers={"content-type": "application/json"})
     assert resp.content == b"".join(sse(events))
     assert upstream.bodies[0] == raw
     assert b"stream_options" not in upstream.bodies[0]
@@ -705,7 +706,8 @@ async def test_client_disconnect_mid_stream_is_still_recorded(tmp_path):
     scope = {
         "type": "http", "asgi": {"version": "3.0", "spec_version": "2.3"}, "http_version": "1.1",
         "method": "POST", "scheme": "http", "path": "/v1/chat/completions", "raw_path": b"/v1/chat/completions",
-        "query_string": b"", "root_path": "", "headers": [], "client": ("127.0.0.1", 5000), "server": ("127.0.0.1", 8790),
+        "query_string": b"", "root_path": "", "headers": [(b"content-type", b"application/json")],
+        "client": ("127.0.0.1", 5000), "server": ("127.0.0.1", 8790),
     }
     started = time.perf_counter()
     await asyncio.wait_for(app(scope, receive, send), timeout=4)
@@ -769,3 +771,14 @@ async def test_off_mode_keeps_inline_images(tmp_path):
         await client.post("/v1/chat/completions", json=body)
     (ex,) = captured(tmp_path)
     assert ex.request["messages"][0]["content"][0]["image_url"]["url"] == url
+
+
+def test_startup_panel_says_where_calls_go_with_route(tmp_path):
+    from throttle import style
+
+    args = build_parser().parse_args(["capture", "--route", "--dir", str(tmp_path)])
+    text = startup_panel(args, tmp_path, style.get())
+    assert "Nothing is sent anywhere except the upstream" not in text
+    assert "fall back to the" in text
+    plain = startup_panel(build_parser().parse_args(["capture", "--dir", str(tmp_path)]), tmp_path, style.get())
+    assert "Nothing is sent anywhere except the upstream" in plain

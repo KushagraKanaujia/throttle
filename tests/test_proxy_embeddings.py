@@ -11,6 +11,9 @@ from contextlib import asynccontextmanager
 from throttle.proxy import ProxyServer
 from throttle import embeddings
 
+# The proxy only caches and dedupes requests that carry a key.
+AUTH = {"Authorization": "Bearer test-key"}
+
 
 def _embedding_model_skip_reason():
     if not embeddings.EMBEDDINGS_AVAILABLE:
@@ -155,7 +158,7 @@ async def test_embedding_hit_that_jaccard_misses(require_embedding_model):
         proxy_url = f"http://127.0.0.1:{proxy_port}"
 
         try:
-            async with AsyncClient() as client:
+            async with AsyncClient(headers=AUTH) as client:
                 # Pair: cosine=0.9762, jaccard=0.1667 (measured 2026-08-23 with direct ONNX)
                 resp1 = await client.post(
                     f"{proxy_url}/v1/chat/completions",
@@ -228,7 +231,7 @@ async def test_weak_paraphrase_does_not_hit_at_threshold_095(require_embedding_m
         proxy_url = f"http://127.0.0.1:{proxy_port}"
 
         try:
-            async with AsyncClient() as client:
+            async with AsyncClient(headers=AUTH) as client:
                 # Pair: cosine=0.8783, jaccard<0.85 (measured 2026-08-23 with direct ONNX)
                 resp1 = await client.post(
                     f"{proxy_url}/v1/chat/completions",
@@ -303,7 +306,7 @@ async def test_embedding_miss_on_different_model():
         proxy_url = f"http://127.0.0.1:{proxy_port}"
 
         try:
-            async with AsyncClient() as client:
+            async with AsyncClient(headers=AUTH) as client:
                 # Request under scope A (model-a)
                 resp1 = await client.post(
                     f"{proxy_url}/v1/chat/completions",
@@ -376,7 +379,7 @@ async def test_embedding_miss_on_different_temperature():
         proxy_url = f"http://127.0.0.1:{proxy_port}"
 
         try:
-            async with AsyncClient() as client:
+            async with AsyncClient(headers=AUTH) as client:
                 # Request under scope A (temperature=0.7)
                 resp1 = await client.post(
                     f"{proxy_url}/v1/chat/completions",
@@ -451,7 +454,7 @@ async def test_exact_match_hits_via_dict_lookup():
         proxy_url = f"http://127.0.0.1:{proxy_port}"
 
         try:
-            async with AsyncClient() as client:
+            async with AsyncClient(headers=AUTH) as client:
                 resp1 = await client.post(
                     f"{proxy_url}/v1/chat/completions",
                     json={
@@ -523,7 +526,7 @@ async def test_jaccard_fuzzy_match_hits():
         proxy_url = f"http://127.0.0.1:{proxy_port}"
 
         try:
-            async with AsyncClient() as client:
+            async with AsyncClient(headers=AUTH) as client:
                 # First request with prompt A
                 resp1 = await client.post(
                     f"{proxy_url}/v1/chat/completions",
@@ -634,7 +637,7 @@ async def test_embedding_miss_on_cross_scope():
         proxy_url = f"http://127.0.0.1:{proxy_port}"
 
         try:
-            async with AsyncClient() as client:
+            async with AsyncClient(headers=AUTH) as client:
                 # Request under scope A (model-a) - use Docker pair that triggers embedding hits
                 resp1 = await client.post(
                     f"{proxy_url}/v1/chat/completions",
@@ -711,7 +714,7 @@ async def test_embedding_hit_with_multiple_scopes_returns_requesting_scope(requi
         proxy_url = f"http://127.0.0.1:{proxy_port}"
 
         try:
-            async with AsyncClient() as client:
+            async with AsyncClient(headers=AUTH) as client:
                 # Populate cache under scope A (model-a)
                 resp1 = await client.post(
                     f"{proxy_url}/v1/chat/completions",

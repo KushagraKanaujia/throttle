@@ -194,3 +194,138 @@ def test_inline_payloads_replaced_before_redaction():
     assert redact_body(body, r.REDACTION_OFF) is body
     assert strip_inline_payloads(body)["messages"][0]["content"][0]["image_url"]["url"] == "<IMAGE>"
     assert body["messages"][0]["content"][0]["image_url"]["url"].startswith("data:")   # input untouched
+
+
+# ---------------------------------------------------------------------------
+# Security audit probes: each must be masked in mask mode.
+# ---------------------------------------------------------------------------
+
+AWS_ID = "AKIAIOSFODNN7EXAMPLE"
+AWS_SECRET = "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"
+HEX64 = "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08"
+
+AUDIT_PROBES = [
+    # PEM private key blocks, multiline, with real or escaped newlines, or cut off
+    ("key:\n-----BEGIN RSA PRIVATE KEY-----\nMIIEpAIBAAKCAQEA1234abcd\nabcdEFGH5678==\n-----END RSA PRIVATE KEY-----\nthanks",
+     "key:\n<SECRET>\nthanks"),
+    ("-----BEGIN PRIVATE KEY-----\\nMIIEvQIBADANBgkqhkiG9w0BAQEFAASC\\n-----END PRIVATE KEY-----",
+     "<SECRET>"),
+    ("ssh -----BEGIN OPENSSH PRIVATE KEY-----\nb3BlbnNzaC1rZXktdjEAAAAABG5vbmU=\n-----END OPENSSH PRIVATE KEY----- done",
+     "ssh <SECRET> done"),
+    ("-----BEGIN EC PRIVATE KEY-----\nMHcCAQEEIBkg4LVWM9nuwNSk3yByxZpYRTBnVJk5", "<SECRET>"),
+    ("-----BEGIN PGP PRIVATE KEY BLOCK-----\nlQOYBF0abc123\n-----END PGP PRIVATE KEY BLOCK-----", "<SECRET>"),
+    # AWS secret access keys next to an access key id or a secret label
+    (f"creds {AWS_ID} {AWS_SECRET}", "creds <SECRET> <SECRET>"),
+    (f"id={AWS_ID}, secret={AWS_SECRET}", "id=<SECRET>, secret=<SECRET>"),
+    (f"aws_secret_access_key = {AWS_SECRET}", "aws_secret_access_key = <SECRET>"),
+    (f"AWS_SECRET_ACCESS_KEY={AWS_SECRET}", "AWS_SECRET_ACCESS_KEY=<SECRET>"),
+    (f"aws secret access key {AWS_SECRET}", "aws secret access key <SECRET>"),
+    # Slack, Discord and Stripe webhooks and tokens
+    ("post to https://hooks.slack.com/" "services/T0AB12CD3/B0AB12CD3/abcdEFGHijklMNOPqrstUVWX now",
+     "post to <SECRET> now"),
+    ("https://hooks.slack.com/workflows/T0AB12CD3/A0AB12CD3/123456789/abcDEF", "<SECRET>"),
+    ("slack xo" "xb-123456789012-1234567890123-abcdefghijklmnopqrstuvwx", "slack <SECRET>"),
+    ("slack xoxe." "xoxp-1-Mi0yLTEyMzQ1Njc4OTAxMi0xMjM0", "slack <SECRET>"),
+    ("app token xapp-1-A0123456789-1234567890123-abcdef0123456789", "app token <SECRET>"),
+    ("hook https://discord.com/api/webhooks/123456789012345678/abcDEF_ghi-JKLmno0123456789",
+     "hook <SECRET>"),
+    ("hook https://canary.discordapp.com/api/webhooks/123456789012345678/abcDEF_ghi", "hook <SECRET>"),
+    ("bot MTIzNDU2Nzg5MDEyMzQ1Njc4" ".GabcDE.abcdefghijklmnopqrstuvwxyz0123456789 ok", "bot <SECRET> ok"),
+    ("stripe sk_" "live_51H8abcdefghijklmnopqrstu", "stripe <SECRET>"),
+    ("stripe rk_" "live_51H8abcdefghijklmnopqrstu", "stripe <SECRET>"),
+    ("stripe sk_test_51H8abcdefghijklmnopqrstu", "stripe <SECRET>"),
+    ("webhook whsec_abcdefghijklmnop1234567890ABCD", "webhook <SECRET>"),
+    # URL userinfo: the whole user:pass@ goes
+    ("db postgres://admin:hunter22@db.internal:5432/app", "db postgres://<SECRET>db.internal:5432/app"),
+    ("clone https://x-access-token:abc123@github.com/acme/repo.git", "clone https://<SECRET>github.com/acme/repo.git"),
+    ("redis://:s3cretpass@cache.local:6379/0", "redis://<SECRET>cache.local:6379/0"),
+    ("amqp://guest:guest@rabbit/", "amqp://<SECRET>rabbit/"),
+    # 32+ hex or base64 runs next to key, token or secret
+    (f"the key {HEX64} works", "the key <SECRET> works"),
+    ("token QUJDREVGR0hJSktMTU5PUFFSU1RVVldYWVo0MjQy end", "token <SECRET> end"),
+    (f"{HEX64} is my secret", "<SECRET> is my secret"),
+    ("Secret is 0123456789abcdef0123456789abcdef", "Secret is <SECRET>"),
+    # bare labels
+    ("OPENAI_KEY: abc123def456ghi789", "OPENAI_KEY: <SECRET>"),
+    ("export ANTHROPIC_API_KEY=abc123def456ghi789", "export ANTHROPIC_API_KEY=<SECRET>"),
+    ("api-key q1w2e3r4t5y6u7i8", "api-key <SECRET>"),
+    ("api key q1w2e3r4t5y6u7i8", "api key <SECRET>"),
+    ("OPENAI_KEY abc123def456ghi789", "OPENAI_KEY <SECRET>"),
+    ("DB_PASS=hunter2", "DB_PASS=<SECRET>"),
+    ("GH_TOKEN: 0a1b2c3d4e5f6a7b", "GH_TOKEN: <SECRET>"),
+    ("Authorization: Bearer abc123def456ghi", "Authorization: Bearer <SECRET>"),
+]
+
+
+@pytest.mark.parametrize("text, expected", AUDIT_PROBES)
+def test_security_audit_probes_are_masked(text, expected):
+    assert redact_text(text, r.REDACTION_MASK) == expected, find_pii(text)
+
+
+@pytest.mark.parametrize("text, _expected", AUDIT_PROBES)
+def test_security_audit_probes_are_hashed_too(text, _expected):
+    out = redact_text(text, r.REDACTION_HASH, SALT)
+    assert "<SECRET:" in out
+
+
+AUDIT_NEAR_MISSES = [
+    "the api key is required and the key idea is simple",
+    "first-to-last output-bearing SSE delta divided by completion-token gaps",
+    "api key for production",
+    "see https://example.com/docs and https://hooks.example.com/services/x",
+    "the token count was 1234 and the secret sauce is love",
+    "cache_key: user_profile and primary_key id",
+    "git sha 9f86d081884c7d659a2feaa0c55ad015a3bf4f1b in main",
+    "https://github.com/acme/repo and mailto-like a@b",
+]
+
+
+@pytest.mark.parametrize("text", AUDIT_NEAR_MISSES)
+def test_security_audit_near_misses_survive(text):
+    assert redact_text(text, r.REDACTION_MASK) == text, find_pii(text)
+
+
+def test_json_key_names_are_matched_anywhere_in_the_key():
+    body = {
+        "OPENAI_API_KEY": "abc", "STRIPE_SECRET": "short", "GH_TOKEN": "x", "client_secret": "y",
+        "githubToken": "z", "x-api-key": "k", "accessToken": "t", "slack_webhook_url": "https://hooks.slack.com/x",
+        "openai_key": "abcdef1234567890", "stripeKey": "abcdef1234567890",
+        # left alone
+        "primary_key": "user_id", "max_tokens_label": "short", "tokenizer": "cl100k_base", "token": "Hello",
+        "keyword": "summary", "monkey": "banana",
+    }
+    out = redact_body(body, r.REDACTION_MASK)
+    for key in ("OPENAI_API_KEY", "STRIPE_SECRET", "GH_TOKEN", "client_secret", "githubToken", "x-api-key",
+                "accessToken", "slack_webhook_url", "openai_key", "stripeKey"):
+        assert out[key] == "<SECRET>", key
+    for key in ("primary_key", "max_tokens_label", "tokenizer", "token", "keyword", "monkey"):
+        assert out[key] == body[key], key
+
+
+def test_redaction_stays_fast_on_long_snake_case_text():
+    import time
+
+    text = "a_" * 100_000 + "b-c " * 20_000 + "key " * 10_000
+    started = time.perf_counter()
+    redact_text(text, r.REDACTION_MASK)
+    assert time.perf_counter() - started < 5
+
+
+def test_docstring_lists_what_is_caught():
+    from throttle.own import redact
+
+    doc = redact.__doc__ or ""
+    for words in ("private key blocks", "AWS secret access key", "Slack and Discord incoming-webhook URLs",
+                  "user:password@", "32+ character hex or base64 run", "OPENAI_KEY", "api-key <value>",
+                  "matched\n  anywhere in the key", "whsec_", "Discord bot tokens"):
+        assert words in doc, words
+
+
+def test_provenance_metadata_rejects_the_new_secret_shapes():
+    from throttle.provenance import is_safe_public_metadata
+
+    for bad in ("-----BEGIN PRIVATE KEY-----", "api-key q1w2e3r4t5y6u7i8",
+                "MTIzNDU2Nzg5MDEyMzQ1Njc4" ".GabcDE.abcdefghijklmnopqrstuvwxyz0123456789", "OPENAI_KEY: abc123def456",
+                "whsec_abcdefghijklmnop1234567890ABCD"):
+        assert not is_safe_public_metadata(bad), bad
+    assert is_safe_public_metadata("divided by completion-token gaps")

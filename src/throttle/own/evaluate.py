@@ -86,7 +86,8 @@ Output: ``<root>/evals/<run_id>.json``
           "candidate_errors": int,        # candidate failed; counted as losses
           "transport_excluded": int,      # status-0 shadow results left out, not judged
           "win_rate_ci":  {"low", "high", "point", "n"},   # Wilson, over judged
-          "tie_rate_ci":  {"low", "high", "point", "n"},   # ties + order_disagree
+          "tie_rate_ci":  {"low", "high", "point", "n"},   # ties only (both orders said TIE)
+          "order_disagree_rate_ci": {"low", "high", "point", "n"},   # judge unsure
           "loss_rate_ci": {"low", "high", "point", "n"},
           "net_ci": {"estimate", "low", "high", "n", "confidence", "method", "resamples"},
           "checks": {"<name>": {"incumbent": wilson, "candidate": wilson,
@@ -639,7 +640,8 @@ def summarize_type(
         "candidate_errors": candidate_errors,
         "transport_excluded": transport_excluded,
         "win_rate_ci": win_ci,
-        "tie_rate_ci": stats.wilson_interval_95(ties + disagree, judged_n),
+        "tie_rate_ci": stats.wilson_interval_95(ties, judged_n),
+        "order_disagree_rate_ci": stats.wilson_interval_95(disagree, judged_n),
         "loss_rate_ci": loss_ci,
         "net_ci": net_ci,
         "checks": checks,
@@ -717,7 +719,7 @@ def run_eval(
 def add_parser(subparsers: argparse._SubParsersAction) -> None:
     parser = subparsers.add_parser(
         "eval",
-        help="judge your own model against the API model, per workload type",
+        help="judge the candidate model against the API model, per workload type",
         description=(
             "Compare a candidate's shadow answers with the API model's captured answers: "
             "automatic checks plus a pairwise judge run in both orders, with 95% confidence "
@@ -748,15 +750,15 @@ def render_table(document: Mapping[str, Any]) -> str:
     from .. import style as style_mod
 
     s = style_mod.get()
-    header = f"{'type':<15}{'n':>5}  {'win/tie/loss':<14}{'net 95% CI':<17}verdict"
+    header = f"{'type':<15}{'n':>5}  {'win/tie/unsure/loss':<20}{'net 95% CI':<17}verdict"
     rows: list[Any] = [s.dim(header)]
     for kind, t in document["types"].items():
         judged = t["judged"]
-        tied = t["ties"] + t.get("order_disagree", 0)
-        wtl = f"{_pct(t['wins'], judged)}/{_pct(tied, judged)}/{_pct(t['losses'], judged)}" if document["judge"] else "-"
+        wtl = ("/".join(_pct(t.get(k) or 0, judged) for k in ("wins", "ties", "order_disagree", "losses"))
+               if document["judge"] else "-")
         net = t.get("net_ci") or {}
         ci = f"[{net['low']:+.2f}, {net['high']:+.2f}]" if net.get("low") is not None else "-"
-        rows.append(f"{kind[:14]:<15}{t['n']:>5}  {wtl:<14}{ci:<17}{s.verdict(t['verdict'])}")
+        rows.append(f"{kind[:14]:<15}{t['n']:>5}  {wtl:<20}{ci:<17}{s.verdict(t['verdict'])}")
     if not document["types"]:
         rows.append(("No shadow answers matched captured requests.", ()))
     judge = document["judge"]
@@ -765,8 +767,9 @@ def render_table(document: Mapping[str, Any]) -> str:
         if t["reasons"]:
             rows.append((f"{kind}: {t['reasons'][0]}", (style_mod.DIM,), "  "))
         if document["judge"] and t.get("order_disagree"):
-            rows.append((f"{kind}: the judge flipped its answer on {t['order_disagree']} of {t['judged']} items "
-                         "when the answers were swapped; those count as ties above", (style_mod.AMBER,), "  "))
+            rows.append((f"{kind}: judge unsure on {t['order_disagree']} of {t['judged']} items (it flipped its "
+                         "answer when the answers were swapped); scored 0 like a tie, shown apart from ties",
+                         (style_mod.AMBER,), "  "))
     rows.append((f"Judge: {judge['provider']} {judge['model']}, {document['judge_calls']} calls, both orders."
                   if judge else "No judge: automatic checks only.", (style_mod.DIM,)))
     if document.get("judge_stopped"):

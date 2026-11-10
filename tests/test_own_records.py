@@ -1,4 +1,7 @@
 import json
+import os
+
+import pytest
 
 from throttle.own import records as r
 
@@ -185,3 +188,49 @@ def test_incumbent_empty_answer_still_normalizes():
                                                  "finish_reason": "stop"}]})
     norm = r.normalize(ex)
     assert ex.ok and norm.output_text == "" and norm.output_tool_calls == []
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX file modes")
+def test_new_capture_ledger_and_lesson_files_are_private(tmp_path):
+    import stat
+
+    from throttle.own import jobs as jobs_mod
+    from throttle.own import route as route_mod
+
+    root = tmp_path / "data"
+    exchange = r.Exchange(provider="openai", endpoint="/v1/chat/completions", model="m",
+                          request={"messages": [{"role": "user", "content": "hi"}]}, response=None,
+                          status=200, latency_ms=1.0, redaction=r.REDACTION_OFF)
+    capture_file = r.append_exchange(exchange, root)
+    ledger_file = route_mod.ledger_path(root, exchange.ts[:7])
+    r.append_jsonl(ledger_file, {"id": exchange.id})
+    lesson_file = jobs_mod.add_lesson(root, "app.py::f", source="test", reason=None, exchange_id=exchange.id,
+                                      norm=None, preferred="a", rejected="b")
+    registry_file = jobs_mod.save_registry(root, {})
+
+    def mode(p):
+        return stat.S_IMODE(p.stat().st_mode)
+
+    for path in (capture_file, ledger_file, lesson_file, registry_file):
+        assert mode(path) == 0o600, path
+    for folder in {root, capture_file.parent, ledger_file.parent, lesson_file.parent, registry_file.parent}:
+        assert mode(folder) == 0o700, folder
+    # appending again keeps working and keeps the mode
+    r.append_exchange(exchange, root)
+    assert mode(capture_file) == 0o600 and len(list(r.iter_exchanges(root))) == 2
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX file modes")
+def test_existing_files_and_folders_keep_working(tmp_path):
+    import stat
+
+    folder = tmp_path / "capture"
+    folder.mkdir(mode=0o755)
+    os.chmod(folder, 0o755)
+    old = folder / "2026-01.jsonl"
+    old.write_text('{"a":1}\n')
+    os.chmod(old, 0o644)
+    r.append_jsonl(old, {"b": 2})
+    assert [row for row in r.read_jsonl(old)] == [{"a": 1}, {"b": 2}]
+    assert stat.S_IMODE(old.stat().st_mode) == 0o644      # not changed behind the owner's back
+    assert stat.S_IMODE(folder.stat().st_mode) == 0o755

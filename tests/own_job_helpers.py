@@ -10,6 +10,7 @@ from typing import Any, Callable
 import httpx
 
 from throttle.own import jobs
+from throttle.own import judge as judge_mod
 from throttle.own import records as r
 from throttle.own import scan
 
@@ -60,12 +61,11 @@ def judge_prefers(marker: str | None, calls: list | None = None) -> Callable[[ht
         prompt = body["messages"][-1]["content"]
         if calls is not None:
             calls.append(prompt)
-        a = prompt.split("=== Answer A ===\n")[1].split("\n\n=== Answer B")[0]
-        b = prompt.split("=== Answer B ===\n")[1].split("\n\nWhich answer")[0]
+        _, a, b = judge_mod.split_prompt(prompt)
         verdict = "TIE"
         if marker is not None and (marker in a) != (marker in b):
             verdict = "A" if marker in a else "B"
-        return httpx.Response(200, json={"choices": [{"message": {"content": f"thinking\n{verdict}"}, "finish_reason": "stop"}],
+        return httpx.Response(200, json={"choices": [{"message": {"content": verdict}, "finish_reason": "stop"}],
                                          "usage": {"prompt_tokens": 50, "completion_tokens": 5}})
 
     return handler

@@ -73,42 +73,65 @@ EXIT_USAGE = 2
 EXIT_INCONCLUSIVE = 3
 EXIT_CANCELLED = 130
 
-GETTING_STARTED = """\
-Own your intelligence: prove which share of your OpenAI/Anthropic traffic an
-open-weight model you run can take over without losing quality, then move it.
+TAGLINE = (
+    "Stop renting your AI: move each AI job to a cheaper model that does it as "
+    "well, tested on your own traffic."
+)
 
-  0. See the whole loop on made-up data (offline, no keys, every number DEMO):
-       throttle demo
+# The order `throttle --help` lists commands in: the money loop first, then
+# the code-review commands, then the serving tools (advanced).
+HELP_ORDER = (
+    "demo", "capture", "workloads", "shadow", "eval", "report", "route", "refresh",
+    "jobs", "pr-check", "pr-comment",
+)
+
+GETTING_STARTED = """\
+Start here: the whole loop on made-up data (offline, no keys, every number
+labelled DEMO):
+    throttle demo
+
+The money loop, on your own traffic:
 
   1. Capture: a local pass-through proxy in front of the API you already call.
      Then set OPENAI_BASE_URL=http://127.0.0.1:8790/v1 and/or
      ANTHROPIC_BASE_URL=http://127.0.0.1:8790 in your app:
        throttle capture
 
-  2. Workloads: what kinds of work the traffic is, and what each costs at list price:
+  2. Workloads: what kinds of AI jobs the traffic is, and what each costs:
        throttle workloads
 
-  3. Shadow: replay a sample on your own model (never served to your users):
+  3. Shadow: replay a sample on a cheaper model (never served to your users):
        throttle shadow --candidate-url http://gpu-box:8000/v1 --candidate-model M --label NAME
 
-  4. Eval: is it as good, per kind of work (pairwise judge, both orders, 95% CIs):
+  4. Eval: is it as good, per kind of job (pairwise judge, both orders, 95% CIs):
        throttle eval --candidate NAME --judge-model gpt-4.1 --judge-key-env OPENAI_API_KEY
 
-  5. Report: MOVE / KEEP ON API / NEEDS FINETUNE / NEEDS MORE DATA. Savings only
-     with a measured `throttle check` of the candidate server:
+  5. Report: what can move and what it saves. MOVE / KEEP ON API / NEEDS
+     FINETUNE / NEEDS MORE DATA. Savings need a measured check of the server:
        throttle check --url http://gpu-box:8000 --model M --total-hourly-price 4.98 --gpus 2 --label NAME
        throttle report --candidate NAME --gpu-hourly-rate 2.49 --gpus 2
 
-Then: throttle route approve ... + throttle capture --route (serve it, with API
-fallback), throttle route savings, and throttle refresh when a new open model ships.
+  6. Route: move an approved job (it needs a passing eval), with fallback to
+     the API on any doubtful answer, then audit what it saved:
+       throttle route approve --type TYPE --candidate NAME --url URL --model M
+       throttle capture --route
+       throttle route savings --gpu-hourly-rate 2.49 --gpus 2
 
-In your code: throttle jobs scan finds every OpenAI/Anthropic call, and
-throttle pr-check (or the Throttle for GitHub action) comments on each pull
-request that adds, edits or removes one: its API cost, the proof, and what
-happens next.
+  7. Refresh: retest on the same eval sets when a new model ships:
+       throttle refresh
 
-Serving your own model: check ($/M tokens with 95% CIs), autotune, coldstart,
-compare, gate, savings, watch, ui. Evidence runs: plan / smoke / benchmark / golden.
+In your code:
+  throttle jobs scan   finds every OpenAI/Anthropic call and tracks it as a job.
+  throttle pr-check    the pull request comment (or the Throttle for GitHub
+                       action): what an added or changed AI job costs, the
+                       proof, and what happens next. A changed prompt is
+                       never moved silently.
+
+Serving tools (advanced), for the server your own model runs on:
+  check ($/M tokens with 95% CIs), autotune, coldstart, compare, gate,
+  savings, watch, ui, proxy, sessions. Evidence runs: plan, smoke, benchmark,
+  golden, golden-report.
+
 No server yet? Run 'throttle demo'.
 Run 'throttle COMMAND --help' for details.
 """
@@ -407,10 +430,7 @@ def _server_root_url(value: str) -> str:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="throttle",
-        description=(
-            "Own your intelligence: move the share of your OpenAI/Anthropic traffic "
-            "that an open-weight model you run can do as well, and keep the savings."
-        ),
+        description=textwrap.fill(TAGLINE, width=78),
         epilog=GETTING_STARTED,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
@@ -707,13 +727,18 @@ def build_parser() -> argparse.ArgumentParser:
 
     proxy = subparsers.add_parser(
         "proxy",
-        help="run an OpenAI-compatible caching proxy server",
+        help="OpenAI-compatible caching proxy for one team (single-tenant)",
         description=(
             "Start a lightweight HTTP proxy that sits in front of a real inference "
             "backend and caches responses using semantic similarity matching. "
             "Verified compatible with Ollama. Expected compatible with vLLM, SGLang, "
             "LMDeploy, and other OpenAI-compatible servers (GPU verification pending, "
-            "see validation/gpu_backend_verification.sh)."
+            "see validation/gpu_backend_verification.sh). "
+            "Single tenant: run one proxy per team or app. Cached answers are kept "
+            "apart per caller (a hash of Authorization, x-api-key, OpenAI-Organization "
+            "and OpenAI-Project); a request with no Authorization or x-api-key header "
+            "is never cached and always goes to the backend. Bound to 127.0.0.1, it "
+            "only answers loopback Host names."
         ),
     )
     proxy.add_argument(
@@ -803,8 +828,19 @@ def build_parser() -> argparse.ArgumentParser:
     from .own.cli import register as register_own_commands
     register_own_commands(subparsers)
 
+    _order_help(subparsers)
     parser._throttle_subparsers = dict(subparsers.choices)  # type: ignore[attr-defined]
     return parser
+
+
+def _order_help(subparsers: argparse._SubParsersAction) -> None:
+    """List the money loop first in `throttle --help`; every command stays, in its own order after."""
+
+    actions = getattr(subparsers, "_choices_actions", None)
+    if not isinstance(actions, list):
+        return
+    rank = {name: i for i, name in enumerate(HELP_ORDER)}
+    actions.sort(key=lambda action: rank.get(action.dest, len(rank)))
 
 
 def _parser_error(parser: argparse.ArgumentParser, message: str) -> None:
@@ -2227,6 +2263,7 @@ def _handle_proxy(args: argparse.Namespace) -> int:
         embedding_max_entries_scanned=args.embedding_max_entries_scanned,
         backend_timeout_seconds=args.backend_timeout_seconds,
         enable_session_tracking=args.enable_session_tracking,
+        host=args.host,
     )
 
     try:
@@ -2309,7 +2346,7 @@ def _render_watch_snap(snap) -> None:
     print()
 
 
-WELCOME_TAGLINE = "Throttle: own your intelligence. Keep the savings."
+WELCOME_TAGLINE = "Throttle: stop renting your AI. Cut the bill."
 WELCOME_STEPS = (
     ("See the whole loop on made-up data:", "offline, no keys, every number labelled DEMO.", (
         "throttle demo",
@@ -2317,15 +2354,18 @@ WELCOME_STEPS = (
     ("Capture your OpenAI / Anthropic traffic:", None, (
         "throttle capture",
     )),
-    ("See the kinds of work and what each costs:", None, (
+    ("See each kind of AI job and what it costs:", None, (
         "throttle workloads",
     )),
-    ("Shadow on your own model, then eval it:", None, (
+    ("Test a cheaper model on it, then eval it:", None, (
         "throttle shadow --candidate-url URL ...",
         "throttle eval --candidate NAME ...",
     )),
     ("Report what can move, and what it saves:", None, (
         "throttle report --candidate NAME ...",
+    )),
+    ("Move it once you approve, with API fallback:", None, (
+        "throttle route approve ...",
     )),
 )
 

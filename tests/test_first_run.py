@@ -290,10 +290,11 @@ def test_no_args_prints_the_loop_and_exits_zero(capsys, monkeypatch):
     lines = out.rstrip("\n").splitlines()
     assert len(lines) <= 20
     assert "Throttle " + __version__ in out
-    assert "Throttle: own your intelligence. Keep the savings." in out
+    assert "Throttle: stop renting your AI. Cut the bill." in out
     # The loop, in order: demo -> capture -> workloads -> shadow -> eval -> report.
     order = ["1. See the whole loop", "throttle demo", "2. Capture", "throttle capture",
-             "throttle workloads", "throttle shadow", "throttle eval", "throttle report"]
+             "throttle workloads", "throttle shadow", "throttle eval", "throttle report",
+             "throttle route approve"]
     positions = [out.index(text) for text in order]
     assert positions == sorted(positions)
     assert "DEMO" in out
@@ -311,6 +312,7 @@ def test_no_args_prints_the_loop_and_exits_zero(capsys, monkeypatch):
     parser.parse_args(["shadow", "--candidate-url", "URL", "--candidate-model", "M", "--label", "NAME"])
     parser.parse_args(["eval", "--candidate", "NAME"])
     parser.parse_args(["report", "--candidate", "NAME"] + ["--gpu-hourly-rate", "1", "--gpus", "1"])
+    parser.parse_args(["route", "approve", "--type", "chat", "--candidate", "NAME", "--url", "URL", "--model", "M"])
 
 
 def test_no_args_screen_with_force_color_and_ascii(capsys, monkeypatch):
@@ -321,7 +323,7 @@ def test_no_args_screen_with_force_color_and_ascii(capsys, monkeypatch):
     assert "\x1b[" in out
     from throttle.style import strip_ansi
     plain = strip_ansi(out)
-    assert "Throttle: own your intelligence. Keep the savings." in plain
+    assert "Throttle: stop renting your AI. Cut the bill." in plain
     assert "throttle shadow --candidate-url URL" in plain
 
 
@@ -329,7 +331,8 @@ def test_help_epilog_walks_the_loop_and_every_command_parses(capsys):
     from throttle.cli import GETTING_STARTED
 
     order = ["throttle demo", "throttle capture", "throttle workloads", "throttle shadow",
-             "throttle eval", "throttle check", "throttle report"]
+             "throttle eval", "throttle check", "throttle report", "throttle route approve",
+             "throttle refresh", "throttle jobs scan", "throttle pr-check", "Serving tools (advanced)"]
     positions = [GETTING_STARTED.index(text) for text in order]
     assert positions == sorted(positions)
     assert "No server yet? Run 'throttle demo'." in GETTING_STARTED
@@ -345,6 +348,10 @@ def test_help_epilog_walks_the_loop_and_every_command_parses(capsys):
     parser.parse_args(["route", "savings"])
     parser.parse_args(["refresh"])
     parser.parse_args(["report", "--candidate", "NAME", "--gpu-hourly-rate", "2.49", "--gpus", "2"])
+    parser.parse_args(["route", "approve", "--type", "chat", "--candidate", "NAME", "--url", "URL", "--model", "M"])
+    parser.parse_args(["route", "savings", "--gpu-hourly-rate", "2.49", "--gpus", "2"])
+    parser.parse_args(["jobs", "scan"])
+    parser.parse_args(["pr-check", "--base", "origin/main", "--head", "HEAD"])
 
 
 def test_help_lists_no_removed_command(capsys):
@@ -352,7 +359,7 @@ def test_help_lists_no_removed_command(capsys):
         main(["--help"])
     out = capsys.readouterr().out
     assert "==SUPPRESS==" not in out
-    assert "Own your intelligence" in out
+    assert "Stop renting your AI" in out
     for removed in ("validate-sim", "experimental-tuning", "diagnose", "upgrade", "login",
                     "logout", "whoami", "throttle cost", "throttle measure", "Throttle Cloud",
                     "credits", "guidellm"):

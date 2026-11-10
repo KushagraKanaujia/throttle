@@ -1,30 +1,46 @@
-"""Stage 5, REPORT: which workload types can move to your own model, and what
+"""Stage 5, REPORT: which workload types can move to another model, and what
 that saves per month.
 
-``throttle report --candidate LABEL --gpu-hourly-rate USD --gpus N`` joins
-three things:
+``throttle report --candidate LABEL`` prices the candidate in one of two modes
+(exactly one is required):
+
+* GPU mode, ``--gpu-hourly-rate USD --gpus N``: you run the candidate on your
+  own GPUs. Owned $/M tokens comes from a ``throttle check`` record (MEASURED,
+  with its 95% CI; the check's GPU rate is ASSUMED), plus an always-on GPU
+  floor.
+* Per-token mode, ``--candidate-price-in USD --candidate-price-out USD``
+  (per 1M tokens, ASSUMED) or ``--candidate-model NAME`` found in the bundled
+  price table (LIST PRICE): the candidate is a cheaper closed API model or an
+  open model on a hosted endpoint, billed per token. No GPU, no floor. See
+  :mod:`throttle.own.candidate_cost`.
+
+Either way the report joins:
 
 * captured API traffic (``throttle workloads``): requests and API spend per
   workload type, projected to a month at the captured rate;
 * the latest eval run for the candidate (``throttle eval``): the quality
   verdict, win/tie/loss and the candidate's own token usage per request;
-* a ``throttle check`` history record for the candidate model: the MEASURED
-  self-hosted $/M tokens (input + output) with its 95% CI. The check's GPU
-  rate is operator-supplied, so it is ASSUMED.
+* the owned price above.
 
-Without a check record the report still shows quality, but every owned-cost
-and savings cell says "not measured" and carries no number.
+In GPU mode without a check record the report still shows quality, but every
+owned-cost and savings cell says "not measured" and carries no number.
 
 Cost math
 ---------
-Per type: owned $/mo = requests/mo x mean candidate tokens per request
-(measured in the shadow run) x check $/M, as point, CI low and CI high.
+GPU mode, per type: owned $/mo = requests/mo x mean candidate tokens per
+request (measured in the shadow run) x check $/M, as point, CI low and CI high.
+
+Per-token mode, per type: each shadow answer's own input/output tokens are
+priced, and owned $/mo = requests/mo x mean $ per request, with a 95%
+bootstrap CI over requests. The API model's token counts are never used.
+
 Conservative savings for a type = API $/mo - owned CI high.
 
-Portfolio: the deployment is billed every hour whether busy or not, so owned
-total = max(floor, sum of MOVE types' token cost), with
+Portfolio, GPU mode: the deployment is billed every hour whether busy or not,
+so owned total = max(floor, sum of MOVE types' token cost), with
 floor = gpu_hourly x gpus x 730 h. The floor applies once across all MOVE
-types. Conservative savings = API $/mo of MOVE types - owned total at CI high.
+types. Per-token mode has no floor: owned total = sum of MOVE types' cost.
+Conservative savings = API $/mo of MOVE types - owned total at CI high.
 If that is not positive there is no savings claim and every MOVE becomes
 KEEP ON API.
 
@@ -54,15 +70,25 @@ Output: ``<out>/report.json`` and ``<out>/report.html``
       "eval_run_id": str | null, "check_id": str | null,
       "window": {"first_ts", "last_ts", "days", "projectable"},
       "traffic_scale": int,              # 1 except in the demo
-      "owned_cost": {                    # null without a check record
-        "check_id", "model", "label": "MEASURED" | "DEMO",
-        "usd_per_m_tokens": {"mean", "low", "high", "n_blocks"},
-        "gpu_hourly_rate_usd", "gpu_count", "rate_label": "ASSUMED" | "DEMO",
-        "endpoint", "created_at"
-      } | null,
+      "owned_cost_mode": "gpu" | "per_token",
+      "owned_cost":                      # GPU mode; null without a check record
+        {"mode": "gpu",
+         "check_id", "model", "label": "MEASURED" | "DEMO",
+         "usd_per_m_tokens": {"mean", "low", "high", "n_blocks"},
+         "gpu_hourly_rate_usd", "gpu_count", "rate_label": "ASSUMED" | "DEMO",
+         "endpoint", "created_at"}
+        | {"mode": "per_token",          # per-token mode; never null
+           "model": str | null,          # the model the price is for
+           "label": "ASSUMED" | "LIST PRICE",
+           "label_detail": str,          # e.g. "LIST PRICE (2026-10-27)"
+           "price": {"label", "label_detail", "model", "input_per_m",
+                     "cached_input_per_m", "output_per_m", "as_of", "source"},
+           "model_matches_shadow": bool | null}   # false = priced model is not
+                                                  # the one that answered
+        | null,
       "not_measured_hint": str,          # what to run to get owned cost
       "deployment": {"gpu_hourly_rate_usd", "gpus", "hours_per_month": 730,
-                     "floor_usd_per_month", "label"},
+                     "floor_usd_per_month", "label"} | null,   # null in per-token mode
       "workloads": [{
         "type": str,
         "requests_captured": int,
@@ -84,8 +110,8 @@ Output: ``<out>/report.json`` and ``<out>/report.html``
       "totals": {
         "monthly_api_usd": float | null,
         "movable_api_usd": float | null, "movable_share": float | null,
-        "owned_usd_per_month": {"point", "low", "high"} | null,   # floor applied once
-        "floor_applied": bool | null,
+        "owned_usd_per_month": {"point", "low", "high"} | null,   # floor applied once (GPU mode)
+        "floor_applied": bool | null,    # always false or null in per-token mode
         "conservative_savings_usd": float | null,   # null = no savings claim
         "point_savings_usd": float | null,
         "savings_note": str
@@ -105,6 +131,7 @@ import sys
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
+from . import candidate_cost as cc
 from . import evaluate as ev
 from . import pricing as pricing_mod
 from . import records
@@ -204,6 +231,7 @@ def owned_cost(record: Mapping[str, Any] | None) -> tuple[dict[str, Any] | None,
     demo = bool(record.get("demo"))
     gpus = fingerprint.get("gpu_count") or (fingerprint.get("user_config") or {}).get("gpus") or 1
     return {
+        "mode": cc.MODE_GPU,
         "check_id": record.get("id"),
         "model": fingerprint.get("model"),
         "label": DEMO_LABEL if demo else "MEASURED",
@@ -264,11 +292,23 @@ def _quality(type_eval: Mapping[str, Any] | None) -> dict[str, Any] | None:
         "order_disagree_rate": rate("order_disagree"),
         "net_ci": [net["low"], net["high"]] if net.get("low") is not None and net.get("high") is not None else None,
         "win_rate_ci": _ci(type_eval.get("win_rate_ci")),
-        "tie_rate_ci": _ci(type_eval.get("tie_rate_ci")),
+        "tie_rate_ci": _tie_ci(type_eval, judged),
         "loss_rate_ci": _ci(type_eval.get("loss_rate_ci")),
         "format_checks": format_checks(type_eval),
         "reasons": list(type_eval.get("reasons") or []),
     }
+
+
+def _tie_ci(type_eval: Mapping[str, Any], judged: int) -> list[float] | None:
+    """The tie CI, ties only. An eval saved before judge unsure got its own CI
+    (no ``order_disagree_rate_ci``) stored a tie CI that counted judge unsure
+    too; recompute that one from the counts so the 'Same' point always sits
+    inside its whisker."""
+    if type_eval.get("order_disagree_rate_ci") is None and int(type_eval.get("order_disagree") or 0) and judged:
+        from .. import statistics as stats
+
+        return _ci(stats.wilson_interval_95(int(type_eval.get("ties") or 0), judged))
+    return _ci(type_eval.get("tie_rate_ci"))
 
 
 def _ci(value: Any) -> list[float] | None:
@@ -285,6 +325,7 @@ def recommend(
     api_usd: float | None,
     owned_high: float | None,
     not_measured: str,
+    mode: str = cc.MODE_GPU,
 ) -> tuple[str, list[str]]:
     """Apply the rule in the module docstring to one workload type."""
 
@@ -325,7 +366,9 @@ def recommend(
             return MORE_DATA, [f"quality is {verdict}, but there is no monthly API spend to compare with"]
         return MOVE, [
             f"quality is {verdict} ({_wtl(quality)})",
-            f"conservative saving ${conservative_savings:,.0f}/mo before the deployment floor",
+            (f"conservative saving ${conservative_savings:,.0f}/mo before the deployment floor"
+             if mode == cc.MODE_GPU else
+             f"conservative saving ${conservative_savings:,.0f}/mo at the high end of the cost CI; no GPU to run"),
         ]
     return MORE_DATA, [f"unknown quality verdict {verdict!r}"]
 
@@ -335,6 +378,9 @@ def _wtl(quality: Mapping[str, Any]) -> str:
         return "-" if x is None else f"{x:.0%}"
 
     text = f"win/tie/loss {pct(quality.get('win_rate'))}/{pct(quality.get('tie_rate'))}/{pct(quality.get('loss_rate'))}"
+    # Judge unsure is its own share, never folded into tie, so the four add up.
+    if quality.get("order_disagree"):
+        text += f", judge unsure {pct(quality.get('order_disagree_rate'))}"
     net = quality.get("net_ci")
     if net:
         text += f", net 95% CI [{net[0]:+.2f}, {net[1]:+.2f}]"
@@ -347,26 +393,53 @@ def build_report(
     *,
     candidate: str,
     eval_doc: Mapping[str, Any] | None,
-    check_record: Mapping[str, Any] | None,
-    gpu_hourly_rate: float,
-    gpus: int,
+    check_record: Mapping[str, Any] | None = None,
+    gpu_hourly_rate: float | None = None,
+    gpus: int | None = None,
+    candidate_price: cc.CandidatePrice | None = None,
+    candidate_samples: Mapping[str, Sequence[records.Usage]] | None = None,
     traffic_scale: int = 1,
     demo: bool = False,
     generated_at: str | None = None,
     source: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """The report document (see the module docstring). ``traffic_scale`` is
-    only for the demo: each synthetic request stands for that many."""
+    only for the demo: each synthetic request stands for that many.
 
+    GPU mode needs ``gpu_hourly_rate`` and ``gpus`` (and prices with
+    ``check_record``). Per-token mode needs ``candidate_price`` and prices each
+    type from ``candidate_samples``: {type: the candidate's usage on each
+    shadow answer}. Passing both or neither is a ``ValueError``."""
+
+    per_token = candidate_price is not None
+    if per_token == (gpu_hourly_rate is not None or gpus is not None):
+        raise ValueError("pass either candidate_price (per-token mode) or gpu_hourly_rate and gpus (GPU mode)")
+    if not per_token and (gpu_hourly_rate is None or gpus is None):
+        raise ValueError("GPU mode needs both gpu_hourly_rate and gpus")
+    mode = cc.MODE_PER_TOKEN if per_token else cc.MODE_GPU
     rows = wl.summarize(exchanges, prices)
     window = wl.capture_window(exchanges)
-    owned, owned_problem = owned_cost(check_record)
     candidate_model = (eval_doc or {}).get("candidate_model")
-    hint = f"run `throttle check --url ... --model {candidate_model or candidate}`"
-    not_measured = "not measured: " + (f"{owned_problem}; " if owned_problem else "") + hint
-    floor = gpu_hourly_rate * gpus * HOURS_PER_MONTH
+    if per_token:
+        assert candidate_price is not None
+        owned: dict[str, Any] | None = {
+            "mode": cc.MODE_PER_TOKEN,
+            "model": candidate_price.model or candidate_model,
+            "label": candidate_price.label,
+            "label_detail": candidate_price.label_detail,
+            "price": candidate_price.to_json(),
+            "model_matches_shadow": cc.model_matches(candidate_price, candidate_model),
+        }
+        not_measured = (f"not measured: run `throttle shadow --candidate {candidate}` and `throttle eval` "
+                        "so the candidate's own token usage is recorded")
+        floor = 0.0
+    else:
+        owned, owned_problem = owned_cost(check_record)
+        hint = f"run `throttle check --url ... --model {candidate_model or candidate}`"
+        not_measured = "not measured: " + (f"{owned_problem}; " if owned_problem else "") + hint
+        floor = float(gpu_hourly_rate) * int(gpus) * HOURS_PER_MONTH  # type: ignore[arg-type]
     types_eval = (eval_doc or {}).get("types") or {}
-    per_m = owned["usd_per_m_tokens"] if owned else None
+    per_m = owned["usd_per_m_tokens"] if (owned and not per_token) else None
 
     workloads: list[dict[str, Any]] = []
     for row in rows:
@@ -377,7 +450,12 @@ def build_report(
         tokens = candidate_tokens(type_eval)
         owned_cell = None
         owned_note = not_measured
-        if per_m and tokens and per_month is not None:
+        if per_token:
+            assert candidate_price is not None
+            samples = (candidate_samples or {}).get(row.workload_type)
+            cost = cc.monthly_cost(samples, candidate_price, per_month, kind=row.workload_type)
+            owned_cell, owned_note = cost.owned, cost.note
+        elif per_m and tokens and per_month is not None:
             million = per_month * tokens["total"] / 1_000_000
             owned_cell = {"point": million * per_m["mean"], "low": million * per_m["low"], "high": million * per_m["high"]}
             owned_note = f"{tokens['total']:,.0f} candidate tokens/request x ${per_m['mean']:.3f}/M"
@@ -389,7 +467,8 @@ def build_report(
         quality = _quality(type_eval)
         rec, reasons = recommend(
             quality, owned_measured=owned_cell is not None, conservative_savings=savings,
-            api_usd=api, owned_high=owned_cell["high"] if owned_cell else None, not_measured=not_measured,
+            api_usd=api, owned_high=owned_cell["high"] if owned_cell else None,
+            not_measured=owned_note if (per_token and owned_cell is None) else not_measured, mode=mode,
         )
         if row.workload_type == wl.UNKNOWN and quality is None:
             reasons = ["captured without bodies (metadata only), so it cannot be shadowed or judged"]
@@ -408,7 +487,7 @@ def build_report(
             "reasons": reasons,
         })
 
-    totals = _portfolio(workloads, floor=floor, measured=owned is not None, not_measured=not_measured)
+    totals = _portfolio(workloads, floor=floor, measured=owned is not None, not_measured=not_measured, mode=mode)
     labels = _labels(prices, owned, window, demo=demo, traffic_scale=traffic_scale, eval_doc=eval_doc,
                      gpu_hourly_rate=gpu_hourly_rate, gpus=gpus, source=source)
     document: dict[str, Any] = {
@@ -418,14 +497,16 @@ def build_report(
         "candidate": candidate,
         "candidate_model": candidate_model,
         "eval_run_id": (eval_doc or {}).get("run_id"),
-        "check_id": owned["check_id"] if owned else None,
+        "check_id": (owned or {}).get("check_id"),
         "window": {"first_ts": window.first_ts, "last_ts": window.last_ts,
                    "days": round(window.days, 4), "projectable": window.projectable},
         "traffic_scale": traffic_scale,
+        "owned_cost_mode": mode,
         "owned_cost": owned,
         "not_measured_hint": not_measured,
-        "deployment": {"gpu_hourly_rate_usd": gpu_hourly_rate, "gpus": gpus, "hours_per_month": HOURS_PER_MONTH,
-                       "floor_usd_per_month": floor, "label": DEMO_LABEL if demo else "ASSUMED"},
+        "deployment": None if per_token else {
+            "gpu_hourly_rate_usd": gpu_hourly_rate, "gpus": gpus, "hours_per_month": HOURS_PER_MONTH,
+            "floor_usd_per_month": floor, "label": DEMO_LABEL if demo else "ASSUMED"},
         "workloads": workloads,
         "totals": totals,
         "labels": labels,
@@ -436,7 +517,8 @@ def build_report(
     return document
 
 
-def _portfolio(workloads: list[dict[str, Any]], *, floor: float, measured: bool, not_measured: str) -> dict[str, Any]:
+def _portfolio(workloads: list[dict[str, Any]], *, floor: float, measured: bool, not_measured: str,
+               mode: str = cc.MODE_GPU) -> dict[str, Any]:
     apis = [w["api_usd_per_month"] for w in workloads]
     monthly_api = sum(a for a in apis if a is not None) if any(a is not None for a in apis) else None
     moving = [w for w in workloads if w["recommendation"] == MOVE]
@@ -463,6 +545,10 @@ def _portfolio(workloads: list[dict[str, Any]], *, floor: float, measured: bool,
                     f"quality passes, but the deployment floor (${floor:,.0f}/mo) is more than all movable API spend"
                 ]
             movable, owned, conservative, point, floor_applied = 0.0, None, None, None, None
+        elif mode == cc.MODE_PER_TOKEN:
+            note = ("API spend of the MOVE types minus the candidate's per-token cost at the high end of its 95% CI; "
+                    "per-token mode has no GPU floor")
+            floor_applied = False
         else:
             note = ("API spend of the MOVE types minus owned cost at the high end of its 95% CI; "
                     "the always-on GPU floor is counted once across all MOVE types")
@@ -480,7 +566,8 @@ def _portfolio(workloads: list[dict[str, Any]], *, floor: float, measured: bool,
 
 def _labels(prices: pricing_mod.PriceTable, owned: Mapping[str, Any] | None, window: wl.CaptureWindow, *,
             demo: bool, traffic_scale: int, eval_doc: Mapping[str, Any] | None,
-            gpu_hourly_rate: float, gpus: int, source: Mapping[str, Any] | None = None) -> list[dict[str, str]]:
+            gpu_hourly_rate: float | None, gpus: int | None,
+            source: Mapping[str, Any] | None = None) -> list[dict[str, str]]:
     def lab(word: str) -> str:
         return f"{DEMO_LABEL} / {word}" if demo else word
 
@@ -513,6 +600,27 @@ def _labels(prices: pricing_mod.PriceTable, owned: Mapping[str, Any] | None, win
                 if judge else "no judge run"})
     out.append({"what": "Candidate tokens per request", "label": lab("MEASURED"),
                 "detail": "usage reported by your model for its shadow answers to the same requests"})
+    if owned and owned.get("mode") == cc.MODE_PER_TOKEN:
+        price = owned["price"]
+        where = (f"--candidate-model {price['model']} in the bundled price table, {price['source']}"
+                 if owned["label"] == cc.LIST_PRICE else f"operator-supplied ({price['source']})")
+        out.append({"what": "Owned cost mode", "label": lab("PER TOKEN"),
+                    "detail": "the candidate is billed per token (a closed API model or a hosted open model); "
+                              "no GPU is run and no GPU floor applies"})
+        out.append({"what": "Candidate $ per 1M tokens", "label": lab(owned["label_detail"]),
+                    "detail": f"${price['input_per_m']:g}/M input, ${price['output_per_m']:g}/M output"
+                              + (f", ${price['cached_input_per_m']:g}/M cached input" if price.get("cached_input_per_m") is not None
+                                 else ", cached input billed at the input price")
+                              + f"; {where}"})
+        out.append({"what": "Owned $ per month", "label": lab("MEASURED tokens x " + owned["label"]),
+                    "detail": "each shadow answer's own input and output tokens x that price, averaged per type, "
+                              "95% bootstrap CI over requests; the API model's token counts are never used"})
+        if owned.get("model_matches_shadow") is False:
+            out.append({"what": "Priced model mismatch", "label": "WARNING",
+                        "detail": f"the price is for {owned['model']} but the shadow answers came from "
+                                  f"{(eval_doc or {}).get('candidate_model')}; re-run shadow and eval with that model "
+                                  "or pass the right --candidate-model"})
+        return out
     if owned:
         per_m = owned["usd_per_m_tokens"]
         out.append({"what": "Owned $ per 1M tokens", "label": owned["label"],
@@ -521,7 +629,7 @@ def _labels(prices: pricing_mod.PriceTable, owned: Mapping[str, Any] | None, win
         out.append({"what": "GPU $ per hour in that check", "label": owned["rate_label"],
                     "detail": f"${owned['gpu_hourly_rate_usd']}/h for {owned['gpu_count']} GPU(s), supplied by the operator"})
         per_gpu = float(owned["gpu_hourly_rate_usd"] or 0) / max(1, owned["gpu_count"])
-        if abs(per_gpu - gpu_hourly_rate) > 0.005:
+        if gpu_hourly_rate is not None and abs(per_gpu - gpu_hourly_rate) > 0.005:
             out.append({"what": "GPU price mismatch", "label": "WARNING",
                         "detail": f"the check priced a GPU at ${per_gpu:.2f}/h but this report's floor uses "
                                   f"${gpu_hourly_rate:.2f}/h; owned $/M is not rescaled, so re-run the check at the real price"})
@@ -540,12 +648,21 @@ def _limits(owned: Mapping[str, Any] | None, eval_doc: Mapping[str, Any] | None,
     if demo:
         out.append("Everything here comes from synthetic traffic, a fake API and a fake open model. It shows how the "
                    "report works; it says nothing about any real company or model.")
+    per_token = bool(owned) and owned.get("mode") == cc.MODE_PER_TOKEN  # type: ignore[union-attr]
+    cost_caveats = [
+        "Owned cost uses the per-token price shown, on its date. Discounts, batch tiers, rate limits, "
+        "minimum spend and later price changes are not modelled.",
+        "A hosted open model can answer differently from the same weights served elsewhere; the quality "
+        "verdict holds for the endpoint that was shadowed.",
+    ] if per_token else [
+        "Owned cost assumes your traffic's input/output mix costs about what the check's workload cost per token. "
+        "Prefill-heavy traffic is usually cheaper per token than decode-heavy traffic.",
+    ]
     out += [
         "The judge is a model too. Win/tie/loss is its opinion under a fixed rubric, run in both orders to cancel "
         "position bias, not a human review.",
         "Quality is measured on the sampled, de-duplicated requests captured so far. New kinds of requests can behave differently.",
-        "Owned cost assumes your traffic's input/output mix costs about what the check's workload cost per token. "
-        "Prefill-heavy traffic is usually cheaper per token than decode-heavy traffic.",
+        *cost_caveats,
         "Monthly figures assume next month looks like the capture window. Seasonality and growth are not modelled.",
         "Engineering time, on-call, fine-tuning runs and egress are not included in owned cost.",
         "NEEDS FINETUNE means the format already works and the gap is in content; it does not prove fine-tuning will close it.",
@@ -599,6 +716,17 @@ def render_html(report: Mapping[str, Any]) -> str:
     return report_page.render(report, demo_banner=DEMO_BANNER, rules=RULES_TEXT)
 
 
+def mode_line(report: Mapping[str, Any]) -> str:
+    """One line: which owned-cost mode applies and how it is labelled."""
+
+    owned = report.get("owned_cost")
+    if report.get("owned_cost_mode") == cc.MODE_PER_TOKEN and owned:
+        return f"per token, {owned['label_detail']}"
+    if owned:
+        return f"GPU, {owned['label']} by check {owned['check_id']}, rate {owned['rate_label']}"
+    return "GPU, not measured (no `throttle check` record)"
+
+
 def _owned_gap(workload: Mapping[str, Any]) -> str:
     note = workload.get("owned_note") or ""
     return "not projected" if note.startswith("not projected") else "not measured"
@@ -613,18 +741,40 @@ def render_panel(report: Mapping[str, Any], paths: Sequence[Path] = ()) -> str:
         rows.append((DEMO_BANNER, (style_mod.BOLD, style_mod.AMBER)))
     for name, value in summary_lines(report):
         rows.append(f"{name + ':':<30}{st.bold(value)}")
+    rows.append(f"{'Owned cost:':<30}{mode_line(report)}")
+    if report.get("owned_cost_mode") == cc.MODE_PER_TOKEN and report.get("owned_cost"):
+        price = report["owned_cost"]["price"]
+        rows.append(f"{'Candidate price:':<30}${price['input_per_m']:g}/M in, ${price['output_per_m']:g}/M out"
+                    + (f" ({report['owned_cost']['model']})" if report["owned_cost"].get("model") else ""))
     rows.append("")
-    rows.append(st.dim(f"{'type':<15}{'API $/mo':>11}{'owned $/mo':>12}  recommendation"))
+    rows.append(st.dim(f"{'type':<15}{'API $/mo':>11}{'owned $/mo (high)':>19}  recommendation"))
     for w in report["workloads"]:
         owned = w["owned_usd_per_month"]
         rows.append(f"{w['type'][:14]:<15}{usd(w['api_usd_per_month']):>11}"
-                    f"{(usd(owned['point']) if owned else _owned_gap(w)):>12}  {st.verdict(w['recommendation'])}")
+                    f"{(usd(owned['high']) if owned else _owned_gap(w)):>19}  {st.verdict(w['recommendation'])}")
     owned_total = report["totals"].get("owned_usd_per_month")
-    if owned_total:
+    per_token = report.get("owned_cost_mode") == cc.MODE_PER_TOKEN
+    note = ""
+    if any(w["owned_usd_per_month"] for w in report["workloads"]):
+        if per_token:
+            note = ("Owned $/mo is the candidate's own measured tokens x its per-token price, at the high end "
+                    "of its 95% CI (the same number report.html shows). No GPU to run, so no GPU floor.")
+        else:
+            note = ("Owned $/mo per type is token cost only, at the high end of its 95% CI (the same number "
+                    "report.html shows).")
+    if owned_total and per_token:
+        note += f" The MOVE types together cost {usd(owned_total['high'])}/mo at the high end."
+    elif owned_total:
+        note += (f" The MOVE types together cost {usd(owned_total['high'])}/mo at the high end, never less than "
+                 f"the always-on {usd(report['deployment']['floor_usd_per_month'])}/mo GPU floor, counted once.")
+    if note:
         rows.append("")
-        rows.append((f"Owned $/mo per type is token cost only. The MOVE types together cost "
-                     f"{usd(owned_total['high'])}/mo at the high end, never less than the always-on "
-                     f"{usd(report['deployment']['floor_usd_per_month'])}/mo GPU floor, counted once.", (style_mod.DIM,)))
+        rows.append((note.strip(), (style_mod.DIM,)))
+    owned_cost_block = report["owned_cost"] or {}
+    if owned_cost_block.get("model_matches_shadow") is False:
+        rows.append("")
+        rows.append((f"Warning: the price is for {owned_cost_block.get('model')}, but the shadow answers came from "
+                     f"{report.get('candidate_model')}.", (style_mod.AMBER,)))
     if report["owned_cost"] is None:
         rows.append("")
         rows.append((report["not_measured_hint"], (style_mod.AMBER,)))
@@ -652,18 +802,28 @@ def write_outputs(report: Mapping[str, Any], out: Path) -> tuple[Path, Path]:
 def add_parser(subparsers: argparse._SubParsersAction) -> None:
     parser = subparsers.add_parser(
         "report",
-        help="which workload types can move to your own model, and what that saves per month",
+        help="which workload types can move to a cheaper model, and what that saves per month",
         description=(
-            "Join captured API spend, the latest eval of your candidate model and a measured "
-            "`throttle check` of it into a recommendation per workload type (MOVE, NEEDS FINETUNE, "
-            "KEEP ON API, NEEDS MORE DATA), written as report.json and a self-contained report.html. "
-            "Without a check record no owned-cost or savings number is shown."
+            "Join captured API spend, the latest eval of your candidate model and its price into a "
+            "recommendation per workload type (MOVE, NEEDS FINETUNE, KEEP ON API, NEEDS MORE DATA), "
+            "written as report.json and a self-contained report.html. Pick one way to price the candidate: "
+            "GPU mode (--gpu-hourly-rate and --gpus, with a measured `throttle check`) or per-token mode "
+            "(--candidate-price-in and --candidate-price-out, or --candidate-model from the bundled price list). "
+            "Per-token mode uses the candidate's own measured tokens and needs no GPU."
         ),
     )
     parser.add_argument("--candidate", required=True, help="candidate label used with `throttle shadow` / `throttle eval`")
-    parser.add_argument("--gpu-hourly-rate", type=float, required=True, metavar="USD",
-                        help="price of one GPU per hour for the deployment floor (ASSUMED)")
-    parser.add_argument("--gpus", type=int, required=True, metavar="N", help="GPUs the always-on deployment needs")
+    gpu = parser.add_argument_group("GPU mode (you run the candidate on your own GPUs)")
+    gpu.add_argument("--gpu-hourly-rate", type=float, default=None, metavar="USD",
+                     help="price of one GPU per hour for the deployment floor (ASSUMED)")
+    gpu.add_argument("--gpus", type=int, default=None, metavar="N", help="GPUs the always-on deployment needs")
+    token = parser.add_argument_group("per-token mode (a cheaper API model or a hosted open model, no GPU)")
+    token.add_argument("--candidate-price-in", type=float, default=None, metavar="USD",
+                       help="candidate price per 1M input tokens (ASSUMED)")
+    token.add_argument("--candidate-price-out", type=float, default=None, metavar="USD",
+                       help="candidate price per 1M output tokens (ASSUMED)")
+    token.add_argument("--candidate-model", default=None, metavar="NAME",
+                       help="look the candidate up in the bundled price list (LIST PRICE), e.g. a cheaper API model")
     parser.add_argument("--check", default="latest", metavar="ID|latest",
                         help="`throttle check` record to price the candidate with (default: latest for its model)")
     parser.add_argument("--eval", dest="eval_run", default="latest", metavar="RUN_ID|latest",
@@ -676,15 +836,47 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
     parser.add_argument("--dir", type=Path, default=None, help="data directory (default ~/.throttle/own or $THROTTLE_OWN_DIR)")
 
 
+MODE_HELP = (
+    "pick one way to price the candidate:\n"
+    "  GPU mode:       --gpu-hourly-rate USD --gpus N   (you run it; needs a `throttle check` of your server)\n"
+    "  per-token mode: --candidate-price-in USD --candidate-price-out USD   (per 1M tokens, labelled ASSUMED)\n"
+    "              or  --candidate-model NAME   (a model in the bundled price list, labelled LIST PRICE)"
+)
+
+
+def _pick_mode(args: argparse.Namespace, prices: pricing_mod.PriceTable) -> tuple[str, cc.CandidatePrice | None]:
+    """(mode, candidate price) from the flags; ``ValueError`` explains a bad mix."""
+
+    price_in = getattr(args, "candidate_price_in", None)
+    price_out = getattr(args, "candidate_price_out", None)
+    model = getattr(args, "candidate_model", None)
+    gpu_given = args.gpu_hourly_rate is not None or args.gpus is not None
+    token_given = price_in is not None or price_out is not None or model is not None
+    if gpu_given and token_given:
+        raise ValueError("GPU flags and per-token flags were both given; " + MODE_HELP)
+    if gpu_given:
+        if args.gpu_hourly_rate is None or args.gpus is None:
+            raise ValueError("GPU mode needs both --gpu-hourly-rate and --gpus")
+        if args.gpu_hourly_rate <= 0 or args.gpus <= 0:
+            raise ValueError("--gpu-hourly-rate and --gpus must be positive")
+        return cc.MODE_GPU, None
+    if not token_given:
+        raise ValueError(MODE_HELP)
+    price = cc.resolve_price(prices, price_in=price_in, price_out=price_out, model=model)
+    if price is None:
+        raise ValueError(f"--candidate-model {model} is not in the bundled price list. "
+                         "For a hosted open model or any other price, pass --candidate-price-in and "
+                         "--candidate-price-out in USD per 1M tokens; they are labelled ASSUMED")
+    return cc.MODE_PER_TOKEN, price
+
+
 def handle(args: argparse.Namespace) -> int:
     from .. import check as check_mod
 
     root = args.dir.expanduser() if args.dir else records.default_root()
-    if args.gpu_hourly_rate <= 0 or args.gpus <= 0:
-        print("throttle report: --gpu-hourly-rate and --gpus must be positive", file=sys.stderr)
-        return EXIT_USAGE
     try:
         prices = pricing_mod.load_prices(args.prices)
+        mode, candidate_price = _pick_mode(args, prices)
         eval_doc = load_eval(root, args.candidate, args.eval_run)
     except (ValueError, OSError, json.JSONDecodeError) as exc:
         print(f"throttle report: {exc}", file=sys.stderr)
@@ -697,16 +889,27 @@ def handle(args: argparse.Namespace) -> int:
     if eval_doc is None:
         print(f"Note: no eval run for {args.candidate}; every type is NEEDS MORE DATA. "
               "Run `throttle shadow` and `throttle eval` first.", file=sys.stderr)
-    models = [m for m in ((eval_doc or {}).get("candidate_model"), args.candidate) if m]
-    try:
-        record = load_check(check_mod.history_dir(None), models, args.check)
-    except ValueError as exc:
-        print(f"throttle report: {exc}", file=sys.stderr)
-        return EXIT_USAGE
-    report = build_report(
-        exchanges, prices, candidate=args.candidate, eval_doc=eval_doc, check_record=record,
-        gpu_hourly_rate=args.gpu_hourly_rate, gpus=args.gpus,
-    )
+    if mode == cc.MODE_PER_TOKEN:
+        try:
+            samples = cc.load_samples(root, args.candidate, eval_doc)
+        except (OSError, ValueError) as exc:
+            print(f"throttle report: cannot read shadow answers: {exc}", file=sys.stderr)
+            return EXIT_FAILED
+        report = build_report(
+            exchanges, prices, candidate=args.candidate, eval_doc=eval_doc,
+            candidate_price=candidate_price, candidate_samples=samples,
+        )
+    else:
+        models = [m for m in ((eval_doc or {}).get("candidate_model"), args.candidate) if m]
+        try:
+            record = load_check(check_mod.history_dir(None), models, args.check)
+        except ValueError as exc:
+            print(f"throttle report: {exc}", file=sys.stderr)
+            return EXIT_USAGE
+        report = build_report(
+            exchanges, prices, candidate=args.candidate, eval_doc=eval_doc, check_record=record,
+            gpu_hourly_rate=args.gpu_hourly_rate, gpus=args.gpus,
+        )
     paths = write_outputs(report, args.out.expanduser())
     if args.json:
         print(json.dumps(report, indent=2, sort_keys=True))

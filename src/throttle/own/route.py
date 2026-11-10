@@ -51,17 +51,20 @@ Limitations (MVP):
 Realized-savings ledger: ``<root>/ledger/YYYY-MM.jsonl``, append-only, one
 line per owned-served request: exchange id, type, incumbent model, owned
 tokens, and the serve-time list price with no cache discount (an upper bound,
-kept for audit). ``throttle route savings`` builds the bill number from it:
+kept for audit). ``throttle route savings`` builds a realized-savings
+statement from it that you can audit:
 
 * Avoided cost prices the owned input + output tokens at the incumbent's list
   price (the incumbent's own counts are unknown). Each type's share of input
   that the API served from prompt cache, measured from that month's
   API-served captures of the same type and model, is priced at the cached
   rate. No cache history means all input is priced at the cached rate.
-* Only routes approved on a passing eval are billable. Forced routes are
-  shown on their own line and never billed.
-* Owned cost is GPU $/hr x GPUs x every hour of the month (always-on), or an
-  operator-reported invoice. Net <= 0 means no savings, no bill.
+* Only routes approved on a passing eval count toward the net. Forced routes
+  are shown on their own line and never counted.
+* Owned cost is GPU $/hr x GPUs x every hour of the calendar month
+  (always-on, so 720 h for a 30-day month), or an operator-reported invoice.
+  ``throttle report`` projects with an average month of 730 h instead.
+  Net <= 0 means no savings this month.
 """
 
 from __future__ import annotations
@@ -99,7 +102,7 @@ MODE_CANARY = "canary"
 PASSING = (BETTER, NO_DIFF)
 DEFAULT_TIMEOUT = 30.0
 LEDGER_SCHEMA = "throttle.own.ledger/1"
-SAVINGS_SCHEMA = "throttle.own.savings/1"
+SAVINGS_SCHEMA = "throttle.own.savings/2"
 EXIT_OK, EXIT_FAILED, EXIT_USAGE = 0, 1, 2
 BOLD_RED = "1;31"
 
@@ -119,13 +122,16 @@ ASSUMPTION_CACHE = (
     "avoided input is priced at the cached rate (no cache history, priced conservatively)."
 )
 ASSUMPTION_FORCED = (
-    "Routes approved with --force have no passing eval: their avoided cost is shown but not billable."
+    "Routes approved with --force have no passing eval: their avoided cost is shown but not counted in the net."
 )
 CACHE_MEASURED = "measured cache share"
 CACHE_NONE = "no cache history, priced conservatively"
 CACHE_NO_RATE = "no published cached rate, input priced at base rate"
 IN_PROGRESS = "This month is not over: owned cost counts the whole month, avoided cost only the requests so far."
-ASSUMPTION_OWNED = "Owned cost assumes the GPUs ran all hours of the period (always-on)."
+ASSUMPTION_OWNED = (
+    "Owned cost assumes the GPUs ran every hour of this calendar month (always-on). "
+    "The 730 h in `throttle report` is an average month, used only for its projection."
+)
 
 
 # ---------------------------------------------------------------------------
@@ -651,6 +657,12 @@ def month_hours(month: str) -> int:
     return calendar.monthrange(year, mon)[1] * 24
 
 
+def month_hours_label(month: str) -> str:
+    """``"November: 720 h, calendar month"``: the real hours of that month, not the 730 h average."""
+    year, mon = (int(x) for x in month.split("-"))
+    return f"{calendar.month_name[mon]}: {month_hours(month)} h, calendar month"
+
+
 def parse_month(value: str | None) -> str:
     if not value:
         return datetime.now(timezone.utc).strftime("%Y-%m")
@@ -728,8 +740,12 @@ def savings_statement(
     prices: pricing_mod.PriceTable | None = None,
 ) -> dict[str, Any]:
     """The realized-savings statement for one month. Only routes approved on a
-    passing eval count toward the billable net; forced routes are reported
-    beside it and never billed."""
+    passing eval count toward the net; forced routes are reported beside it
+    and never counted.
+
+    Schema 2 renamed three schema-1 keys: the net flag is now ``has_savings``,
+    the per-type approved amount ``by_type.*.approved_avoided_usd`` and the
+    forced flag ``forced.counted_in_net``. It also adds ``period_hours_label``."""
     prices = prices or pricing_mod.load_prices()
     entries = list(records.read_jsonl(ledger_path(root, month)))
     shares = cache_shares(root, month)
@@ -743,7 +759,7 @@ def savings_statement(
     for entry in entries:
         kind = str(entry.get("type"))
         forced = bool(entry.get("forced"))
-        row = by_type.setdefault(kind, {"requests": 0, "billable_avoided_usd": 0.0, "forced_requests": 0,
+        row = by_type.setdefault(kind, {"requests": 0, "approved_avoided_usd": 0.0, "forced_requests": 0,
                                         "forced_avoided_usd": 0.0, "excluded": 0, "cache_basis": set()})
         row["requests"] += 1
         tokens["input"] += entry.get("owned_input_tokens") or 0
@@ -767,7 +783,7 @@ def savings_statement(
             row["forced_avoided_usd"] += usd
         else:
             avoided += usd
-            row["billable_avoided_usd"] += usd
+            row["approved_avoided_usd"] += usd
 
     fallbacks: Counter[str] = Counter()
     for exchange in records.iter_exchanges(root):
@@ -791,6 +807,7 @@ def savings_statement(
         "schema": SAVINGS_SCHEMA,
         "month": month,
         "period_hours": hours,
+        "period_hours_label": month_hours_label(month),
         "requests_served_owned": len(entries),
         "requests_priced": priced,
         "excluded": dict(excluded),
@@ -810,10 +827,11 @@ def savings_statement(
         "owned_cost_label": owned_label,
         "owned_cost_basis": owned_basis,
         "net_realized_savings_usd": round(net, 6),
-        "billable": net > 0,
-        "forced": {"requests": forced_requests, "api_cost_avoided_usd": round(forced_avoided, 6), "billable": False},
+        "has_savings": net > 0,
+        "forced": {"requests": forced_requests, "api_cost_avoided_usd": round(forced_avoided, 6),
+                   "counted_in_net": False},
         "by_type": {
-            k: {**v, "billable_avoided_usd": round(v["billable_avoided_usd"], 6),
+            k: {**v, "approved_avoided_usd": round(v["approved_avoided_usd"], 6),
                 "forced_avoided_usd": round(v["forced_avoided_usd"], 6), "cache_basis": sorted(v["cache_basis"])}
             for k, v in sorted(by_type.items())
         },
@@ -840,6 +858,8 @@ def render_statement(doc: Mapping[str, Any]) -> str:
     rows: list[Any] = [
         f"Requests served by your own model: {doc['requests_served_owned']:,}   MEASURED (ledger)",
     ]
+    if doc.get("owned_cost_basis"):
+        rows.append(st.dim(f"Owned hours: {doc['period_hours_label']} (the report's 730 h is an average month projection)"))
     rate = doc["fallback_rate"]
     rows.append(f"Fallbacks to the API: {doc['fallbacks']:,}" + (f" ({rate:.1%} of routed)" if rate is not None else "")
                 + "   MEASURED (capture)")
@@ -856,19 +876,19 @@ def render_statement(doc: Mapping[str, Any]) -> str:
         "",
         (f"API cost avoided:      {_usd(doc['api_cost_avoided_usd'])}   {doc['api_cost_avoided_label']}", ()),
         (f"Owned cost:            {_usd(doc['owned_cost_usd'])}   {doc['owned_cost_label']}", ()),
-        st.bold(f"Net realized savings:  {_usd(doc['net_realized_savings_usd'])}   (billable)"),
+        st.bold(f"Net realized savings:  {_usd(doc['net_realized_savings_usd'])}"),
     ]
-    if not doc["billable"]:
-        rows.append(st.warn("No savings this period, no bill."))
+    if not doc["has_savings"]:
+        rows.append(st.warn("No savings this month."))
     if doc["forced"]["requests"]:
-        rows += ["", (f"FORCED (not billable; quality not proven): {doc['forced']['requests']} requests, "
+        rows += ["", (f"FORCED (not counted in the net; quality not proven): {doc['forced']['requests']} requests, "
                       f"{_usd(doc['forced']['api_cost_avoided_usd'])} avoided through routes approved with --force.",
                       (BOLD_RED,))]
     rows += ["", st.bold("By type")]
     for kind, row in doc["by_type"].items():
-        line = f"  {kind:<15} {row['requests']:>7} requests  {_usd(row['billable_avoided_usd']):>12} billable"
+        line = f"  {kind:<15} {row['requests']:>7} requests  {_usd(row['approved_avoided_usd']):>12} avoided"
         if row["forced_requests"]:
-            line += f"  FORCED {row['forced_requests']} ({_usd(row['forced_avoided_usd'])}, not billable)"
+            line += f"  FORCED {row['forced_requests']} ({_usd(row['forced_avoided_usd'])}, not counted)"
         rows.append(line)
         if row["cache_basis"]:
             rows.append(st.dim(f"    cache: {', '.join(row['cache_basis'])}"))
@@ -880,6 +900,29 @@ def render_statement(doc: Mapping[str, Any]) -> str:
 # ---------------------------------------------------------------------------
 # CLI
 # ---------------------------------------------------------------------------
+
+
+APPROVE_DESCRIPTION = """\
+Route one kind of AI job (one workload type) to your model.
+
+The eval gate: approval is refused unless the latest `throttle eval` run for
+--candidate gave this type BETTER or NO MATERIAL DIFFERENCE, and that run
+tested the same --model. Anything else (WORSE, INCONCLUSIVE, INSUFFICIENT
+DATA, no eval at all) is refused with the reason.
+
+--canary RATE serves only that share of the type's requests from your model,
+for example 0.1 for one in ten. The rest go to the API as before. Raise it by
+approving again with a bigger rate, or drop --canary to serve all of them.
+
+--force skips the gate. The route is then marked FORCED in `route list`, in
+the capture startup output and in `route savings`, and its avoided cost is
+never counted in the net.
+
+Either way, a request your model gets wrong in a way Throttle can check
+(error, timeout, cut off, bad JSON, bad tool call) falls back to the API.
+Serve approved routes with: throttle capture --route
+Undo with: throttle route revoke --type TYPE
+"""
 
 
 def _route_line(route: Route) -> str:
@@ -898,7 +941,7 @@ def _rate(value: str) -> float:
 def add_parser(subparsers: argparse._SubParsersAction) -> None:
     parser = subparsers.add_parser(
         "route",
-        help="serve approved workload types from your own model, and show the realized savings",
+        help="serve approved workload types from the cheaper model, and show the realized savings",
         description=(
             "Approve a workload type for your own model once `throttle eval` shows it is as good as the API, "
             "then run `throttle capture --route`. Doubtful answers fall back to the API unchanged."
@@ -909,7 +952,12 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
     actions = parser.add_subparsers(dest="route_action", metavar="{approve,list,revoke,savings}")
     actions.required = True
 
-    a = actions.add_parser("approve", help="route one workload type to your model (needs a passing eval)")
+    a = actions.add_parser(
+        "approve",
+        help="route one workload type to your model (needs a passing eval)",
+        description=APPROVE_DESCRIPTION,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
     a.add_argument("--type", required=True, choices=records.WORKLOAD_TYPES, dest="workload_type")
     a.add_argument("--candidate", required=True, help="candidate label used in throttle shadow / eval")
     a.add_argument("--url", required=True, help="OpenAI-compatible server, e.g. http://gpu-box:8000/v1")

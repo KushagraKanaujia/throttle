@@ -63,7 +63,6 @@ import argparse
 import asyncio
 import hashlib
 import json
-import os
 import sys
 import threading
 import uuid
@@ -89,7 +88,7 @@ PINNED = "api"
 RETIRED = "retired"
 STATUSES = (TESTING, MOVED, PINNED, RETIRED)
 STATUS_WORDS = {
-    TESTING: "on the API, being tested",
+    TESTING: "on the API, not tested yet",
     MOVED: "on your model (API fallback on)",
     PINNED: "pinned to the API",
     RETIRED: "removed from the code",
@@ -209,9 +208,17 @@ def request_fits_site(site: scan_mod.CallSite, model: str | None, norm: records.
 # ---------------------------------------------------------------------------
 
 
+def code_span(text: str) -> str:
+    """``text`` as one Markdown code span that cannot be broken out of:
+    backticks become ``'`` and line breaks become spaces, so links, images,
+    @mentions and HTML inside it stay inert."""
+    return "`" + " ".join(str(text).replace("`", "'").split()) + "`"
+
+
 def changes(before: scan_mod.CallSite, after: scan_mod.CallSite) -> list[str]:
     """What changed between two versions of a call site, in plain words.
-    Empty when nothing that affects the answers changed."""
+    Empty when nothing that affects the answers changed. Model names come
+    from the code under review, so they are wrapped in code spans."""
     out: list[str] = []
     if before.prompt_fingerprint != after.prompt_fingerprint:
         if before.prompt_fingerprint is None:
@@ -222,7 +229,8 @@ def changes(before: scan_mod.CallSite, after: scan_mod.CallSite) -> list[str]:
             out.append("prompt edited")
     b_model, a_model = before.model or before.model_expr, after.model or after.model_expr
     if b_model != a_model:
-        out.append(f"model changed from {b_model or 'unknown'} to {a_model or 'unknown'}")
+        out.append(f"model changed from {code_span(b_model) if b_model else 'unknown'} "
+                   f"to {code_span(a_model) if a_model else 'unknown'}")
     if before.has_tools != after.has_tools:
         out.append("tools added" if after.has_tools else "tools removed")
     if before.wants_json != after.wants_json:
@@ -315,11 +323,8 @@ def load_registry(root: Path) -> dict[str, JobEntry]:
 
 def save_registry(root: Path, registry: Mapping[str, JobEntry]) -> Path:
     path = registry_path(root)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(f".{uuid.uuid4().hex[:8]}.tmp")
     doc = {"schema": SCHEMA, "jobs": {k: v.to_json() for k, v in sorted(registry.items())}}
-    tmp.write_text(json.dumps(doc, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-    os.replace(tmp, path)
+    records.write_private_text(path, json.dumps(doc, indent=2, sort_keys=True) + "\n")
     return path
 
 
@@ -704,8 +709,7 @@ def run_job_eval(
         "jobs": results,
     }
     path = job_eval_dir(root) / f"{run_id}.json"
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(document, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    records.write_private_text(path, json.dumps(document, indent=2, sort_keys=True) + "\n")
     document["path"] = str(path)
     return document
 
@@ -894,8 +898,10 @@ def _eval(args: argparse.Namespace, root: Path, transport: httpx.AsyncBaseTransp
         print("No shadow answers matched a job's current prompt. Run `throttle shadow` on captured traffic first.")
     for job, result in doc["jobs"].items():
         judged = result.get("judged") or 0
-        print(f"{job}: {result['verdict']} ({result['wins']} better, {result['ties'] + result.get('order_disagree', 0)} "
-              f"same, {result['losses']} worse of {judged} judged)")
+        unsure = int(result.get("order_disagree") or 0)
+        print(f"{job}: {result['verdict']} ({result['wins']} better, {result['ties']} same, "
+              + (f"{unsure} judge unsure, " if unsure else "")
+              + f"{result['losses']} worse of {judged} judged)")
     print(f"Saved {doc['path']}")
     return EXIT_OK
 

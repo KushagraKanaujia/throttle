@@ -10,7 +10,8 @@
    ids (the same comparison as ``throttle eval``; that run is saved too).
 3. Judge the new model directly against the current owned model on the same
    items: pairwise, both orders (TIE only when both orders say TIE; any other
-   disagreement is ``order_disagree``, scored as a tie), and the same
+   disagreement is ``order_disagree``, scored 0 in the net like a tie but
+   shown apart as judge unsure), and the same
    automatic checks and verdict rule as ``throttle eval`` (with the current
    owned model in the incumbent's place). A failed answer loses to an
    answered one without a judge call; two failed answers are a TIE.
@@ -435,7 +436,7 @@ def watch_hf(repo: str, *, transport: httpx.BaseTransport | None = None) -> dict
 def add_parser(subparsers: argparse._SubParsersAction) -> None:
     parser = subparsers.add_parser(
         "refresh",
-        help="test a new open model against the one you own, on the same saved eval sets",
+        help="test a newer model against the one you moved to, on the same saved eval sets",
         description=(
             "Rerun the saved eval sets of your current owned model on a new open model, "
             "compare it with the API model and with your current model, and say per "
@@ -472,8 +473,10 @@ def _wtl(block: Mapping[str, Any]) -> str:
     n = block["n"]
     if not n:
         return "-"
-    tied = block["ties"] + block.get("order_disagree", 0)
-    return f"{block['wins'] / n:.0%}/{tied / n:.0%}/{block['losses'] / n:.0%}"
+    # Judge unsure (the judge flipped when the answers were swapped) is its
+    # own column, never folded into tie.
+    unsure = int(block.get("order_disagree") or 0)
+    return (f"{block['wins'] / n:.0%}/{block['ties'] / n:.0%}/{unsure / n:.0%}/{block['losses'] / n:.0%}")
 
 
 def render_table(document: Mapping[str, Any]) -> str:
@@ -489,7 +492,7 @@ def render_table(document: Mapping[str, Any]) -> str:
     rows.append("")
     for kind, t in document["types"].items():
         rows.append((f"{kind}: same test as before, eval set sha256 {t['evalset_sha256'][:12]} "
-                     f"({t['exchange_ids']} items); win/tie/loss vs current {_wtl(t['vs_current'])}",
+                     f"({t['exchange_ids']} items); win/tie/unsure/loss vs current {_wtl(t['vs_current'])}",
                      (style_mod.DIM,), "  "))
         for note in t["notes"]:
             rows.append((f"{kind}: {note}", (style_mod.DIM,), "  "))

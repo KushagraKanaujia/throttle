@@ -27,7 +27,8 @@ from __future__ import annotations
 import re
 
 HEADER = "X-Throttle-Job"
-_VALID = re.compile(r"^[A-Za-z0-9._:/@-]{1,120}$")
+# \A ... \Z, not ^ ... $: "$" also matches before a trailing newline.
+_VALID = re.compile(r"\A[A-Za-z0-9._:/@-]{1,120}\Z")
 
 
 def throttle_job(name: str) -> dict[str, str]:

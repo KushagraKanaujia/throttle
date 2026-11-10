@@ -9,13 +9,13 @@ throttle route approve --type extraction --candidate qwen72b@vllm \
     --url http://gpu-box:8000/v1 --model Qwen/Qwen2.5-72B-Instruct
 ```
 
-Approval is refused unless the latest eval for that candidate said BETTER or NO MATERIAL DIFFERENCE for that kind.
+Approval is refused unless the latest eval for that candidate said BETTER or NO MATERIAL DIFFERENCE for that kind, on the same `--model`. `throttle route approve --help` explains the gate.
 
 | Flag | What it does |
 | --- | --- |
 | `--canary 0.1` | Serve only this share of the kind from your model |
 | `--api-key-env VAR` | Environment variable with your server's key |
-| `--force` | Approve without a passing eval. The route is marked FORCED everywhere and is never billable. |
+| `--force` | Approve without a passing eval. The route is marked FORCED everywhere and is never counted in the net. |
 
 `throttle route list` shows routes. `throttle route revoke --type extraction` stops one on the next request.
 
@@ -42,12 +42,12 @@ Limits:
 throttle route savings --month 2026-11 --gpu-hourly-rate 2.49 --gpus 2
 ```
 
-This is the number we bill on.
+This is a realized-savings statement you can audit (good for showing your boss).
 
 - **Avoided cost:** the tokens your model served, priced at the API model's list price. The share of input the API served from its prompt cache for that kind (measured from that month's captures) is priced at the cached rate. With no cache history, all input is priced at the cached rate.
-- **Owned cost:** `--gpu-hourly-rate` x `--gpus` x every hour of the month, or your invoice with `--owned-cost-usd` (labelled OPERATOR-REPORTED).
+- **Owned cost:** `--gpu-hourly-rate` x `--gpus` x every hour of that calendar month (for example "November: 720 h, calendar month"), or your invoice with `--owned-cost-usd` (labelled OPERATOR-REPORTED). The report's 730 h is an average month, used only for its projection.
 - Fallbacks were answered by the API and are already on your API bill. They are not savings.
-- Forced routes are shown on their own line and never billed.
-- If the net is zero or less: no savings, no bill.
+- Forced routes are shown on their own line and never counted in the net.
+- If the net is zero or less, the statement says "No savings this month."
 
 Next: [Refresh](refresh.md).

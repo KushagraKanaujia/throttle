@@ -112,6 +112,23 @@ python -m build
 # Output will be in dist/
 ```
 
+## Cutting a Release
+
+The README and the getting-started docs pin installs and the GitHub Action to
+a full commit SHA. On every release:
+
+1. Move `[Unreleased]` in `CHANGELOG.md` under the new version and date.
+2. Commit, then bump the pinned SHA to that release commit everywhere it
+   appears: `README.md` (install line and `throttle-pr@` action line),
+   `src/throttle/console/docs/getting-started/installation.md`,
+   `src/throttle/console/docs/getting-started/quickstart.md`, and
+   `PINNED_SHA` in `tests/test_style_and_panels.py`. Update the version
+   comment next to each pin too.
+3. Run the full test suite before tagging.
+
+Until the pin moves, people who install from the README get the older code,
+so wording added since the last release may not match what they run yet.
+
 ## Code Quality
 
 ### Syntax Check
