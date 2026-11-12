@@ -49,6 +49,7 @@ import ast
 import hashlib
 import json
 import logging
+import os
 import re
 import subprocess
 from dataclasses import dataclass, field
@@ -75,6 +76,7 @@ MAX_FILE_BYTES = 1_000_000
 MIN_MATCH_CHARS = 12
 TAG_HEADER = "x-throttle-job"
 _TAG_COMMENT = re.compile(r"(?:#|//)\s*throttle-job:\s*([A-Za-z0-9._:/@-]+)")
+_MAX_TOKEN_KEYS = ("max_tokens", "max_completion_tokens", "max_output_tokens", "maxTokens", "maxOutputTokens")
 _GREP_PATTERN = r"completions|responses\.|messages\.|ChatCompletion|litellm|ChatOpenAI|ChatAnthropic|generateText|streamText|generateObject|streamObject"
 
 
@@ -209,6 +211,11 @@ class CallSite:
     # sha256 (first 16 hex) of the call's arguments as written (tools, schemas,
     # few-shot messages, temperature ...); None when not known.
     call_digest: str | None = None
+    # The output token cap when the code passes a literal one (max_tokens,
+    # max_completion_tokens, max_output_tokens, maxTokens, maxOutputTokens).
+    # Used only by `throttle scan` as an upper bound for output tokens; it is
+    # not part of the job's identity, its approval key or its saved JSON.
+    max_tokens: int | None = field(default=None, compare=False)
 
     @property
     def job(self) -> str:
@@ -600,6 +607,17 @@ def _py_shape(node: ast.expr) -> str:
     return ast.unparse(_Anonymize().visit(copy.deepcopy(node)))
 
 
+def _py_max_tokens(kwargs: Mapping[str, ast.expr], names: Mapping[str, ast.expr]) -> int | None:
+    """A literal positive output-token cap, following one name assigned a literal."""
+    for key in _MAX_TOKEN_KEYS:
+        node = kwargs.get(key)
+        if isinstance(node, ast.Name):
+            node = names.get(node.id)
+        if isinstance(node, ast.Constant) and type(node.value) is int and node.value > 0:
+            return node.value
+    return None
+
+
 def scan_python(path: str, source: str) -> list[CallSite]:
     try:
         tree = ast.parse(source)
@@ -684,6 +702,7 @@ def _scan_python_tree(path: str, source: str, tree: ast.Module) -> list[CallSite
             tag=(_valid_tag(_py_tag(kwargs), path, call.lineno)
                  or _valid_tag(_comment_tag(lines, call.lineno), path, call.lineno)),
             call_digest=_py_call_digest(call, names),
+            max_tokens=_py_max_tokens(kwargs, names),
         )
 
     visit(tree, [], None)
@@ -1204,6 +1223,16 @@ def scan_javascript(path: str, source: str) -> list[CallSite]:
                 elif nxt.kind == "ident" and nxt.text in ("throttleJob", "throttle_job"):
                     if k + 3 < close and toks[k + 3].kind == "str":
                         tag = toks[k + 3].value
+        max_tokens = None
+        for key in _MAX_TOKEN_KEYS:
+            if key in fields and max_tokens is None:
+                s, e = js.resolve_span(*fields[key])
+                if s == e and toks[s].kind == "num":
+                    try:
+                        value = int(toks[s].text.replace("_", ""))
+                    except ValueError:
+                        value = 0
+                    max_tokens = value if value > 0 else None
         line = js.line_of(i)
         if api == "ai-sdk" and provider == PROVIDER_UNKNOWN:
             provider = _provider_from_model(model)
@@ -1214,6 +1243,7 @@ def scan_javascript(path: str, source: str) -> list[CallSite]:
             wants_json="response_format" in fields or (api == "ai-sdk" and chain[-1].endswith("Object")),
             tag=_valid_tag(tag, path, line) or _valid_tag(_comment_tag(js.lines, line), path, line),
             call_digest=_digest(" ".join(t.text for t in toks[i + 1:close])),
+            max_tokens=max_tokens,
         ))
     return sites
 
@@ -1247,10 +1277,20 @@ def scan_files(files: Mapping[str, str]) -> list[CallSite]:
     return _number(sites)
 
 
+def _walk(root: Path) -> Iterable[Path]:
+    """Every file under ``root``, never entering a :data:`SKIP_DIRS` folder or
+    a symlinked folder. Pruning here (not after listing) keeps a scan fast on
+    a repo with a large ``node_modules`` or virtualenv."""
+    for dirpath, dirnames, filenames in os.walk(root):
+        dirnames[:] = sorted(d for d in dirnames if d not in SKIP_DIRS)
+        for name in sorted(filenames):
+            yield Path(dirpath) / name
+
+
 def scan_dir(root: Path) -> list[CallSite]:
     root = Path(root)
     files: dict[str, str] = {}
-    for path in sorted(root.rglob("*")):
+    for path in _walk(root):
         rel = path.relative_to(root).as_posix()
         if not path.is_file() or not wanted(rel):
             continue
