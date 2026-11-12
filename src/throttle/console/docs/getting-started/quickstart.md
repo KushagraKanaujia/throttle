@@ -10,7 +10,15 @@ pip install "throttle-pro==0.7.0"
 
 This pins v0.7.0. To install from the source tag instead, see Installation.
 
-## 2. Run the demo
+## 2. Scan your code
+
+```bash
+throttle scan .
+```
+
+It finds every OpenAI and Anthropic call in the folder, prices each one at list price, and names up to two cheaper models to test. Offline, no keys, in seconds. Every dollar is an ESTIMATE and every cheaper model is UNTESTED. See [Scan your code](scan.md).
+
+## 3. Run the demo
 
 ```bash
 throttle demo
@@ -18,7 +26,7 @@ throttle demo
 
 It runs capture, workloads, shadow, eval and report on made-up traffic, offline, with no keys and no GPU. Open `throttle-demo/report.html`. Every number is labelled DEMO. See [Demo](../loop/demo.md).
 
-## 3. Run it on your traffic
+## 4. Run it on your traffic
 
 ```bash
 # capture: a local pass-through proxy

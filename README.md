@@ -33,10 +33,23 @@ MI300X with vLLM, [raw data](validation/hotaisle-mi300x-20261001/)):
 
 ```sh
 pip install "throttle-pro==0.7.0"
+throttle scan .
 throttle demo
 ```
 
 Pin the version so what you install never changes under you.
+
+`throttle scan .` reads the code in the current folder and lists every OpenAI
+and Anthropic call: where it is, which model it uses, what it costs per 1,000
+calls at list price, and up to two cheaper models to test. It needs no API
+key, no network and no traffic, and it writes nothing. It takes seconds on a
+normal repo. Every dollar figure is an ESTIMATE: list price times an assumed
+1,000 tokens in and 300 out per call (change it with `--tokens-in` and
+`--tokens-out`; add `--calls-per-day N` for a monthly figure). The cheaper
+models are UNTESTED. Scan says they cost less, not that they do the job as
+well. It ends with the commands that prove it on your own traffic
+([The loop](#the-loop)). `--json` gives the same data for tools (schema
+`throttle.own.scan/1`).
 
 `throttle demo` runs the whole loop offline on made-up traffic: capture,
 workloads, shadow, eval and report. It needs no API key, no GPU and no
@@ -413,6 +426,8 @@ same function or file.
 | LIST PRICE | A published API price, with the date it was checked and its source page. |
 | ASSUMED | A number you gave us: your GPU hourly rate, or a price from `--prices`. |
 | DEMO | Made up, from `throttle demo`. Not a measurement of anything. |
+| ESTIMATE | From `throttle scan`: list price times a token count per call that is ASSUMED or that you gave. Not measured. |
+| UNTESTED | A cheaper model `throttle scan` names. It costs less at list price. Nobody has checked yet that it does the job as well. |
 
 `route savings --owned-cost-usd` is labelled OPERATOR-REPORTED.
 

@@ -4,6 +4,27 @@ All notable changes to Throttle will be documented in this file.
 
 ## [Unreleased]
 
+### Added
+- `throttle scan [PATH]`: the first run, offline, with no API key, no
+  network and no traffic, and it writes nothing. It finds every OpenAI and
+  Anthropic call in the code (Python, JavaScript, TypeScript), prices each at
+  list price per 1,000 calls (or per month with `--calls-per-day N`), and
+  names up to two cheaper models to test: one tier down from the same
+  provider, then the other provider's model at a similar price. Every dollar
+  figure is labelled ESTIMATE (list price x an ASSUMED 1,000 tokens in and 300
+  out per call; `--tokens-in`/`--tokens-out` change it, and a literal
+  `max_tokens` in the code caps the output). Every cheaper model is labelled
+  UNTESTED. Models set at runtime and models missing from the price table are
+  listed, not priced. It ends with the `capture`, `shadow`, `eval` and
+  `report` commands that test the first pick on real traffic. `--json` prints
+  schema `throttle.own.scan/1`. Listed first in `throttle --help`, the
+  welcome screen and the README.
+
+### Changed
+- The code scanner (`throttle jobs scan`, `pr-check`) no longer walks into
+  `node_modules`, virtualenvs and the other skipped folders before skipping
+  their files, so it is faster on large repos. Results are unchanged.
+
 ## [0.7.0] - 2026-11-10
 
 Stop renting your AI. First release of the loop on PyPI: `pip install "throttle-pro==0.7.0"`.

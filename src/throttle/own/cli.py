@@ -18,6 +18,7 @@ from types import ModuleType
 
 # command name -> module path. Order is the order shown in --help.
 STAGES: dict[str, str] = {
+    "scan": "throttle.own.scan_cost",
     "capture": "throttle.own.capture",
     "workloads": "throttle.own.workloads",
     "shadow": "throttle.own.shadow",
