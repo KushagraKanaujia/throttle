@@ -394,6 +394,7 @@ class ParserAndPlanTests(unittest.TestCase):
         self.assertEqual(
             set(subparser_action.choices),
             {
+                "scan",
                 "plan",
                 "smoke",
                 "benchmark",
@@ -2378,7 +2379,7 @@ class TopLevelHelpTest(unittest.TestCase):
         listing = text.split("positional arguments:", 1)[1].split("options:", 1)[0]
         names = [line.split()[0] for line in listing.splitlines() if line.startswith("    ") and line.split()
                  and not line.startswith("      ")]
-        loop = ["demo", "capture", "workloads", "shadow", "eval", "report", "route", "refresh", "jobs", "pr-check"]
+        loop = ["scan", "demo", "capture", "workloads", "shadow", "eval", "report", "route", "refresh", "jobs", "pr-check"]
         self.assertEqual(names[:len(loop)], loop)
         for serving in ("check", "plan", "smoke", "benchmark", "golden", "autotune", "proxy", "savings"):
             self.assertGreater(names.index(serving), names.index("pr-check"), serving)

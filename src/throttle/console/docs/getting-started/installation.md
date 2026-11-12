@@ -4,15 +4,15 @@
 
 Throttle needs **Python 3.11 or newer**. The command is `throttle`.
 
-Install v0.7.0 from PyPI. Pin the version so what you install never changes under you.
+Install v0.8.0 from PyPI. Pin the version so what you install never changes under you.
 
 ```bash pip
-python3 -m pip install "throttle-pro==0.7.0"
+python3 -m pip install "throttle-pro==0.8.0"
 throttle demo
 ```
 
 ```bash pipx
-pipx install "throttle-pro==0.7.0"
+pipx install "throttle-pro==0.8.0"
 throttle --version
 ```
 
@@ -21,7 +21,7 @@ That gives you the whole loop (`capture`, `workloads`, `shadow`, `eval`, `report
 To install straight from the source you can read, use the release tag:
 
 ```bash
-pip install "git+https://github.com/KushagraKanaujia/throttle@v0.7.0"
+pip install "git+https://github.com/KushagraKanaujia/throttle@v0.8.0"
 ```
 
 
@@ -29,7 +29,7 @@ pip install "git+https://github.com/KushagraKanaujia/throttle@v0.7.0"
 
 | Extra | Install | What it adds |
 | --- | --- | --- |
-| `embeddings` | `pip install "throttle-pro[embeddings]==0.7.0"` | `throttle workloads --embed` (similarity clusters) and the opt-in semantic tier of the caching proxy. |
+| `embeddings` | `pip install "throttle-pro[embeddings]==0.8.0"` | `throttle workloads --embed` (similarity clusters) and the opt-in semantic tier of the caching proxy. |
 
 ## Check your setup
 

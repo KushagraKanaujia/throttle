@@ -14,6 +14,7 @@ capture ──► workloads ──► shadow ──► eval ──► report ─
 
 ## Start here
 
+- **[Scan your code](getting-started/scan.md)**: `throttle scan .` finds the AI calls in your code, what each costs at list price and which cheaper models to test. Offline, no keys.
 - **[Quickstart](getting-started/quickstart.md)**: Run the whole loop on made-up data in a minute, then on your own traffic.
 - **[The loop](loop/overview.md)**: One page per stage, with every command and flag.
 - **[Honest numbers](loop/honest-numbers.md)**: The labels, and the rules that keep a savings number defensible.

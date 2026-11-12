@@ -48,6 +48,7 @@ DOCS_NAV: list[dict[str, Any]] = [
     {"tab": "docs", "group": "Getting Started", "pages": [
         ("index", "Introduction"),
         ("getting-started/quickstart", "Quickstart"),
+        ("getting-started/scan", "Scan your code"),
         ("getting-started/installation", "Installation"),
         ("getting-started/first-check", "Your first cost check"),
         ("getting-started/free-gpu", "Try on a free GPU"),

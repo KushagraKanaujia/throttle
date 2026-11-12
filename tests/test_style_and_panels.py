@@ -174,7 +174,7 @@ def test_narrow_terminal_gets_panels_without_a_frame(monkeypatch) -> None:
     assert box.splitlines()[0] == "Verdict"
     screen = welcome_screen()
     assert not any(ch in screen for ch in "┌┐└┘")
-    assert "1. See the whole loop" in screen
+    assert "1. Find the AI calls" in screen and "2. See the whole loop" in screen
     # 60 columns and up keep the frame.
     monkeypatch.setenv("COLUMNS", "60")
     assert Style(colour=False, unicode=True).panel(["x"]).startswith("┌")
@@ -433,7 +433,7 @@ def readme_section(title: str) -> str:
 
 def test_readme_install_and_action_are_pinned() -> None:
     text = (REPO / "README.md").read_text(encoding="utf-8")
-    assert 'pip install "throttle-pro==0.7.0"' in text
+    assert 'pip install "throttle-pro==0.8.0"' in text
     assert "PyPI is behind" not in text
     assert f"uses: KushagraKanaujia/throttle/.github/actions/throttle-pr@{PINNED_SHA} # v0.7.0" in text
     assert "Pin the action by its full commit SHA" in text
@@ -441,7 +441,7 @@ def test_readme_install_and_action_are_pinned() -> None:
     assert not re.search(r"pip install git\+https://github\.com/KushagraKanaujia/throttle\s*$", text, re.M)
     for doc in ("getting-started/installation.md", "getting-started/quickstart.md"):
         body = (REPO / "src/throttle/console/docs" / doc).read_text(encoding="utf-8")
-        assert 'throttle-pro==0.7.0' in body, doc
+        assert 'throttle-pro==0.8.0' in body, doc
         assert "behind until" not in body, doc
         assert "own/mvp" not in body and "pipx upgrade" not in body, doc
 

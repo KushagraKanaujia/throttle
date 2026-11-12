@@ -291,8 +291,9 @@ def test_no_args_prints_the_loop_and_exits_zero(capsys, monkeypatch):
     assert len(lines) <= 20
     assert "Throttle " + __version__ in out
     assert "Throttle: stop renting your AI. Cut the bill." in out
-    # The loop, in order: demo -> capture -> workloads -> shadow -> eval -> report.
-    order = ["1. See the whole loop", "throttle demo", "2. Capture", "throttle capture",
+    # The loop, in order: scan -> demo -> capture -> workloads -> shadow -> eval -> report.
+    order = ["1. Find the AI calls", "throttle scan .", "2. See the whole loop", "throttle demo",
+             "3. Capture", "throttle capture",
              "throttle workloads", "throttle shadow", "throttle eval", "throttle report",
              "throttle route approve"]
     positions = [out.index(text) for text in order]

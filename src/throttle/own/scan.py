@@ -49,6 +49,7 @@ import ast
 import hashlib
 import json
 import logging
+import os
 import re
 import subprocess
 from dataclasses import dataclass, field
@@ -75,7 +76,14 @@ MAX_FILE_BYTES = 1_000_000
 MIN_MATCH_CHARS = 12
 TAG_HEADER = "x-throttle-job"
 _TAG_COMMENT = re.compile(r"(?:#|//)\s*throttle-job:\s*([A-Za-z0-9._:/@-]+)")
+_MAX_TOKEN_KEYS = ("max_tokens", "max_completion_tokens", "max_output_tokens", "maxTokens", "maxOutputTokens")
 _GREP_PATTERN = r"completions|responses\.|messages\.|ChatCompletion|litellm|ChatOpenAI|ChatAnthropic|generateText|streamText|generateObject|streamObject"
+# Every call the scanner can classify contains one of these words, so a file
+# without any of them is skipped before it is parsed (most files in a repo).
+_PREFILTER = re.compile(_GREP_PATTERN)
+# SDK chain segments that wrap the same call: client.messages.with_raw_response.create
+_PASSTHROUGH = frozenset({"with_raw_response", "with_streaming_response"})
+_ANTHROPIC_IMPORT_JS = re.compile(r"""['"]@anthropic-ai/sdk|['"]anthropic['"]""")
 
 
 # ---------------------------------------------------------------------------
@@ -209,6 +217,17 @@ class CallSite:
     # sha256 (first 16 hex) of the call's arguments as written (tools, schemas,
     # few-shot messages, temperature ...); None when not known.
     call_digest: str | None = None
+    # The output token cap when the code passes a literal one (max_tokens,
+    # max_completion_tokens, max_output_tokens, maxTokens, maxOutputTokens).
+    # Used only by `throttle scan` as an upper bound for output tokens; it is
+    # not part of the job's identity, its approval key or its saved JSON.
+    max_tokens: int | None = field(default=None, compare=False)
+    # When the model is set at run time: a literal default written next to it
+    # (os.getenv("MODEL", "gpt-4o"), process.env.MODEL ?? "gpt-4o", a
+    # parameter default), and the ``**kwargs`` the model comes in through.
+    # Used only by `throttle scan`; not part of identity or saved JSON.
+    model_default: str | None = field(default=None, compare=False)
+    model_spread: str | None = field(default=None, compare=False)
 
     @property
     def job(self) -> str:
@@ -347,7 +366,11 @@ def _chain(node: ast.expr) -> list[str]:
     return list(reversed(names))
 
 
-def _classify_py(chain: list[str], kwargs: Mapping[str, ast.expr], litellm_names: set[str]) -> tuple[str, str] | None:
+def _classify_py(chain: list[str], kwargs: Mapping[str, ast.expr], litellm_names: set[str], *,
+                 spread: bool = False, anthropic_module: bool = False) -> tuple[str, str] | None:
+    """``spread``: the call passes ``**kwargs``, so the model may come in
+    through them. ``anthropic_module``: the file imports ``anthropic``."""
+    chain = [part for part in chain if part not in _PASSTHROUGH]
     if not chain:
         return None
     last = chain[-1]
@@ -361,6 +384,8 @@ def _classify_py(chain: list[str], kwargs: Mapping[str, ast.expr], litellm_names
     if len(chain) >= 2 and chain[-2] == "messages" and last in _CHAT_ENDINGS:
         if "model" in kwargs and ("max_tokens" in kwargs or "messages" in kwargs):
             return PROVIDER_ANTHROPIC, "messages"
+        if spread and "model" not in kwargs and anthropic_module:
+            return PROVIDER_ANTHROPIC, "messages"   # client.messages.create(**params)
         return None
     if len(chain) >= 2 and chain[-2] == "completions" and last in _CHAT_ENDINGS and "prompt" in kwargs:
         return PROVIDER_OPENAI, "completions"
@@ -600,6 +625,67 @@ def _py_shape(node: ast.expr) -> str:
     return ast.unparse(_Anonymize().visit(copy.deepcopy(node)))
 
 
+def _py_default(node: ast.expr | None, names: Mapping[str, ast.expr], params: Mapping[str, ast.expr],
+                depth: int = 0) -> str | None:
+    """A literal default for a model set at run time: ``os.getenv("M", "x")``,
+    ``os.environ.get("M", "x")``, ``cfg.get("model", "x")``, ``m or "x"``, a
+    parameter default ``def f(model="x")``, following plain names."""
+    if node is None or depth > 4:
+        return None
+
+    def literal(value: ast.expr | None) -> str | None:
+        if isinstance(value, ast.Constant) and isinstance(value.value, str):
+            text = value.value.strip()
+            if text and len(text) <= 100 and not any(ch.isspace() for ch in text):
+                return text
+        return None
+
+    if isinstance(node, ast.Name):
+        if node.id in names and names[node.id] is not node:
+            return _py_default(names[node.id], names, params, depth + 1)
+        if node.id in params:
+            return literal(params[node.id])
+        return None
+    if isinstance(node, ast.Call) and isinstance(node.func, (ast.Attribute, ast.Name)):
+        fname = node.func.attr if isinstance(node.func, ast.Attribute) else node.func.id
+        if fname in ("getenv", "get") and len(node.args) == 2:
+            return literal(node.args[1])
+        if fname in ("getenv", "get"):
+            for kw in node.keywords:
+                if kw.arg == "default":
+                    return literal(kw.value)
+        return None
+    if isinstance(node, ast.BoolOp) and isinstance(node.op, ast.Or):
+        return literal(node.values[-1])
+    return None
+
+
+def _py_params(func: ast.AST | None) -> dict[str, ast.expr]:
+    """Parameter name -> default expression for one function."""
+    if not isinstance(func, (ast.FunctionDef, ast.AsyncFunctionDef)):
+        return {}
+    args = func.args
+    positional = args.posonlyargs + args.args
+    out: dict[str, ast.expr] = {}
+    for arg, default in zip(positional[len(positional) - len(args.defaults):], args.defaults):
+        out[arg.arg] = default
+    for arg, default in zip(args.kwonlyargs, args.kw_defaults):
+        if default is not None:
+            out[arg.arg] = default
+    return out
+
+
+def _py_max_tokens(kwargs: Mapping[str, ast.expr], names: Mapping[str, ast.expr]) -> int | None:
+    """A literal positive output-token cap, following one name assigned a literal."""
+    for key in _MAX_TOKEN_KEYS:
+        node = kwargs.get(key)
+        if isinstance(node, ast.Name):
+            node = names.get(node.id)
+        if isinstance(node, ast.Constant) and type(node.value) is int and node.value > 0:
+            return node.value
+    return None
+
+
 def scan_python(path: str, source: str) -> list[CallSite]:
     try:
         tree = ast.parse(source)
@@ -616,9 +702,14 @@ def _scan_python_tree(path: str, source: str, tree: ast.Module) -> list[CallSite
     env = _PyEnv(tree)
     lines = source.splitlines()
     litellm_names: set[str] = set()
+    anthropic_module = False
     for node in ast.walk(tree):
         if isinstance(node, ast.ImportFrom) and node.module == "litellm":
             litellm_names.update(alias.asname or alias.name for alias in node.names)
+        if isinstance(node, ast.ImportFrom) and (node.module or "").split(".")[0] == "anthropic":
+            anthropic_module = True
+        if isinstance(node, ast.Import) and any(a.name.split(".")[0] == "anthropic" for a in node.names):
+            anthropic_module = True
     sites: list[CallSite] = []
 
     def visit(node: ast.AST, scope: list[str], func: ast.AST | None) -> None:
@@ -637,17 +728,30 @@ def _scan_python_tree(path: str, source: str, tree: ast.Module) -> list[CallSite
 
     def _py_call(call: ast.Call, scope: list[str], func: ast.AST | None) -> CallSite | None:
         kwargs = {k.arg: k.value for k in call.keywords if k.arg}
-        found = _classify_py(_chain(call.func), kwargs, litellm_names)
+        spreads = [k.value for k in call.keywords if k.arg is None]
+        names = env.for_function(func)
+        # **params where params is a dict literal in this function or module:
+        # read its keys like keyword arguments (the call's own keywords win).
+        for value in spreads:
+            target = names.get(value.id) if isinstance(value, ast.Name) else value
+            if isinstance(target, ast.Dict):
+                for key, item in _dict_fields(target).items():
+                    kwargs.setdefault(key, item)
+        found = _classify_py(_chain(call.func), kwargs, litellm_names,
+                             spread=bool(spreads), anthropic_module=anthropic_module)
         if found is None:
             return None
         provider, api = found
-        names = env.for_function(func)
         model_node = kwargs.get("model")
         if model_node is None and api == "langchain":
             model_node = kwargs.get("model_name")
         model_t = _py_template(model_node, names) if model_node is not None else None
         model = model_t.parts[0] if model_t is not None and len(model_t.parts) == 1 else None
         model_expr = None if model or model_node is None else ast.unparse(model_node)
+        model_default = None if model else _py_default(model_node, names, _py_params(func))
+        model_spread = None
+        if model_node is None and spreads:
+            model_spread = "**" + ast.unparse(spreads[0])
         system = user = None
         dynamic = False
         if api in ("chat.completions", "litellm"):
@@ -684,6 +788,8 @@ def _scan_python_tree(path: str, source: str, tree: ast.Module) -> list[CallSite
             tag=(_valid_tag(_py_tag(kwargs), path, call.lineno)
                  or _valid_tag(_comment_tag(lines, call.lineno), path, call.lineno)),
             call_digest=_py_call_digest(call, names),
+            max_tokens=_py_max_tokens(kwargs, names),
+            model_default=model_default, model_spread=model_spread,
         )
 
     visit(tree, [], None)
@@ -1099,7 +1205,11 @@ class _JsFile:
         return system, user, dynamic
 
 
-def _js_classify(chain: list[str], fields: Mapping[str, Any]) -> tuple[str, str] | None:
+def _js_classify(chain: list[str], fields: Mapping[str, Any], *, opaque: bool = False,
+                 anthropic_module: bool = False) -> tuple[str, str] | None:
+    """``opaque``: the request is not an object literal with a ``model`` key
+    (``create(params)``, ``create({...params})``)."""
+    chain = [part for part in chain if part not in _PASSTHROUGH]
     last = chain[-1]
     if len(chain) >= 3 and chain[-3] == "chat" and chain[-2] == "completions" and last in _CHAT_ENDINGS:
         return PROVIDER_OPENAI, "chat.completions"
@@ -1108,6 +1218,8 @@ def _js_classify(chain: list[str], fields: Mapping[str, Any]) -> tuple[str, str]
     if len(chain) >= 2 and chain[-2] == "messages" and last in _CHAT_ENDINGS:
         if "model" in fields and ("max_tokens" in fields or "messages" in fields):
             return PROVIDER_ANTHROPIC, "messages"
+        if opaque and anthropic_module:
+            return PROVIDER_ANTHROPIC, "messages"   # anthropic.messages.create(params)
         return None
     if len(chain) >= 2 and chain[-2] == "completions" and last in _CHAT_ENDINGS and "prompt" in fields:
         return PROVIDER_OPENAI, "completions"
@@ -1119,6 +1231,7 @@ def _js_classify(chain: list[str], fields: Mapping[str, Any]) -> tuple[str, str]
 def scan_javascript(path: str, source: str) -> list[CallSite]:
     js = _JsFile(path, source)
     toks = js.tokens
+    anthropic_module = bool(_ANTHROPIC_IMPORT_JS.search(source))
     sites: list[CallSite] = []
     for i, tok in enumerate(toks):
         if tok.kind != "punct" or tok.text != "(" or i == 0 or toks[i - 1].kind != "ident":
@@ -1138,11 +1251,28 @@ def scan_javascript(path: str, source: str) -> list[CallSite]:
         fields: dict[str, tuple[int, int]] = {}
         if i + 1 < close and toks[i + 1].text == "{":
             fields = _object_fields(toks, i + 1, _match_close(toks, i + 1))
-        found = _js_classify(chain, fields)
+        first_arg = ""
+        if i + 1 < close:
+            k = i + 1
+            while k < close and toks[k].text != ",":
+                if toks[k].kind == "punct" and toks[k].text in _OPEN:
+                    k = _match_close(toks, k)
+                k += 1
+            first_arg = source[toks[i + 1].start: toks[k - 1].start + len(toks[k - 1].text)]
+        opaque = "model" not in fields and bool(first_arg)
+        # an AI SDK call takes an options object; streamText(part.text) is
+        # someone's own function of the same name
+        if (len(chain) == 1 and chain[0] in _AI_SDK and first_arg
+                and not (first_arg.startswith("{") or re.fullmatch(r"[A-Za-z_$][\w$]*", first_arg))):
+            continue
+        found = _js_classify(chain, fields, opaque=opaque, anthropic_module=anthropic_module)
         if found is None:
             continue
         provider, api = found
-        model = model_expr = None
+        model = model_expr = model_default = None
+        # create(params) or create({ ...params }): the model comes in through them
+        model_spread = (" ".join(first_arg.split())
+                        if opaque and (not first_arg.lstrip().startswith("{") or "..." in first_arg) else None)
         if "model" in fields:
             ms, me = js.resolve_span(*fields["model"])
             model = js.literal(ms, me)
@@ -1153,6 +1283,11 @@ def scan_javascript(path: str, source: str) -> list[CallSite]:
                     model = toks[ms + 2].value
             if model is None:
                 model_expr = source[toks[ms].start: toks[me].start + len(toks[me].text)]
+                # process.env.MODEL ?? "gpt-4o"  /  || "gpt-4o"
+                if me > ms and toks[me].kind == "str" and toks[me - 1].text in ("??", "||"):
+                    value = str(toks[me].value or "").strip()
+                    if value and not any(ch.isspace() for ch in value):
+                        model_default = value
         system = user = None
         dynamic = False
         if api in ("chat.completions",) or (api in ("messages", "ai-sdk") and "messages" in fields):
@@ -1204,6 +1339,16 @@ def scan_javascript(path: str, source: str) -> list[CallSite]:
                 elif nxt.kind == "ident" and nxt.text in ("throttleJob", "throttle_job"):
                     if k + 3 < close and toks[k + 3].kind == "str":
                         tag = toks[k + 3].value
+        max_tokens = None
+        for key in _MAX_TOKEN_KEYS:
+            if key in fields and max_tokens is None:
+                s, e = js.resolve_span(*fields[key])
+                if s == e and toks[s].kind == "num":
+                    try:
+                        value = int(toks[s].text.replace("_", ""))
+                    except ValueError:
+                        value = 0
+                    max_tokens = value if value > 0 else None
         line = js.line_of(i)
         if api == "ai-sdk" and provider == PROVIDER_UNKNOWN:
             provider = _provider_from_model(model)
@@ -1214,6 +1359,7 @@ def scan_javascript(path: str, source: str) -> list[CallSite]:
             wants_json="response_format" in fields or (api == "ai-sdk" and chain[-1].endswith("Object")),
             tag=_valid_tag(tag, path, line) or _valid_tag(_comment_tag(js.lines, line), path, line),
             call_digest=_digest(" ".join(t.text for t in toks[i + 1:close])),
+            max_tokens=max_tokens, model_default=model_default, model_spread=model_spread,
         ))
     return sites
 
@@ -1231,6 +1377,8 @@ def wanted(path: str) -> bool:
 
 
 def scan_source(path: str, source: str) -> list[CallSite]:
+    if not _PREFILTER.search(source):
+        return []   # no AI call this scanner can read; skip the parse
     if path.endswith(PY_SUFFIXES):
         return scan_python(path, source)
     if path.endswith(JS_SUFFIXES):
@@ -1247,10 +1395,20 @@ def scan_files(files: Mapping[str, str]) -> list[CallSite]:
     return _number(sites)
 
 
+def _walk(root: Path) -> Iterable[Path]:
+    """Every file under ``root``, never entering a :data:`SKIP_DIRS` folder or
+    a symlinked folder. Pruning here (not after listing) keeps a scan fast on
+    a repo with a large ``node_modules`` or virtualenv."""
+    for dirpath, dirnames, filenames in os.walk(root):
+        dirnames[:] = sorted(d for d in dirnames if d not in SKIP_DIRS)
+        for name in sorted(filenames):
+            yield Path(dirpath) / name
+
+
 def scan_dir(root: Path) -> list[CallSite]:
     root = Path(root)
     files: dict[str, str] = {}
-    for path in sorted(root.rglob("*")):
+    for path in _walk(root):
         rel = path.relative_to(root).as_posix()
         if not path.is_file() or not wanted(rel):
             continue

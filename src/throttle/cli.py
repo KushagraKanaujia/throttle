@@ -81,13 +81,18 @@ TAGLINE = (
 # The order `throttle --help` lists commands in: the money loop first, then
 # the code-review commands, then the serving tools (advanced).
 HELP_ORDER = (
-    "demo", "capture", "workloads", "shadow", "eval", "report", "route", "refresh",
+    "scan", "demo", "capture", "workloads", "shadow", "eval", "report", "route", "refresh",
     "jobs", "pr-check", "pr-comment",
 )
 
 GETTING_STARTED = """\
-Start here: the whole loop on made-up data (offline, no keys, every number
-labelled DEMO):
+Start here: find the AI calls in your code, what they cost at list price and
+which cheaper models to test (offline, no keys, about 30 seconds; every
+dollar is an ESTIMATE and every cheaper model is UNTESTED):
+    throttle scan .
+
+Then the whole loop on made-up data (offline, no keys, every number labelled
+DEMO):
     throttle demo
 
 The money loop, on your own traffic:
@@ -121,7 +126,7 @@ The money loop, on your own traffic:
        throttle refresh
 
 In your code:
-  throttle jobs scan   finds every OpenAI/Anthropic call and tracks it as a job.
+  throttle jobs scan   finds the OpenAI/Anthropic SDK calls, one job each.
   throttle pr-check    the pull request comment (or the Throttle for GitHub
                        action): what an added or changed AI job costs, the
                        proof, and what happens next. A changed prompt is
@@ -2348,13 +2353,14 @@ def _render_watch_snap(snap) -> None:
 
 WELCOME_TAGLINE = "Throttle: stop renting your AI. Cut the bill."
 WELCOME_STEPS = (
+    ("Find the AI calls in your code, offline, no keys:", None, (
+        "throttle scan .",
+    )),
     ("See the whole loop on made-up data:", "offline, no keys, every number labelled DEMO.", (
         "throttle demo",
     )),
-    ("Capture your OpenAI / Anthropic traffic:", None, (
+    ("Capture your traffic, see what each job costs:", None, (
         "throttle capture",
-    )),
-    ("See each kind of AI job and what it costs:", None, (
         "throttle workloads",
     )),
     ("Test a cheaper model on it, then eval it:", None, (
