@@ -126,7 +126,7 @@ The money loop, on your own traffic:
        throttle refresh
 
 In your code:
-  throttle jobs scan   finds every OpenAI/Anthropic call and tracks it as a job.
+  throttle jobs scan   finds the OpenAI/Anthropic SDK calls, one job each.
   throttle pr-check    the pull request comment (or the Throttle for GitHub
                        action): what an added or changed AI job costs, the
                        proof, and what happens next. A changed prompt is

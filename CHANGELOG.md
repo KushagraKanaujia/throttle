@@ -6,24 +6,41 @@ All notable changes to Throttle will be documented in this file.
 
 ### Added
 - `throttle scan [PATH]`: the first run, offline, with no API key, no
-  network and no traffic, and it writes nothing. It finds every OpenAI and
-  Anthropic call in the code (Python, JavaScript, TypeScript), prices each at
-  list price per 1,000 calls (or per month with `--calls-per-day N`), and
-  names up to two cheaper models to test: one tier down from the same
-  provider, then the other provider's model at a similar price. Every dollar
-  figure is labelled ESTIMATE (list price x an ASSUMED 1,000 tokens in and 300
-  out per call; `--tokens-in`/`--tokens-out` change it, and a literal
-  `max_tokens` in the code caps the output). Every cheaper model is labelled
-  UNTESTED. Models set at runtime and models missing from the price table are
-  listed, not priced. It ends with the `capture`, `shadow`, `eval` and
-  `report` commands that test the first pick on real traffic. `--json` prints
-  schema `throttle.own.scan/1`. Listed first in `throttle --help`, the
-  welcome screen and the README.
+  network and no traffic, and it writes nothing. It finds the direct OpenAI
+  and Anthropic SDK calls it can read (Python, JavaScript, TypeScript),
+  prices each at list price per 1,000 calls (or per month with
+  `--calls-per-day N`), and names up to two cheaper models to test: one tier
+  down from the same provider, then the other provider's model at a similar
+  price. Every dollar figure is labelled ESTIMATE (list price x an ASSUMED
+  1,000 tokens in and 300 out per call; `--tokens-in`/`--tokens-out` change
+  it, and a literal `max_tokens` in the code caps the output). Every cheaper
+  model is labelled UNTESTED. A model set at runtime is priced from a literal
+  default next to it (`os.getenv("MODEL", "gpt-4o")`, `?? "gpt-4o"`, a
+  parameter default), labelled "(default)", or from `--model NAME`, labelled
+  "(--model)"; otherwise it is listed, not priced. Tests, specs, examples,
+  evals and benchmarks are left out of the totals (`--all` puts them back).
+  The table shows the priced calls, most expensive first, up to 15. It ends
+  with the `capture`, `shadow`, `eval` and `report` commands that test the
+  first pick on real traffic (a Claude pick uses Anthropic's
+  OpenAI-compatible endpoint). `--json` prints schema `throttle.own.scan/1`.
+  Listed first in `throttle --help` and the welcome screen. Not in 0.7.0:
+  the README install block gains `throttle scan .` with the 0.8.0 release.
 
 ### Changed
 - The code scanner (`throttle jobs scan`, `pr-check`) no longer walks into
   `node_modules`, virtualenvs and the other skipped folders before skipping
-  their files, so it is faster on large repos. Results are unchanged.
+  their files, and skips a file without any AI call word before parsing it,
+  so it is much faster on large repos.
+- The code scanner now also finds `client.messages.create(**params)` in a
+  file that imports `anthropic` (and `anthropic.messages.create(params)` in
+  JS/TS), calls through `with_raw_response` / `with_streaming_response`, and
+  reads the model and prompt from a `**params` dict literal defined in the
+  same function or module. A job found this way is new to `jobs scan` and
+  `pr-check`, and a job whose model or prompt is now read from such a dict
+  gets a new approval key, so it needs a new eval before it can move.
+- `streamText(x)` and the other AI SDK names are no longer taken for an AI
+  call when the argument is not an options object (for example a local
+  `streamText(part.text)` helper).
 
 ## [0.7.0] - 2026-11-10
 

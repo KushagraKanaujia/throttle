@@ -3,20 +3,21 @@
 *Find the AI calls in your code, what each costs at list price, and which cheaper models to test. Offline, in seconds.*
 
 ```bash
-pip install "throttle-pro==0.7.0"
 throttle scan .
 ```
 
-It needs no API key, no network, no GPU and no traffic, and it writes nothing. It reads the Python, JavaScript and TypeScript files in the folder (skipping `node_modules`, virtualenvs, `dist`, `build` and similar) and finds every OpenAI and Anthropic call, the same way `throttle jobs scan` does.
+Needs Throttle 0.8.0 or later; 0.7.0 does not have it. It needs no API key, no network, no GPU and no traffic, and it writes nothing. It reads the Python, JavaScript and TypeScript files in the folder (skipping `node_modules`, virtualenvs, `dist`, `build` and similar) and finds the direct OpenAI and Anthropic SDK calls it can read, the same way `throttle jobs scan` does.
 
 For each call it shows:
 
 - **Where it is**: the job name (a `# throttle-job: name` tag, or the function) and `file:line`.
-- **The model**: the literal name in the code, or "set at runtime" when the code reads it from a variable or setting.
+- **The model**: the literal name in the code. When the code sets it at runtime, the default written next to it (`os.getenv("MODEL", "gpt-4o")`, `process.env.MODEL ?? "gpt-4o"`, `def f(model="gpt-4o")`), marked "(default)", or the model you name with `--model NAME`, marked "(--model)".
 - **What it costs**: per 1,000 calls at list price, from the bundled price table. With `--calls-per-day N` it shows dollars per month instead (N calls a day for each job, x 30 days).
 - **Up to two cheaper models to test**, each marked UNTESTED.
 
-It ends with one summary line, for example "6 AI calls found, 4 priced; moving the priced ones to the first candidate could cut about 61% of their list-price cost, ESTIMATE", and the commands that test the first candidate on your own traffic.
+The table lists the priced calls, most expensive first, up to 15 (`--all` lists every one). It ends with one summary line, for example "6 AI calls found, 4 priced. Moving the priced ones to the first candidate could cut about 61% of their list-price cost, if every call site runs equally often (ESTIMATE)", and the commands that test the first candidate on your own traffic.
+
+Calls in tests, specs, examples, evals and benchmarks (`tests/`, `__tests__/`, `*.test.ts`, `test_*.py`, `examples/`, `evals/` and similar) are left out of the totals and counted on one line. `--all` puts them back. When every call is in one of them, they are all counted.
 
 ## What the numbers are
 
@@ -42,9 +43,9 @@ All comparisons are list cost per call at the token counts above. A model must c
 
 ## What it cannot price
 
-- **A model set at runtime** (`model=os.environ["CHAT_MODEL"]`, `model: config.model`). It is listed with the code that sets it.
-- **A model that is not in the price table**, such as a fine-tune or a deployment name. It is listed by name. Add a price with `--prices FILE`.
-- **Calls through your own wrapper or another SDK.** They are not found yet.
+- **A model set at runtime with no default in the code** (`model=os.environ["CHAT_MODEL"]`, `model: config.model`, `create(**params)`). It is listed with the code that sets it. Rerun with `--model NAME` to price those calls as the model you run.
+- **A model that is not in the price table**, such as a fine-tune, a deployment name, another provider's model or an older model the price page no longer lists. It is listed by name. Add a price with `--prices FILE`.
+- **Calls through your own wrapper, another SDK or an agent framework.** They are not found. `throttle capture` sees them on real traffic.
 
 When nothing is found, scan says what it looks for and exits 0.
 
@@ -62,8 +63,8 @@ throttle eval --candidate gpt-4o-mini --judge-model gpt-4.1 --judge-key-env OPEN
 throttle report --candidate gpt-4o-mini --candidate-model gpt-4o-mini
 ```
 
-Scan prints these commands with its own first pick filled in. Each step has its own page under [The loop](../loop/overview.md).
+Scan prints these commands with its own first pick filled in. When the pick is a Claude model, the shadow step uses `https://api.anthropic.com/v1` (Anthropic's OpenAI-compatible endpoint, offered for testing) with `ANTHROPIC_API_KEY`, and when the code has no OpenAI calls the judge is a Claude model (`--judge-provider anthropic`). Each step has its own page under [The loop](../loop/overview.md).
 
 ## For tools
 
-`throttle scan . --json` prints the same data as JSON with `"schema": "throttle.own.scan/1"`: the assumptions, a summary, one entry per call (with `status` `priced`, `model_set_at_runtime`, `model_not_in_price_table` or `not_priced_at_this_size`) and each candidate with `"status": "UNTESTED"`.
+`throttle scan . --json` prints the same data as JSON with `"schema": "throttle.own.scan/1"`: the assumptions, a summary, one entry per call, tests and examples included with `"counted": false` (with `status` `priced`, `model_set_at_runtime`, `model_not_in_price_table` or `not_priced_at_this_size`) and each candidate with `"status": "UNTESTED"`.

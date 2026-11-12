@@ -33,23 +33,27 @@ MI300X with vLLM, [raw data](validation/hotaisle-mi300x-20261001/)):
 
 ```sh
 pip install "throttle-pro==0.7.0"
-throttle scan .
 throttle demo
 ```
 
 Pin the version so what you install never changes under you.
 
-`throttle scan .` reads the code in the current folder and lists every OpenAI
-and Anthropic call: where it is, which model it uses, what it costs per 1,000
-calls at list price, and up to two cheaper models to test. It needs no API
-key, no network and no traffic, and it writes nothing. It takes seconds on a
-normal repo. Every dollar figure is an ESTIMATE: list price times an assumed
-1,000 tokens in and 300 out per call (change it with `--tokens-in` and
-`--tokens-out`; add `--calls-per-day N` for a monthly figure). The cheaper
-models are UNTESTED. Scan says they cost less, not that they do the job as
-well. It ends with the commands that prove it on your own traffic
-([The loop](#the-loop)). `--json` gives the same data for tools (schema
-`throttle.own.scan/1`).
+New in 0.8.0, not in 0.7.0: `throttle scan .` reads the code in the current
+folder and lists the OpenAI and Anthropic SDK calls it can read: where each
+one is, which model it uses, what it costs per 1,000 calls at list price, and
+up to two cheaper models to test. It needs no API key, no network and no
+traffic, and it writes nothing. It takes seconds on a normal repo. Every
+dollar figure is an ESTIMATE: list price times an assumed 1,000 tokens in and
+300 out per call (change it with `--tokens-in` and `--tokens-out`; add
+`--calls-per-day N` for a monthly figure). The cheaper models are UNTESTED.
+Scan says they cost less, not that they do the job as well. Tests, examples
+and evals are left out of the totals (`--all` puts them back). A model set at
+runtime is priced from a default written in the code, or from `--model NAME`.
+Calls through your own wrapper or an agent framework are not found; `throttle
+capture` sees them on real traffic. Scan ends with the commands that prove it
+on your own traffic ([The loop](#the-loop)). `--json` gives the same data for
+tools (schema `throttle.own.scan/1`). Until 0.8.0 is on PyPI, run it from a
+clone of this repo (`pip install -e .`).
 
 `throttle demo` runs the whole loop offline on made-up traffic: capture,
 workloads, shadow, eval and report. It needs no API key, no GPU and no

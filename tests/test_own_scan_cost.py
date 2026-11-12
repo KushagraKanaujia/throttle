@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import json
 import math
+import re
 import socket
+import tomllib
 from pathlib import Path
 
 import pytest
@@ -384,6 +386,7 @@ def test_runtime_and_unknown_models_are_listed_not_priced(tmp_path, capsys, plai
     runtime = jobs["answer"]
     assert runtime["status"] == STATUS_RUNTIME and runtime["model"] is None
     assert runtime["model_source"] == "runtime" and runtime["model_expr"] == "os.environ['CHAT_MODEL']"
+    assert runtime["priced_model"] is None and runtime["where"] == "app" and runtime["counted"] is True
     assert runtime["per_call_usd"] is None and runtime["candidates"] == []
     unknown = jobs["draftReply"]
     assert unknown["status"] == STATUS_UNKNOWN and unknown["model"] == "acme-finetune-v2"
@@ -424,9 +427,13 @@ def test_json_schema_is_stable(tmp_path, capsys, plain) -> None:
     assert (a["calls_per_day"], a["calls_per_day_source"], a["days_per_month"], a["quality"]) == (
         2000, "flag", 30, "UNTESTED")
     assert a["price_labels"] and all(label.startswith("LIST PRICE (") for label in a["price_labels"])
+    assert (a["runtime_model"], a["runtime_model_source"]) == (None, None)
     s = data["summary"]
-    assert (s["calls_found"], s["priced"], s["not_priced"], s["with_candidate"]) == (6, 4, 2, 4)
+    assert (s["calls_found"], s["counted"], s["not_counted_tests_examples"], s["priced"], s["not_priced"],
+            s["with_candidate"]) == (6, 6, 0, 4, 2, 4)
+    assert s["volume"] == "the same for every call site"
     job_keys = {"job", "path", "line", "function", "language", "provider", "api", "model", "model_expr",
+                "model_default", "model_spread", "priced_model", "where", "counted",
                 "model_source", "status", "tokens_in", "tokens_out", "max_tokens",
                 "tokens_out_capped_by_max_tokens", "price", "per_call_usd", "per_1k_calls_usd", "monthly_usd",
                 "candidates"}
@@ -478,21 +485,30 @@ def test_end_to_end_on_a_python_and_js_repo_offline_and_writes_nothing(tmp_path,
                    "chat", "web/src/chat.js:6", "claude-opus-4-5",
                    "cheaper at list price, UNTESTED on your traffic.",
                    "* output capped by a literal max_tokens in the code.",
-                   "6 AI calls found, 4 priced; moving the priced ones to the first candidate could cut about",
-                   "of their list-price cost, ESTIMATE.",
+                   "6 AI calls found, 4 priced. Moving the priced ones to the first candidate could cut about",
+                   "of their list-price cost, if every call site runs equally often (ESTIMATE).",
+                   "1 of 6 set the model at runtime. To price them, rerun with the model you use, for example "
+                   "--model gpt-4o.",
+                   "Not found by scan: calls through your own wrapper, another SDK or an agent framework.",
                    "Per call: 1,000 tokens in, 300 out, ASSUMED.",
                    "Add --calls-per-day N for a monthly figure.",
                    "Quality is not tested here.",
                    'Prove it on your own traffic (see README "The loop")',
                    "throttle capture", "export OPENAI_BASE_URL=http://127.0.0.1:8790/v1",
-                   "throttle shadow --candidate-url https://api.openai.com/v1 \\ --api-key-env OPENAI_API_KEY \\ "
-                   "--candidate-model gpt-4o-mini --label gpt-4o-mini",
-                   "throttle eval --candidate gpt-4o-mini \\ --judge-model gpt-4.1 --judge-key-env OPENAI_API_KEY",
-                   "throttle report --candidate gpt-4o-mini --candidate-model gpt-4o-mini"):
+                   # the costliest job is chat (claude-opus-4-5); its first pick is a Claude model
+                   "throttle shadow --candidate-url https://api.anthropic.com/v1 \\ "
+                   "--api-key-env ANTHROPIC_API_KEY \\ --candidate-model claude-sonnet-4-5 --label claude-sonnet-4-5",
+                   "That is Anthropic's OpenAI-compatible endpoint, offered for testing.",
+                   # the code calls OpenAI too, so the judge is the OpenAI one
+                   "throttle eval --candidate claude-sonnet-4-5 \\ --judge-model gpt-4.1 --judge-key-env OPENAI_API_KEY",
+                   "throttle report --candidate claude-sonnet-4-5 \\ --candidate-model claude-sonnet-4-5"):
         assert needed in flat, needed
     # never a quality claim, never an em dash
     lowered = flat.lower()
     assert "as good" not in lowered and "just as well" not in lowered and "\u2014" not in out
+    # priced rows come most expensive first
+    order = [flat.index(name) for name in ("claude-opus-4-5 $", "claude-sonnet-4-5 $", "gpt-4o* $", "gpt-4.1 $")]
+    assert order == sorted(order)
 
 
 def test_monthly_output_and_given_tokens_are_labelled(tmp_path, capsys, plain) -> None:
@@ -513,7 +529,307 @@ def test_scan_is_first_in_help_welcome_and_readme() -> None:
     from throttle.cli import WELCOME_STEPS
     assert WELCOME_STEPS[0][2] == ("throttle scan .",)
     readme = (REPO / "README.md").read_text(encoding="utf-8")
+    assert "throttle.own.scan/1" in readme and "throttle scan ." in readme
+
+
+def _version(text: str) -> tuple[int, ...]:
+    return tuple(int(part) for part in text.split("."))
+
+
+def _pinned_blocks(text: str) -> list[tuple[str, str]]:
+    """(pinned version, code block) for each code block that pins throttle-pro."""
+    out = []
+    for block in re.findall(r"```(?:sh|bash)\n(.*?)```", text, re.S):
+        found = re.search(r'throttle-pro==([0-9.]+)"', block)
+        if found:
+            out.append((found.group(1), block))
+    return out
+
+
+def test_install_steps_never_run_scan_on_a_release_without_it() -> None:
+    """`throttle scan` first ships in FIRST_RELEASE. A pinned install block may
+    only run it once its pin is at least that, and once the package version
+    reaches it the README's first block must pin it and run scan first."""
+    first = _version(scan_cost.FIRST_RELEASE)
+    version = tomllib.loads((REPO / "pyproject.toml").read_text(encoding="utf-8"))["project"]["version"]
+    docs = REPO / "src/throttle/console/docs/getting-started"
+    for path in (REPO / "README.md", docs / "quickstart.md", docs / "scan.md", docs / "installation.md"):
+        text = path.read_text(encoding="utf-8")
+        for pin, block in _pinned_blocks(text):
+            if "throttle scan" in block:
+                assert _version(pin) >= first, (path.name, pin)
+        if "throttle scan" in text and any(_version(pin) < first for pin, _ in _pinned_blocks(text)):
+            assert scan_cost.FIRST_RELEASE in text, path.name   # says which release has it
+    readme = (REPO / "README.md").read_text(encoding="utf-8")
     start = readme.index("## Try it in a minute")
-    block = readme[readme.index("```sh", start):readme.index("```\n", readme.index("```sh", start) + 5)]
-    assert block.splitlines()[1:] == ['pip install "throttle-pro==0.7.0"', "throttle scan .", "throttle demo"]
-    assert "throttle.own.scan/1" in readme
+    pin, block = _pinned_blocks(readme[start:])[0]
+    if _version(version) >= first:
+        assert _version(pin) >= first and block.splitlines()[1] == "throttle scan .", (version, pin)
+    else:
+        assert block.splitlines() == [f'pip install "throttle-pro=={pin}"', "throttle demo"]
+
+
+# ---------------------------------------------------------------------------
+# Real-repo regressions: calls the first version missed or miscounted
+# ---------------------------------------------------------------------------
+
+
+def scan_tree(root: Path, files: dict[str, str]) -> list[scan.CallSite]:
+    for rel, source in files.items():
+        path = root / rel
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(source, encoding="utf-8")
+    return scan.scan_dir(root)
+
+
+AGENT_PY = """from anthropic import Anthropic
+
+
+class Agent:
+    def call(self, params):
+        return self.client.messages.create(
+            **params,
+            extra_headers={"anthropic-beta": "x"},
+        )
+"""
+
+LOOP_PY = """import anthropic
+
+
+def sample(client, model, messages, betas):
+    api_kwargs = {"max_tokens": 4096, "messages": messages, "model": model, "system": ["x"]}
+    if betas:
+        return client.beta.messages.create(**api_kwargs)
+    return client.messages.create(**api_kwargs)
+
+
+def raw(client, messages):
+    return client.beta.messages.with_raw_response.create(
+        max_tokens=1024, messages=messages, model="claude-sonnet-4-5",
+    )
+"""
+
+# Twilio has client.messages.create too: no anthropic import, not an AI call
+SMS_PY = """from twilio.rest import Client
+
+
+def send(client, **kwargs):
+    return client.messages.create(**kwargs)
+"""
+
+LLM_TS = """import Anthropic from "@anthropic-ai/sdk";
+
+export async function run(client: Anthropic, params: any) {
+  return client.messages.create(params);
+}
+"""
+
+
+def test_anthropic_calls_through_kwargs_and_raw_response_are_found(tmp_path) -> None:
+    # anthropic-quickstarts: agents/agent.py:113, browser-use-demo loop.py:137/140,
+    # computer-use-demo loop.py:168 were missed before
+    sites = scan_tree(tmp_path, {"agent.py": AGENT_PY, "loop.py": LOOP_PY, "sms.py": SMS_PY, "llm.ts": LLM_TS})
+    found = {(s.path, s.line): s for s in sites}
+    assert set(found) == {("agent.py", 6), ("loop.py", 7), ("loop.py", 8), ("loop.py", 12), ("llm.ts", 4)}
+    assert all(s.provider == "anthropic" and s.api == "messages" for s in sites)
+    assert found[("agent.py", 6)].model is None and found[("agent.py", 6)].model_spread == "**params"
+    assert found[("loop.py", 7)].model_expr == "model"   # read from the api_kwargs dict
+    assert found[("loop.py", 12)].model == "claude-sonnet-4-5"
+    assert found[("llm.ts", 4)].model_spread == "params"
+
+
+def test_ai_sdk_name_with_a_non_object_argument_is_not_a_call(tmp_path) -> None:
+    # LibreChat: a local streamText(part.text) helper
+    sites = scan_tree(tmp_path, {"a.js": (
+        "const streamText = (t) => res.write(t);\n"
+        "for (const part of content) { streamText(part.text); }\n"
+        'await streamText({ model: openai("gpt-4o"), prompt: "hi" });\n'
+        "await generateText(options);\n")})
+    assert [(s.line, s.model) for s in sites] == [(3, "gpt-4o"), (4, None)]
+
+
+def test_a_file_without_any_ai_call_word_is_not_parsed(monkeypatch) -> None:
+    calls = []
+    monkeypatch.setattr(scan, "scan_javascript", lambda *a: calls.append(a) or [])
+    assert scan.scan_source("big.ts", "export const x = 1;\n" * 1000) == []
+    assert calls == []
+    scan.scan_source("ai.ts", "await client.chat.completions.create({ model: 'gpt-4o' })")
+    assert len(calls) == 1
+
+
+@pytest.mark.parametrize("source,default", [
+    ('import os\nclient.chat.completions.create(model=os.getenv("CHAT_MODEL", "gpt-4o"), messages=[])\n', "gpt-4o"),
+    ('import os\nM = os.environ.get("M", "gpt-4o-mini")\nclient.chat.completions.create(model=M, messages=[])\n',
+     "gpt-4o-mini"),
+    ('def f(model="gpt-4.1"):\n    client.chat.completions.create(model=model, messages=[])\n', "gpt-4.1"),
+    ('def f(*, model: str = "o3"):\n    client.chat.completions.create(model=model, messages=[])\n', "o3"),
+    ('client.chat.completions.create(model=cfg.model or "gpt-4o", messages=[])\n', "gpt-4o"),
+    ('client.chat.completions.create(model=cfg.get("model", "gpt-4o"), messages=[])\n', "gpt-4o"),
+    ('client.chat.completions.create(model=cfg.model, messages=[])\n', None),
+    ('client.chat.completions.create(model=os.getenv("M", ""), messages=[])\n', None),
+])
+def test_python_literal_defaults_of_a_runtime_model(source, default) -> None:
+    [site] = scan.scan_python("a.py", source)
+    assert site.model is None and site.model_default == default
+
+
+@pytest.mark.parametrize("expr,default", [
+    ('process.env.CHAT_MODEL ?? "gpt-4o"', "gpt-4o"),
+    ("process.env.CHAT_MODEL || 'claude-haiku-4-5'", "claude-haiku-4-5"),
+    ("MODEL", "gpt-4.1"),   # const MODEL = process.env.X ?? "gpt-4.1"
+    ("settings.model", None),
+])
+def test_js_literal_defaults_of_a_runtime_model(expr, default) -> None:
+    source = ('const MODEL = process.env.X ?? "gpt-4.1";\n'
+              f'await client.chat.completions.create({{ model: {expr}, messages: [] }});\n')
+    [site] = scan.scan_javascript("a.ts", source)
+    assert site.model is None and site.model_default == default
+
+
+RUNTIME_REPO = {
+    "app/chat.py": (
+        "import os\n"
+        "from openai import OpenAI\n\n"
+        "client = OpenAI()\n\n\n"
+        "def chat(q):\n"
+        '    return client.chat.completions.create(model=os.getenv("CHAT_MODEL", "gpt-4o"), messages=[])\n\n\n'
+        "def route(q, model):\n"
+        "    return client.chat.completions.create(model=model, messages=[])\n"
+    ),
+}
+
+
+def test_default_in_code_is_priced_and_labelled(tmp_path, capsys, plain) -> None:
+    scan_tree(tmp_path, RUNTIME_REPO)
+    code, out, _ = run(capsys, str(tmp_path), "--json")
+    jobs = {j["function"]: j for j in json.loads(out)["jobs"]}
+    assert jobs["chat"]["status"] == STATUS_PRICED and jobs["chat"]["model"] is None
+    assert (jobs["chat"]["priced_model"], jobs["chat"]["model_source"]) == ("gpt-4o", "default_in_code")
+    assert jobs["route"]["status"] == STATUS_RUNTIME
+    code, out, _ = run(capsys, str(tmp_path))
+    flat = flatten(out)
+    assert "gpt-4o (default)" in flat
+    assert "(default): model set at runtime, priced at the default written in the code." in flat
+    assert "1 of 2 set the model at runtime. To price them, rerun with the model you use" in flat
+
+
+def test_model_flag_prices_runtime_jobs_and_wins_over_a_default(tmp_path, capsys, plain) -> None:
+    scan_tree(tmp_path, RUNTIME_REPO)
+    code, out, _ = run(capsys, str(tmp_path), "--json", "--model", "gpt-4.1")
+    data = json.loads(out)
+    assert data["assumptions"]["runtime_model"] == "gpt-4.1"
+    assert data["assumptions"]["runtime_model_source"] == "flag"
+    for job in data["jobs"]:
+        assert (job["status"], job["priced_model"], job["model_source"]) == (STATUS_PRICED, "gpt-4.1", "flag")
+    code, out, _ = run(capsys, str(tmp_path), "--model", "gpt-4.1")
+    flat = flatten(out)
+    assert "gpt-4.1 (--model)" in flat
+    assert "(--model): model set at runtime, priced as gpt-4.1 (your flag)." in flat
+    assert "set the model at runtime" not in flat
+    with pytest.raises(SystemExit):
+        build_parser().parse_args(["scan", "--model", "two words"])
+
+
+def test_tests_examples_and_evals_are_not_counted_unless_all(tmp_path, capsys, plain) -> None:
+    call = 'client.chat.completions.create(model="gpt-4o", messages=[])\n'
+    js_call = 'await client.chat.completions.create({ model: "gpt-4o", messages: [] });\n'
+    scan_tree(tmp_path, {"src/app.py": call, "tests/test_app.py": call, "src/__tests__/x.spec.ts": js_call,
+                         "web/chat.test.ts": js_call, "examples/demo.py": call, "evals/run.py": call,
+                         "scripts/latency_benchmark.py": call, "conftest.py": call})
+    code, out, _ = run(capsys, str(tmp_path), "--json")
+    data = json.loads(out)
+    assert (data["summary"]["calls_found"], data["summary"]["counted"],
+            data["summary"]["not_counted_tests_examples"]) == (8, 1, 7)
+    assert {j["path"]: j["where"] for j in data["jobs"]}["examples/demo.py"] == "example"
+    assert [j["path"] for j in data["jobs"] if j["counted"]] == ["src/app.py"]
+    flat = flatten(run(capsys, str(tmp_path))[1])
+    assert "1 AI call found, 1 priced." in flat
+    assert "Not counted: 7 more in tests, examples or evals. --all includes them." in flat
+    flat = flatten(run(capsys, str(tmp_path), "--all")[1])
+    assert "8 AI calls found, 8 priced." in flat and "Not counted" not in flat
+    # a repo that is only examples still gets a result
+    only = tmp_path / "only"
+    scan_tree(only, {"examples/a.py": call})
+    flat = flatten(run(capsys, str(only))[1])
+    assert "1 AI call found, 1 priced." in flat and "All 1 are in tests, examples or evals" in flat
+
+
+def test_table_keeps_file_and_line_sorts_by_cost_and_caps_rows(tmp_path, capsys, plain) -> None:
+    deep = "src/khoj/processor/conversation/openai/utils.py"
+    models = ["gpt-4o-mini"] * 16 + ["gpt-4o", "o3"]
+    body = "".join(f'def f{i}():\n    client.chat.completions.create(model="{m}", messages=[])\n\n'
+                   for i, m in enumerate(models))
+    scan_tree(tmp_path, {deep: body})
+    out = run(capsys, str(tmp_path))[1]
+    flat = flatten(out)
+    assert "/utils.py:2 " in flat and "src/khoj/processor/conve.." not in flat   # cut from the left
+    # f16 is gpt-4o ($5.50 per 1K), f17 is o3 ($4.40), f0 to f15 are gpt-4o-mini
+    assert flat.index("f16 gpt-4o ") < flat.index("f17 o3 ") < flat.index("f0 gpt-4o-mini ")
+    assert "3 more priced calls, each cheaper per call than these. --all lists them." in flat
+    assert out.count("gpt-4o-mini   ") >= 13
+    flat = flatten(run(capsys, str(tmp_path), "--all")[1])
+    assert "more priced calls" not in flat
+
+
+def test_cap_marker_survives_a_long_model_name(tmp_path, capsys, plain) -> None:
+    scan_tree(tmp_path, {"a.py": 'import anthropic\nclient.messages.create(model="claude-sonnet-4-5-20250929", '
+                                 'max_tokens=50, messages=[])\n'})
+    flat = flatten(run(capsys, str(tmp_path))[1])
+    assert re.search(r"claude-sonnet-4-5-20\S*\.\.\* \$", flat), flat
+    assert "* output capped by a literal max_tokens in the code." in flat
+
+
+def test_not_priced_list_folds_by_file_and_reason_and_names_the_cause(tmp_path, capsys, plain) -> None:
+    scan_tree(tmp_path, {
+        "llm.py": "".join(f"def f{i}(model_name):\n    client.chat.completions.create(model=model_name, "
+                          "messages=[])\n" for i in range(3)),
+        "old.py": ('client.chat.completions.create(model="gpt-3.5-turbo", messages=[])\n'
+                   'client.messages.create(model="claude-3-haiku-20240307", max_tokens=5, messages=[])\n'),
+        "other.ts": ('await generateText({ model: google("gemini-1.5-flash"), prompt: "x" });\n'
+                     "await client.chat.completions.create({\n  model: pick(\n    a,\n    b,\n  ),\n"
+                     "  messages: [] });\n"),
+    })
+    flat = flatten(run(capsys, str(tmp_path))[1])
+    assert "- llm.py: 3 calls, lines 2, 4, 6 model set at runtime (model_name)" in flat
+    assert "gpt-3.5-turbo: older model, not in the price table, prices checked 2026-10-27" in flat
+    assert "claude-3-haiku-20240307: older model, not in the price table" in flat
+    assert "gemini-1.5-flash: not an OpenAI or Anthropic model; add its price with --prices FILE" in flat
+    assert "model set at runtime (pick( a, b, ))" in flat   # whitespace collapsed
+    # nothing priced: no table, no legend, a concrete next line
+    assert "JOB" not in flat and "cheaper at list price" not in flat
+    assert "set the model at runtime. To price them, rerun with the model you use, for example --model" in flat
+
+
+def test_anthropic_only_repo_gets_claude_judge_and_anthropic_endpoint(tmp_path, capsys, plain) -> None:
+    scan_tree(tmp_path, {"a.py": 'import anthropic\nclient.messages.create(model="claude-sonnet-4-5", '
+                                 'max_tokens=1024, messages=[])\n'})
+    code, out, _ = run(capsys, str(tmp_path), "--json")
+    steps = json.loads(out)["next_steps"]
+    assert steps[3] == ("throttle shadow --candidate-url https://api.anthropic.com/v1 --api-key-env "
+                        "ANTHROPIC_API_KEY --candidate-model claude-haiku-4-5 --label claude-haiku-4-5")
+    assert steps[4] == ("throttle eval --candidate claude-haiku-4-5 --judge-provider anthropic "
+                        "--judge-model claude-sonnet-4-6 --judge-key-env ANTHROPIC_API_KEY")
+    assert not any("URL " in s or "KEY_VAR" in s or "OPENAI_API_KEY" in s for s in steps)
+
+
+def test_the_judge_is_never_the_candidate() -> None:
+    table = pricing.load_prices()
+    for model, provider in (("claude-opus-4-8", "anthropic"), ("gpt-5.2", "openai"), ("gpt-4.1", "openai")):
+        job = scan_cost.cost_job(scan.CallSite(path="a.py", line=1, function="f", language="python",
+                                               provider=provider, api="messages", model=model), table, Shape())
+        steps = scan_cost.next_steps([job])
+        if steps:
+            pick = job.candidates[0].price.model
+            assert f"--judge-model {pick} " not in steps[4], (model, steps[4])
+
+
+def test_narrow_terminal_drops_the_change_column(tmp_path, capsys, monkeypatch) -> None:
+    monkeypatch.setenv("NO_COLOR", "1")
+    monkeypatch.setenv("COLUMNS", "40")
+    monkeypatch.delenv("FORCE_COLOR", raising=False)
+    write_fixture(tmp_path)
+    out = run(capsys, str(tmp_path))[1]
+    head = next(line for line in out.splitlines() if line.startswith("JOB"))
+    assert "CHANGE" not in head and len(head) <= 40
+    rows = [line for line in out.splitlines() if "$" in line and "↳" in line]
+    assert rows and all("%" not in line and len(line) <= 40 for line in rows)
