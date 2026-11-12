@@ -5,10 +5,10 @@
 ## 1. Install
 
 ```bash
-pip install "throttle-pro==0.7.0"
+pip install "throttle-pro==0.8.0"
 ```
 
-This pins v0.7.0. To install from the source tag instead, see Installation.
+This pins v0.8.0. To install from the source tag instead, see Installation.
 
 ## 2. Scan your code
 
@@ -16,7 +16,7 @@ This pins v0.7.0. To install from the source tag instead, see Installation.
 throttle scan .
 ```
 
-Needs 0.8.0 or later; 0.7.0 does not have it. It finds the OpenAI and Anthropic SDK calls in the folder, prices each one at list price, and names up to two cheaper models to test. Offline, no keys, in seconds. Every dollar is an ESTIMATE and every cheaper model is UNTESTED. See [Scan your code](scan.md).
+It finds the OpenAI and Anthropic SDK calls in the folder, prices each one at list price, and names up to two cheaper models to test. Offline, no keys, in seconds. Every dollar is an ESTIMATE and every cheaper model is UNTESTED. See [Scan your code](scan.md).
 
 ## 3. Run the demo
 

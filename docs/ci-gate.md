@@ -77,7 +77,7 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - run: python -m pip install "throttle-pro==0.7.0"
+      - run: python -m pip install "throttle-pro==0.8.0"
       - name: Deploy main's config
         run: ./deploy/inference/deploy.sh   # your deploy; wait until /v1/models answers
       - name: Measure the baseline 3 times (calibrates the noise bound)
@@ -102,7 +102,7 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - run: python -m pip install "throttle-pro==0.7.0"
+      - run: python -m pip install "throttle-pro==0.8.0"
       - uses: actions/cache/restore@v4
         with:
           path: ${{ env.THROTTLE_CHECK_HISTORY_DIR }}

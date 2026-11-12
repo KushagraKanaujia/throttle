@@ -6,7 +6,7 @@
 throttle scan .
 ```
 
-Needs Throttle 0.8.0 or later; 0.7.0 does not have it. It needs no API key, no network, no GPU and no traffic, and it writes nothing. It reads the Python, JavaScript and TypeScript files in the folder (skipping `node_modules`, virtualenvs, `dist`, `build` and similar) and finds the direct OpenAI and Anthropic SDK calls it can read, the same way `throttle jobs scan` does.
+Needs Throttle 0.8.0 or later. It needs no API key, no network, no GPU and no traffic, and it writes nothing. It reads the Python, JavaScript and TypeScript files in the folder (skipping `node_modules`, virtualenvs, `dist`, `build` and similar) and finds the direct OpenAI and Anthropic SDK calls it can read, the same way `throttle jobs scan` does.
 
 For each call it shows:
 

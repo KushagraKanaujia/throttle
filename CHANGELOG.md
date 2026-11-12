@@ -4,6 +4,8 @@ All notable changes to Throttle will be documented in this file.
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-11-12
+
 ### Added
 - `throttle scan [PATH]`: the first run, offline, with no API key, no
   network and no traffic, and it writes nothing. It finds the direct OpenAI

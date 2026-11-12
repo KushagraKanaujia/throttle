@@ -32,13 +32,14 @@ MI300X with vLLM, [raw data](validation/hotaisle-mi300x-20261001/)):
 ## Try it in a minute
 
 ```sh
-pip install "throttle-pro==0.7.0"
+pip install "throttle-pro==0.8.0"
+throttle scan .
 throttle demo
 ```
 
 Pin the version so what you install never changes under you.
 
-New in 0.8.0, not in 0.7.0: `throttle scan .` reads the code in the current
+`throttle scan .` reads the code in the current
 folder and lists the OpenAI and Anthropic SDK calls it can read: where each
 one is, which model it uses, what it costs per 1,000 calls at list price, and
 up to two cheaper models to test. It needs no API key, no network and no
@@ -52,8 +53,7 @@ runtime is priced from a default written in the code, or from `--model NAME`.
 Calls through your own wrapper or an agent framework are not found; `throttle
 capture` sees them on real traffic. Scan ends with the commands that prove it
 on your own traffic ([The loop](#the-loop)). `--json` gives the same data for
-tools (schema `throttle.own.scan/1`). Until 0.8.0 is on PyPI, run it from a
-clone of this repo (`pip install -e .`).
+tools (schema `throttle.own.scan/1`).
 
 `throttle demo` runs the whole loop offline on made-up traffic: capture,
 workloads, shadow, eval and report. It needs no API key, no GPU and no
@@ -146,7 +146,7 @@ with the date each price was checked and the page it came from. `--prices
 FILE` adds or replaces prices; those are labelled ASSUMED. The monthly figure
 scales the capture window to 30 days and is refused for a window shorter than
 a day. `--embed` also splits each kind into clusters by prompt similarity
-(needs `pip install "throttle-pro[embeddings]==0.7.0"`).
+(needs `pip install "throttle-pro[embeddings]==0.8.0"`).
 
 ### 3. Shadow
 
