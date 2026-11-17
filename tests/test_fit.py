@@ -25,7 +25,9 @@ def test_kv_math_matches_hand_calculation():
 
 def test_weights_scale_with_quant():
     spec = fit.MODELS["qwen2.5-72b"]
-    assert fit.weights_gb(spec, "fp8") == pytest.approx(fit.weights_gb(spec, "bf16") / 2)
+    half = fit.weights_gb(spec, "bf16") / 2
+    # fp8 is half of bf16 except the 16 bit embeddings and lm_head
+    assert half < fit.weights_gb(spec, "fp8") < half * 1.05
 
 
 def test_fewest_h100s_for_70b_fp8(capsys):
@@ -53,13 +55,55 @@ def test_current_flags_spare_cards_with_saving(capsys):
     assert "meta-llama/Llama-3.3-70B-Instruct" in data["measure_command"]
 
 
-def test_current_on_other_gpu_is_not_mixed_into_space(capsys):
-    _, out, _ = run(capsys, "--model", "llama-3.3-70b", "--quant", "fp8", "--context", "32k",
+def test_current_gpu_is_measured_but_never_the_pick(capsys):
+    _, out, _ = run(capsys, "--model", "llama-3.3-70b", "--quant", "fp8", "--context", "8k",
                     "--users", "16", "--gpu", "l40s", "--price", "l40s=1",
                     "--current", "h100=4", "--json")
     data = json.loads(out)
-    assert data["pick"] == "l40s"
-    assert "--space tp=8" in data["measure_command"]
+    assert data["pick"] == "l40s"            # h100 only came in through --current
+    assert data["current"]["status"] == "maybe_fewer"
+    # the command checks the claim on the user's own h100s
+    assert "--space tp=2,4" in data["measure_command"]
+    assert "h100 machine" in data["measure_command"]
+
+
+def test_illegal_current_count_is_not_put_in_space(capsys):
+    _, out, _ = run(capsys, "--model", "llama-3.3-70b", "--quant", "fp8", "--context", "8k",
+                    "--users", "16", "--gpu", "h100", "--current", "h100=3", "--json")
+    assert "tp=3" not in json.loads(out)["measure_command"]
+
+
+def test_autotune_command_always_has_a_rate_and_the_context(capsys):
+    _, out, _ = run(capsys, "--model", "qwen2.5-7b", "--context", "16k", "--users", "4",
+                    "--kv-dtype", "fp8", "--json")
+    cmd = json.loads(out)["measure_command"]
+    assert "--gpu-hourly-rate PRICE_PER_GPU_HOUR" in cmd
+    assert "--max-model-len 16384" in cmd
+    assert "--kv-cache-dtype fp8" in cmd
+    assert "--concurrency 4" in cmd
+    assert "--space tp=1,2" in cmd          # never a single value: something to compare
+
+
+def test_llamacpp_check_gets_the_total_rate(capsys):
+    _, out, _ = run(capsys, "--model", "qwen2.5-32b", "--quant", "q4_k_m", "--engine",
+                    "llamacpp", "--gpu", "rtx3090", "--price", "rtx3090=0.4",
+                    "--context", "32k", "--users", "2", "--json")
+    cmd = json.loads(out)["measure_command"]
+    assert "--gpus 2 --gpu-hourly-rate 0.8" in cmd
+
+
+def test_needs_more_than_current(capsys):
+    _, out, _ = run(capsys, "--model", "llama-3.3-70b", "--quant", "fp8", "--context", "32k",
+                    "--users", "16", "--gpu", "h100", "--current", "h100=2")
+    assert "but the estimate needs 4" in out
+
+
+def test_quantized_checkpoints_keep_16bit_embeddings():
+    spec = fit.MODELS["qwen2.5-7b"]
+    embed = 2 * 152064 * 3584
+    expected = ((7.62e9 - embed) * 0.56 + embed * 2) / fit.GIB
+    assert fit.weights_gb(spec, "awq") == pytest.approx(expected)
+    assert fit.weights_gb(spec, "q4_k_m") == pytest.approx(7.62e9 * 0.60 / fit.GIB)
 
 
 def test_vllm_counts_respect_attention_heads():
@@ -121,6 +165,10 @@ def test_config_json(tmp_path, capsys):
     (("--model", "qwen2.5-7b", "--gpu", "h100", "--price", "l4=1"), "not in the list"),
     (("--model", "qwen2.5-7b", "--current", "h100=1.5"), "whole card count"),
     (("--config", "missing.json", "--params", "7"), "could not read"),
+    (("--model", "qwen2.5-7b", "--params", "-5"), "--params must"),
+    (("--model", "qwen2.5-7b", "--gpu", "h100", "--price", "h100=nan"), "--price wants"),
+    (("--model", "qwen2.5-7b", "--current", "h100=nan"), "--current wants"),
+    (("--model", "qwen2.5-7b", "--current", "h100=1000"), "whole card count"),
 ])
 def test_usage_errors(capsys, argv, message):
     code, _, err = run(capsys, *argv)
@@ -131,6 +179,8 @@ def test_usage_errors(capsys, argv, message):
 def test_bad_context_is_rejected_by_argparse(capsys):
     with pytest.raises(SystemExit) as exc:
         main(["fit", "--model", "qwen2.5-7b", "--context", "lots"])
+    with pytest.raises(SystemExit):
+        main(["fit", "--model", "qwen2.5-7b", "--context", "inf"])
     assert exc.value.code == 2
 
 

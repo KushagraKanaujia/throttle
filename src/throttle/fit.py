@@ -37,7 +37,7 @@ GIB = 1024 ** 3
 # What vLLM lets itself use by default (--gpu-memory-utilization 0.9), and a
 # flat allowance per card for the CUDA context, activations and graphs.
 DEFAULT_MEMORY_FRACTION = 0.90
-DEFAULT_OVERHEAD_GB = 1.5
+DEFAULT_OVERHEAD_GB = 2.0
 MAX_GPUS = 8
 
 FIT_DESCRIPTION = __doc__.split("\n\n", 1)[1] if __doc__ else ""
@@ -69,27 +69,30 @@ class ModelSpec:
     head_dim: int
     attention_heads: int
     hf_id: str = ""           # name to serve it by
+    vocab: int = 0            # with hidden: embeddings and lm_head, which
+    hidden: int = 0           # fp8/AWQ/GPTQ checkpoints keep in 16 bit
 
 
 # Published architecture numbers (each model's config.json).
 MODELS: dict[str, ModelSpec] = {
     spec.name: spec
     for spec in (
-        ModelSpec("llama-3.1-8b", 8.03, 32, 8, 128, 32, "meta-llama/Llama-3.1-8B-Instruct"),
-        ModelSpec("llama-3.1-70b", 70.6, 80, 8, 128, 64, "meta-llama/Llama-3.1-70B-Instruct"),
-        ModelSpec("llama-3.3-70b", 70.6, 80, 8, 128, 64, "meta-llama/Llama-3.3-70B-Instruct"),
-        ModelSpec("qwen2.5-7b", 7.62, 28, 4, 128, 28, "Qwen/Qwen2.5-7B-Instruct"),
-        ModelSpec("qwen2.5-14b", 14.8, 48, 8, 128, 40, "Qwen/Qwen2.5-14B-Instruct"),
-        ModelSpec("qwen2.5-32b", 32.8, 64, 8, 128, 40, "Qwen/Qwen2.5-32B-Instruct"),
-        ModelSpec("qwen2.5-72b", 72.7, 80, 8, 128, 64, "Qwen/Qwen2.5-72B-Instruct"),
-        ModelSpec("qwen3-32b", 32.8, 64, 8, 128, 64, "Qwen/Qwen3-32B"),
-        ModelSpec("qwen3-30b-a3b", 30.5, 48, 4, 128, 32, "Qwen/Qwen3-30B-A3B"),
-        ModelSpec("mistral-7b", 7.25, 32, 8, 128, 32, "mistralai/Mistral-7B-Instruct-v0.3"),
-        ModelSpec("mixtral-8x7b", 46.7, 32, 8, 128, 32, "mistralai/Mixtral-8x7B-Instruct-v0.1"),
+        ModelSpec("llama-3.1-8b", 8.03, 32, 8, 128, 32, "meta-llama/Llama-3.1-8B-Instruct", 128256, 4096),
+        ModelSpec("llama-3.1-70b", 70.6, 80, 8, 128, 64, "meta-llama/Llama-3.1-70B-Instruct", 128256, 8192),
+        ModelSpec("llama-3.3-70b", 70.6, 80, 8, 128, 64, "meta-llama/Llama-3.3-70B-Instruct", 128256, 8192),
+        ModelSpec("qwen2.5-7b", 7.62, 28, 4, 128, 28, "Qwen/Qwen2.5-7B-Instruct", 152064, 3584),
+        ModelSpec("qwen2.5-14b", 14.7, 48, 8, 128, 40, "Qwen/Qwen2.5-14B-Instruct", 152064, 5120),
+        ModelSpec("qwen2.5-32b", 32.5, 64, 8, 128, 40, "Qwen/Qwen2.5-32B-Instruct", 152064, 5120),
+        ModelSpec("qwen2.5-72b", 72.7, 80, 8, 128, 64, "Qwen/Qwen2.5-72B-Instruct", 152064, 8192),
+        ModelSpec("qwen3-32b", 32.8, 64, 8, 128, 64, "Qwen/Qwen3-32B", 151936, 5120),
+        ModelSpec("qwen3-30b-a3b", 30.5, 48, 4, 128, 32, "Qwen/Qwen3-30B-A3B", 151936, 2048),
+        ModelSpec("mistral-7b", 7.25, 32, 8, 128, 32, "mistralai/Mistral-7B-Instruct-v0.3", 32768, 4096),
+        ModelSpec("mixtral-8x7b", 46.7, 32, 8, 128, 32, "mistralai/Mixtral-8x7B-Instruct-v0.1", 32000, 4096),
     )
 }
 
-# Memory on the card, GB as sold.
+# Memory on the card as sold. NVIDIA's "80GB" is about 79.6 GiB usable, so
+# the sold figure is treated as GiB.
 GPUS: dict[str, float] = {
     "h200": 141, "h100": 80, "a100-80": 80, "a100-40": 40, "mi300x": 192,
     "l40s": 48, "rtx6000-ada": 48, "a10g": 24, "l4": 24,
@@ -125,7 +128,10 @@ def parse_size(text: str) -> int:
     elif raw.endswith("m"):
         raw, mult = raw[:-1], 1024 * 1024
     try:
-        value = int(float(raw) * mult)
+        number = float(raw)
+        if not math.isfinite(number):
+            raise ValueError(raw)
+        value = int(number * mult)
     except ValueError as exc:
         raise argparse.ArgumentTypeError(f"not a size: {text!r} (try 8192, 32k)") from exc
     if value <= 0:
@@ -189,6 +195,8 @@ class UsageError(Exception):
 
 
 def resolve_model(args: argparse.Namespace) -> ModelSpec:
+    if args.params is not None and (not math.isfinite(args.params) or args.params <= 0):
+        raise UsageError("--params must be a number of billions above 0")
     if args.model and args.config:
         raise UsageError("give --model or --config, not both")
     if args.config:
@@ -206,7 +214,12 @@ def resolve_model(args: argparse.Namespace) -> ModelSpec:
             raise UsageError(f"{args.config} is missing {exc}; is it a transformer config.json?") from exc
         if not args.params:
             raise UsageError("--config needs --params (total parameters in billions)")
-        return ModelSpec(args.config.name, args.params, layers, kv_heads, head_dim, heads)
+        vocab = int(cfg.get("vocab_size") or 0)
+        hidden = int(cfg.get("hidden_size") or 0)
+        if cfg.get("tie_word_embeddings"):
+            hidden //= 2  # one shared matrix, not two: weights_gb counts vocab x hidden x 2
+        return ModelSpec(args.config.name, args.params, layers, kv_heads, head_dim, heads,
+                         "", vocab, hidden)
     if not args.model:
         raise UsageError("give --model (see --list-models) or --config path/to/config.json")
     key = args.model.strip().lower()
@@ -216,7 +229,7 @@ def resolve_model(args: argparse.Namespace) -> ModelSpec:
     spec = MODELS[key]
     if args.params:
         spec = ModelSpec(spec.name, args.params, spec.layers, spec.kv_heads, spec.head_dim,
-                         spec.attention_heads, spec.hf_id)
+                         spec.attention_heads, spec.hf_id, spec.vocab, spec.hidden)
     return spec
 
 
@@ -228,7 +241,7 @@ def parse_pairs(values: Sequence[str] | None, flag: str) -> dict[str, float]:
             value = float(number)
         except ValueError:
             value = -1.0
-        if not sep or not name.strip() or value <= 0:
+        if not sep or not name.strip() or not math.isfinite(value) or value <= 0:
             raise UsageError(f"{flag} wants NAME=NUMBER above 0, got {item!r}")
         pairs[name.strip().lower()] = value
     return pairs
@@ -256,8 +269,16 @@ def gpu_counts(engine: str, spec: ModelSpec) -> list[int]:
             if spec.attention_heads % n == 0 and (spec.kv_heads % n == 0 or n % spec.kv_heads == 0)]
 
 
+KEEPS_EMBEDDINGS_16BIT = {"fp8", "int8", "awq", "gptq", "int4"}
+
+
 def weights_gb(spec: ModelSpec, quant: str) -> float:
-    return spec.params_b * 1e9 * QUANT_BYTES[quant] / GIB
+    total = spec.params_b * 1e9
+    kept = 0.0
+    if quant in KEEPS_EMBEDDINGS_16BIT:
+        # input embeddings plus lm_head
+        kept = min(total, 2.0 * spec.vocab * spec.hidden)
+    return ((total - kept) * QUANT_BYTES[quant] + kept * 2.0) / GIB
 
 
 def kv_gb_per_token(spec: ModelSpec, kv_dtype: str) -> float:
@@ -266,8 +287,7 @@ def kv_gb_per_token(spec: ModelSpec, kv_dtype: str) -> float:
 
 
 def usable_gb(vram_gb: float, fraction: float, overhead: float) -> float:
-    # cards are sold in GB (10^9); work in GiB like the engines report
-    return vram_gb * 1e9 / GIB * fraction - overhead
+    return vram_gb * fraction - overhead
 
 
 def max_users(n: int, per_card: float, weights: float, kv_chat: float,
@@ -301,14 +321,13 @@ def plan(spec: ModelSpec, args: argparse.Namespace, gpus: Mapping[str, float],
     return options
 
 
-def pick(options: Sequence[Option]) -> Option | None:
-    fits = [o for o in options if o.gpus]
+def pick(options: Sequence[Option], listed: set[str]) -> tuple[Option | None, str]:
+    fits = [o for o in options if o.gpus and o.gpu in listed]
     if not fits:
-        return None
-    priced = [o for o in fits if o.monthly_cost is not None]
-    if priced:
-        return min(priced, key=lambda o: o.monthly_cost)  # type: ignore[arg-type,return-value]
-    return min(fits, key=lambda o: (o.gpus, o.vram_gb))
+        return None, ""
+    if all(o.monthly_cost is not None for o in fits):
+        return min(fits, key=lambda o: o.monthly_cost), "cheapest at your prices"  # type: ignore[arg-type,return-value]
+    return min(fits, key=lambda o: (o.gpus, o.vram_gb)), "fewest cards"
 
 
 def current_finding(current: tuple[str, int] | None, options: Sequence[Option]) -> dict[str, Any] | None:
@@ -323,27 +342,56 @@ def current_finding(current: tuple[str, int] | None, options: Sequence[Option]) 
     spare = count - match.gpus
     finding: dict[str, Any] = {"gpu": name, "count": count, "fewest_estimate": match.gpus,
                                "spare_cards": max(spare, 0),
-                               "status": "maybe_fewer" if spare > 0 else "no_fewer"}
+                               "status": ("maybe_fewer" if spare > 0 else
+                                          "needs_more" if spare < 0 else "no_fewer")}
     if spare > 0 and match.hourly_price:
         finding["monthly_saving_if_confirmed"] = round(spare * match.hourly_price * HOURS_PER_MONTH, 2)
     return finding
 
 
-def measure_command(spec: ModelSpec, best: Option, current: Mapping[str, Any] | None,
-                    engine: str) -> str:
-    counts = {best.gpus or 1}
-    if current and current.get("gpu") == best.gpu and current.get("count"):
-        counts.add(int(current["count"]))
+def measure_command(spec: ModelSpec, args: argparse.Namespace, options: Sequence[Option],
+                    best: Option, current: Mapping[str, Any] | None) -> str:
+    legal = gpu_counts(args.engine, spec)
+    target = best
+    counts: set[int] = {best.gpus or 1}
+    if current and current.get("fewest_estimate"):
+        mine = next((o for o in options if o.gpu == current["gpu"]), None)
+        if mine and mine.gpus:
+            target = mine
+            counts = {mine.gpus}
+            if current["count"] in legal:
+                counts.add(int(current["count"]))
+    if len(counts) == 1:
+        above = [n for n in legal if n > next(iter(counts))]
+        if above:
+            counts.add(above[0])
     model = shlex.quote(spec.hf_id or "YOUR/MODEL")
-    rate = f" --gpu-hourly-rate {best.hourly_price}" if best.hourly_price else ""
-    if engine == "llamacpp":
-        return (f"throttle check --url http://localhost:8000 --model {model} "
-                f"--gpus {best.gpus}{rate}   # once per card layout you try")
-    launch = ("vllm serve {model} --tensor-parallel-size {tp}" if engine == "vllm"
-              else "python -m sglang.launch_server --model-path {model} --tp {tp}")
-    return (f"throttle autotune --url http://localhost:8000 --model {model}{rate} \\\n"
+    if args.engine == "llamacpp":
+        n = target.gpus or 1
+        total = (f"{target.hourly_price * n:g}" if target.hourly_price
+                 else "TOTAL_PRICE_PER_HOUR")
+        return (f"throttle check --url http://localhost:8000 --model {model} --gpus {n} "
+                f"--gpu-hourly-rate {total} --concurrency {args.users}"
+                f"   # on {n} x {target.gpu}; rate is for all {n} cards")
+    rate = f"{target.hourly_price:g}" if target.hourly_price else "PRICE_PER_GPU_HOUR"
+    if args.engine == "vllm":
+        launch = f"vllm serve {{model}} --tensor-parallel-size {{tp}} --max-model-len {args.context}"
+        if args.quant == "fp8":
+            launch += " --quantization fp8"
+        if args.kv_dtype == "fp8":
+            launch += " --kv-cache-dtype fp8"
+    else:
+        launch = (f"python -m sglang.launch_server --model-path {{model}} --tp {{tp}} "
+                  f"--context-length {args.context}")
+        if args.quant == "fp8":
+            launch += " --quantization fp8"
+        if args.kv_dtype == "fp8":
+            launch += " --kv-cache-dtype fp8_e5m2"
+    return (f"throttle autotune --url http://localhost:8000 --model {model} "
+            f"--gpu-hourly-rate {rate} --concurrency {args.users} \\\n"
             f"      --launch \"{launch}\" \\\n"
-            f"      --space tp={','.join(str(c) for c in sorted(counts))}")
+            f"      --space tp={','.join(str(c) for c in sorted(counts))}"
+            f"   # on {'your' if target is not best or current else 'a'} {target.gpu} machine")
 
 
 def fmt_money(value: float | None) -> str:
@@ -363,10 +411,13 @@ def handle_fit(args: argparse.Namespace) -> int:
     try:
         if not 0 < args.memory_fraction <= 1:
             raise UsageError("--memory-fraction must be above 0 and at most 1")
+        if not math.isfinite(args.memory_fraction) or not math.isfinite(args.overhead_gb):
+            raise UsageError("--memory-fraction and --overhead-gb must be numbers")
         if args.overhead_gb < 0:
             raise UsageError("--overhead-gb cannot be negative")
         spec = resolve_model(args)
         gpus = resolve_gpus(args.gpu)
+        listed = set(gpus)
         prices = parse_pairs(args.price, "--price")
         unknown = sorted(set(prices) - set(gpus))
         if unknown:
@@ -376,7 +427,7 @@ def handle_fit(args: argparse.Namespace) -> int:
         if args.current:
             cur = parse_pairs([args.current], "--current")
             (cur_name, cur_count), = cur.items()
-            if cur_count != int(cur_count):
+            if cur_count != int(cur_count) or cur_count > 64:
                 raise UsageError("--current wants a whole card count, e.g. h100=4")
             current = (cur_name, int(cur_count))
             if cur_name not in gpus:
@@ -386,11 +437,11 @@ def handle_fit(args: argparse.Namespace) -> int:
         return EXIT_USAGE
 
     options = plan(spec, args, gpus, prices)
-    best = pick(options)
+    best, why = pick(options, listed)
     finding = current_finding(current, options)
     weights = weights_gb(spec, args.quant)
     kv_chat = kv_gb_per_token(spec, args.kv_dtype) * args.context
-    command = measure_command(spec, best, finding, args.engine) if best else None
+    command = measure_command(spec, args, options, best, finding) if best else None
 
     if args.json:
         print(json.dumps({
@@ -427,10 +478,9 @@ def handle_fit(args: argparse.Namespace) -> int:
               "(--kv-dtype fp8), a shorter --context, fewer --users, or a bigger GPU.")
         return EXIT_DOES_NOT_FIT
 
-    why = "cheapest at your prices" if best.monthly_cost is not None else "fewest cards"
     print(f"Best looking: {st.bold(f'{best.gpus} x {best.gpu}')} ({why}).")
-    if best.monthly_cost is None:
-        print(st.dim("Add --price NAME=$/HOUR for the monthly cost of each option."))
+    if why == "fewest cards":
+        print(st.dim("Give --price NAME=$/HOUR for every GPU to pick by monthly cost."))
     if finding:
         status = finding["status"]
         if status == "maybe_fewer":
@@ -443,6 +493,10 @@ def handle_fit(args: argparse.Namespace) -> int:
         elif status == "no_fewer":
             print(f"You run {finding['count']} x {finding['gpu']}; the estimate does not "
                   "find room to drop a card at this load.")
+        elif status == "needs_more":
+            print(st.warn(f"You run {finding['count']} x {finding['gpu']}, but the estimate needs "
+                          f"{finding['fewest_estimate']} for every chat at the full --context. "
+                          "Your real chats are probably shorter; measure to see."))
         elif status == "does_not_fit_estimate":
             print(st.warn(f"The estimate says {finding['gpu']} cannot hold this load on up to "
                           f"{MAX_GPUS} cards, yet you run it: your real chats are probably "

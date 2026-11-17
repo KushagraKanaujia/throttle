@@ -23,6 +23,7 @@ With `--current`, it tells you if fewer cards look like enough, and what that wo
 
 - **Speed.** More cards can be slower, because they have to talk to each other. Measure before you change anything.
 - **Your real chat lengths.** It assumes every chat at the full `--context` at the same time. Real traffic is usually lighter, so this errs on the safe side.
+- **Weight sizes are approximate.** fp8, AWQ and GPTQ keep the embeddings in 16 bit, which is counted; other layers left unquantized are not.
 - **Exotic attention.** Sliding-window and latent attention models need less KV memory than this math assumes.
 
 ### Then measure it
@@ -31,11 +32,12 @@ With `--current`, it tells you if fewer cards look like enough, and what that wo
 
 ```bash
 throttle autotune --url http://localhost:8000 --model meta-llama/Llama-3.3-70B-Instruct \
-  --gpu-hourly-rate 2.49 \
-  --launch "vllm serve {model} --tensor-parallel-size {tp}" --space tp=2,4
+  --gpu-hourly-rate 2.49 --concurrency 16 \
+  --launch "vllm serve {model} --tensor-parallel-size {tp} --max-model-len 32768 --quantization fp8" \
+  --space tp=2,4
 ```
 
-That gives you real cost per million tokens for each card count, with confidence intervals.
+It measures cost per million tokens on your server for each card count, with a range that shows how sure the measurement is. Run it on the machine type you actually rent; replace `PRICE_PER_GPU_HOUR` if you did not give `--price`.
 
 ### Any model, any card
 
