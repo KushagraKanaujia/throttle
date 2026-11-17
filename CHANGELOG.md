@@ -4,6 +4,19 @@ All notable changes to Throttle will be documented in this file.
 
 ## [Unreleased]
 
+### Added
+- `throttle fit`: the fewest GPUs your model needs at your context length
+  and number of chats at once, per GPU type, before you rent anything.
+  Offline, no GPU, no keys. Memory math only (weights plus the KV cache for
+  every chat at the full context, with vLLM/SGLang's tensor parallel limits
+  and the KV copies when cards outnumber KV heads), labelled ESTIMATE, and it
+  never predicts speed. `--price NAME=$/HOUR` adds the monthly cost of each
+  option; `--current h100=4` says if fewer cards look like enough and what
+  that would save if a measurement agrees. It ends with the `throttle
+  autotune` (or, for llama.cpp, `throttle check`) command that measures the
+  shortlist. 11 built-in models, 12 built-in GPUs, `--config config.json`
+  for any other model, `--gpu name=GB` for any other card, `--json`.
+
 ## [0.8.0] - 2026-11-12
 
 ### Added

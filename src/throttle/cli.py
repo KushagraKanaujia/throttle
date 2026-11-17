@@ -133,7 +133,8 @@ In your code:
                        never moved silently.
 
 Serving tools (advanced), for the server your own model runs on:
-  check ($/M tokens with 95% CIs), autotune, coldstart, compare, gate,
+  fit (fewest GPUs for your model, offline estimate), check ($/M tokens with
+  95% CIs), autotune, coldstart, compare, gate,
   savings, watch, ui, proxy, sessions. Evidence runs: plan, smoke, benchmark,
   golden, golden-report.
 
@@ -656,6 +657,17 @@ def build_parser() -> argparse.ArgumentParser:
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     add_coldstart_arguments(coldstart)
+
+    from .fit import FIT_DESCRIPTION, FIT_EPILOG, add_fit_arguments
+    fit = subparsers.add_parser(
+        "fit",
+        help="the fewest GPUs your model needs at your context and users (offline "
+        "estimate, no GPU); then the command to measure it",
+        description=FIT_DESCRIPTION,
+        epilog=FIT_EPILOG,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    add_fit_arguments(fit)
 
     from .gate import GATE_DESCRIPTION, add_gate_arguments
     gate = subparsers.add_parser(
@@ -2488,6 +2500,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     if args.command == "autotune":
         from .autotune import handle_autotune
         return handle_autotune(args)
+    if args.command == "fit":
+        from .fit import handle_fit
+        return handle_fit(args)
     if args.command == "coldstart":
         from .coldstart import handle_coldstart
         return handle_coldstart(args)
