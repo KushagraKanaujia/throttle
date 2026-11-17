@@ -77,6 +77,7 @@ DOCS_NAV: list[dict[str, Any]] = [
         ("guides/sglang", "SGLang"),
         ("guides/ollama", "Ollama"),
         ("guides/other-engines", "Other servers"),
+        ("guides/fewest-gpus", "Fewest GPUs for your model"),
         ("guides/compare-gpus", "Compare two GPUs"),
         ("guides/test-quantization", "Test a quantization"),
         ("guides/ci-github-action", "Gate costs in CI"),
