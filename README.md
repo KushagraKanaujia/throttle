@@ -37,7 +37,16 @@ throttle scan .
 throttle demo
 ```
 
-Pin the version so what you install never changes under you.
+Pin the version so what you install never changes under you. Throttle needs
+**Python 3.11 or newer**. On a Mac, the built-in `python3` is 3.9, and pip
+then says `No matching distribution found for throttle-pro`. That means your
+Python is too old, not that the package is missing. With
+[uv](https://docs.astral.sh/uv/) you can skip installing anything; it fetches
+a recent Python on its own:
+
+```sh
+uvx --from "throttle-pro==0.8.0" throttle scan .
+```
 
 `throttle scan .` reads the code in the current
 folder and lists the OpenAI and Anthropic SDK calls it can read: where each

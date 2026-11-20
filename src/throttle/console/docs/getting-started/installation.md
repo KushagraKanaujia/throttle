@@ -16,6 +16,12 @@ pipx install "throttle-pro==0.8.0"
 throttle --version
 ```
 
+```bash uv
+uvx --from "throttle-pro==0.8.0" throttle scan .
+```
+
+On a Mac the built-in `python3` is 3.9. There pip says `No matching distribution found for throttle-pro`: your Python is too old, the package is there. `uvx` (from [uv](https://docs.astral.sh/uv/)) fetches a recent Python by itself, so it works without installing one.
+
 That gives you the whole loop (`capture`, `workloads`, `shadow`, `eval`, `report`, `route`, `refresh`, `demo`), `jobs`, `pr-check` and the serving tools such as `check`.
 
 To install straight from the source you can read, use the release tag:
