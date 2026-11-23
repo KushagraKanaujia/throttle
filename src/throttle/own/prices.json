@@ -327,6 +327,24 @@
   },
   {
    "provider": "anthropic",
+   "model": "claude-fable-5-2",
+   "input_per_m": 8,
+   "cached_input_per_m": 0.2,
+   "output_per_m": 40,
+   "as_of": "2026-11-22",
+   "source": "https://platform.claude.com/docs/en/about-claude/pricing"
+  },
+  {
+   "provider": "anthropic",
+   "model": "claude-mythos-5-2",
+   "input_per_m": 8,
+   "cached_input_per_m": 0.2,
+   "output_per_m": 40,
+   "as_of": "2026-11-22",
+   "source": "https://platform.claude.com/docs/en/about-claude/pricing"
+  },
+  {
+   "provider": "anthropic",
    "model": "claude-fable-5-1",
    "input_per_m": 10,
    "cached_input_per_m": 0.25,

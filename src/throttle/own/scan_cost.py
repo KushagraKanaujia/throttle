@@ -730,11 +730,14 @@ def render(path: str, jobs: Sequence[JobCost], shape: Shape, table: pricing_mod.
     if hidden:
         rows.append((f"Not counted: {hidden} more in tests, examples or evals. --all includes them.", ()))
     elif not show_all and any(j.where != WHERE_APP for j in jobs):
-        rows.append((f"All {summary['counted']} are in tests, examples or evals, so they are counted.", ()))
+        n = summary["counted"]
+        what = "The one call found is" if n == 1 else f"All {n} calls found are"
+        rows.append((f"{what} in tests, examples or evals. Counted anyway, since there is no app code "
+                     "to count.", ()))
     runtime = [j for j in counted if j.status == STATUS_RUNTIME]
     if runtime and not shape.runtime_model:
         providers = [j.site.provider for j in runtime]
-        example = ("claude-sonnet-4-6" if providers.count(records.PROVIDER_ANTHROPIC)
+        example = ("claude-sonnet-5-5" if providers.count(records.PROVIDER_ANTHROPIC)
                    > providers.count(records.PROVIDER_OPENAI) else "gpt-4o")
         rows.append((f"{len(runtime)} of {summary['counted']} set the model at runtime. To price them, rerun "
                      f"with the model you use, for example --model {example}.", ()))
