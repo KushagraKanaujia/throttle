@@ -751,7 +751,7 @@ def test_tests_examples_and_evals_are_not_counted_unless_all(tmp_path, capsys, p
     only = tmp_path / "only"
     scan_tree(only, {"examples/a.py": call})
     flat = flatten(run(capsys, str(only))[1])
-    assert "1 AI call found, 1 priced." in flat and "All 1 are in tests, examples or evals" in flat
+    assert "1 AI call found, 1 priced." in flat and "The one call found is in tests, examples or evals" in flat
 
 
 def test_table_keeps_file_and_line_sorts_by_cost_and_caps_rows(tmp_path, capsys, plain) -> None:
@@ -791,7 +791,7 @@ def test_not_priced_list_folds_by_file_and_reason_and_names_the_cause(tmp_path, 
     })
     flat = flatten(run(capsys, str(tmp_path))[1])
     assert "- llm.py: 3 calls, lines 2, 4, 6 model set at runtime (model_name)" in flat
-    assert "gpt-3.5-turbo: older model, not in the price table, prices checked 2026-10-27" in flat
+    assert "gpt-3.5-turbo: older model, not in the price table, prices checked 2026-11-22" in flat
     assert "claude-3-haiku-20240307: older model, not in the price table" in flat
     assert "gemini-1.5-flash: not an OpenAI or Anthropic model; add its price with --prices FILE" in flat
     assert "model set at runtime (pick( a, b, ))" in flat   # whitespace collapsed

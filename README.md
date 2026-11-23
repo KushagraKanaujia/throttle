@@ -1,7 +1,14 @@
 # Throttle: stop renting your AI.
 
-Throttle cuts your AI bill. It finds the AI calls in your app that a cheaper
-model can do just as well, proves it on your own traffic, and moves them.
+Your AI bill grows every month. A cheaper model could do many of your AI
+calls just as well, but nobody can prove which ones. Testing each job by hand,
+again after every model release and prompt change, is slow and costly. So most
+teams never switch, or they switch and find out from their users.
+
+Throttle does that testing for you. It finds the AI calls in your app, tests
+each one against cheaper models on the requests your app really sends, and
+moves only the jobs that pass. When a prompt, a model or a price changes, it
+tests again.
 
 It lives in your code: a GitHub Action, plus one change to your API base URL.
 When a pull request adds or changes an AI call, Throttle tests that job against

@@ -4,7 +4,15 @@ All notable changes to Throttle will be documented in this file.
 
 ## [Unreleased]
 
+### Changed
+- `throttle scan`: clearer note when every call found is in tests or examples,
+  and the runtime-model hint suggests a current model (`claude-sonnet-5-5`).
+- README opens with the problem Throttle solves.
+
 ### Added
+- Prices for `claude-fable-5-2` and `claude-mythos-5-2` ($8 in, $40 out,
+  $0.20 cached input per 1M tokens), so `throttle scan` prices them and offers
+  Fable 5.2 as a cheaper step from Fable 5.1.
 - `throttle fit`: the fewest GPUs your model needs at your context length
   and number of chats at once, per GPU type, before you rent anything.
   Offline, no GPU, no keys. Memory math only (weights plus the KV cache for
