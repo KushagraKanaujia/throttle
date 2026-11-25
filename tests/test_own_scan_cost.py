@@ -833,3 +833,20 @@ def test_narrow_terminal_drops_the_change_column(tmp_path, capsys, monkeypatch) 
     assert "CHANGE" not in head and len(head) <= 40
     rows = [line for line in out.splitlines() if "$" in line and "↳" in line]
     assert rows and all("%" not in line and len(line) <= 40 for line in rows)
+
+
+def test_fallback_skips_an_older_version_that_costs_more() -> None:
+    table = pricing.load_prices()
+    fable = table.lookup("anthropic", "claude-fable-5-2")
+    picks = pick_candidates(fable, table, 1000, 300)
+    assert picks[0].price.model == "claude-opus-5-5"    # not the older, pricier claude-opus-5
+    # the one-tier-down rule is untouched
+    sonnet = table.lookup("anthropic", "claude-sonnet-4-5")
+    assert pick_candidates(sonnet, table, 1000, 300)[0].price.model == "claude-haiku-4-5"
+
+
+def test_tier_and_version_reads_names() -> None:
+    assert scan_cost.tier_and_version(price("claude-opus-5-5", "anthropic")) == (("anthropic", "claude-opus"), (5, 5))
+    assert scan_cost.tier_and_version(price("gpt-5.4-mini")) == (("openai", "gpt-mini"), (5, 4))
+    assert scan_cost.tier_and_version(price("o3")) == (("openai", "o"), (3,))
+    assert scan_cost.tier_and_version(price("claude-x", "anthropic")) is None
