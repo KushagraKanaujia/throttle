@@ -4,7 +4,12 @@ All notable changes to Throttle will be documented in this file.
 
 ## [Unreleased]
 
+## [0.8.1] - 2026-11-24
+
 ### Changed
+- `throttle scan`: when a model has no cheaper tier in its own family, the
+  next step down skips older versions that a newer one beats on price, so
+  `claude-fable-5-2` suggests `claude-opus-5-5`, not `claude-opus-5`.
 - `throttle scan`: clearer note when every call found is in tests or examples,
   and the runtime-model hint suggests a current model (`claude-sonnet-5-5`).
 - README opens with the problem Throttle solves.

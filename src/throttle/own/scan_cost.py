@@ -115,6 +115,46 @@ def family(price: pricing_mod.Price) -> tuple[str, str]:
     return price.provider, price.model.lower()
 
 
+def tier_and_version(price: pricing_mod.Price) -> tuple[tuple[str, str], tuple[int, ...]] | None:
+    """The tier name and version of a model, read from the name only, or
+    ``None`` when the name has no version.
+
+    * Anthropic: ``claude-opus-5-5`` is tier ``claude-opus``, version (5, 5).
+    * Others: the first part with a digit is the version, the rest is the
+      tier: ``gpt-5.4-mini`` is tier ``gpt-mini``, version (5, 4).
+    """
+    parts = price.model.lower().split("-")
+    if price.provider == records.PROVIDER_ANTHROPIC:
+        tail: list[int] = []
+        while parts and parts[-1].isdigit():
+            tail.insert(0, int(parts.pop()))
+        return ((price.provider, "-".join(parts)), tuple(tail)) if tail else None
+    for i, part in enumerate(parts):
+        m = re.fullmatch(r"([a-z]*)(\d+(?:\.\d+)*)", part)
+        if m:
+            tier = "-".join([*parts[:i], m.group(1), *parts[i + 1:]] if m.group(1) else [*parts[:i], *parts[i + 1:]])
+            return (price.provider, tier), tuple(int(x) for x in m.group(2).split("."))
+        if any(ch.isdigit() for ch in part):
+            return None
+    return None
+
+
+def _drop_superseded(pool: list["Candidate"]) -> list["Candidate"]:
+    """Leave out a model when a newer version of the same tier costs no more
+    per call (``claude-opus-5`` when ``claude-opus-5-5`` is cheaper): nobody
+    should test the old one first."""
+    keyed = [(c, tier_and_version(c.price)) for c in pool]
+    kept = []
+    for c, key in keyed:
+        superseded = key is not None and any(
+            other_key is not None and other_key[0] == key[0] and other_key[1] > key[1]
+            and other.per_call_usd <= c.per_call_usd * (1 + 1e-9)
+            for other, other_key in keyed if other is not c)
+        if not superseded:
+            kept.append(c)
+    return kept
+
+
 def _suggestable(price: pricing_mod.Price) -> bool:
     name = price.model.lower()
     return not _DATED.search(name) and not any(word in name for word in SPECIALIZED)
@@ -140,10 +180,13 @@ def pick_candidates(current: pricing_mod.Price, table: Iterable[pricing_mod.Pric
        expensive cheaper model of that family, e.g. ``gpt-4o`` ->
        ``gpt-4o-mini``, ``claude-sonnet-4-5`` -> ``claude-haiku-4-5``). With
        no cheaper tier in the family, the same provider's next price step
-       down (the most expensive model in the pool).
+       down (the most expensive model in the pool), leaving out any model
+       whose newer version of the same tier costs no more per call, so
+       ``claude-fable-5-2`` gets ``claude-opus-5-5``, not ``claude-opus-5``.
     3. Second pick, other provider: the model whose cost per call is closest
        (as a ratio) to the first pick's, so it sits in the same price class.
-       With no first pick, the closest to the current model's.
+       With no first pick, the closest to the current model's. Superseded
+       models are left out here too.
 
     Ties go to the entry listed first in ``prices.json``. The picks say
     nothing about quality: they are what to test, and are UNTESTED.
@@ -178,14 +221,14 @@ def pick_candidates(current: pricing_mod.Price, table: Iterable[pricing_mod.Pric
     if first is not None:
         picks.append(Candidate(first.price, first.per_call_usd, WHY_FAMILY))
     else:
-        first = most_expensive(same)
+        first = most_expensive(_drop_superseded(same))
         if first is not None:
             picks.append(Candidate(first.price, first.per_call_usd, WHY_PROVIDER))
 
     target = first.per_call_usd if first is not None else now
     best_other: Candidate | None = None
     best_gap = math.inf
-    for item in pool:
+    for item in _drop_superseded(pool):
         if item.price.provider == current.provider or item.per_call_usd <= 0:
             continue
         gap = abs(math.log(item.per_call_usd / target))
